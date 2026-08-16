@@ -12,6 +12,18 @@
 
 推荐日常使用 **Cloudflare Named Tunnel + 固定域名**。这样 MCP 地址不会随着程序重启发生变化。
 
+当前仓库内置自研 `coding-tools-mcp 1.0.0` 服务端，不再把外部
+`coding-tools-mcp` wheel 作为运行时依赖。服务端源码位于：
+
+```text
+coding_tools_mcp/
+```
+
+当前实现保持 18 个 Coding Tools，并为每个工具同时提供 `inputSchema`、
+`outputSchema`、`structuredContent` 与 `isError`，以便 ChatGPT 等 MCP Client
+能够明确理解工具输入、结构化输出以及调用结束/失败状态。详细设计见
+`docs/MCP_SERVER_DEVELOPMENT.md`。
+
 ## 快速开始：固定域名模式
 
 如果只想先跑通固定域名，按下面 5 步操作：
@@ -711,7 +723,7 @@ registration endpoint returned 403
 
 重点检查 `/oauth/register` 请求有没有真正到达 `coding-tools-mcp`。
 
-`coding-tools-mcp 0.3.0` 的 DCR 正常成功响应为：
+当前自研 `coding-tools-mcp 1.0.0` 的 DCR 正常成功响应为：
 
 ```text
 201 Created
@@ -774,7 +786,7 @@ Block Bot
 https://mcp.example.com/mcp
 ```
 
-`coding-tools-mcp 0.3.x` 本身的动态 OAuth Client Registry 是进程内存状态，默认情况下 MCP Server 退出后动态注册的 `client_id` 会丢失。
+自研 MCP Server 的动态 OAuth Client Registry 在服务进程内运行；如果没有额外持久化层，进程退出后动态注册的 `client_id` 会丢失。
 
 本项目启动器已经额外实现持久化层，启动时会按公网 MCP 基础 URL 保存两类状态：
 

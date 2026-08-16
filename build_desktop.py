@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 from coding_tools_launcher.resources import bundled_cloudflared_path
+
+
+ROOT = Path(__file__).resolve().parent
 
 
 def main() -> int:
@@ -27,13 +31,15 @@ def main() -> int:
         "--windowed",
         "--name",
         "Coding Tools MCP",
-        "--collect-all",
+        "--paths",
+        str(ROOT),
+        "--collect-submodules",
         "coding_tools_mcp",
         "--add-binary",
         f"{cloudflared}{separator}vendor/cloudflared/{cloudflared.parent.name}",
         "desktop.py",
     ]
-    return subprocess.call(command)
+    return subprocess.call(command, cwd=ROOT)
 
 
 if __name__ == "__main__":

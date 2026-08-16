@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpacerItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -140,6 +141,38 @@ class MainWindow(QMainWindow):
 
             form_layout.addLayout(row)
 
+        def add_secret_row(label_text: str, field: QLineEdit) -> None:
+            """Add a masked input with a click-to-show eye button.
+
+            The button changes only the visual echo mode. The field's actual
+            text is never modified, so settings persistence and launcher
+            behavior remain unchanged.
+            """
+
+            field.setEchoMode(QLineEdit.EchoMode.Password)
+
+            visibility_button = QToolButton()
+            visibility_button.setText("👁")
+            visibility_button.setCheckable(True)
+            visibility_button.setAutoRaise(True)
+            visibility_button.setFixedSize(30, 30)
+            visibility_button.setToolTip("显示内容")
+            visibility_button.setAccessibleName(f"显示 {label_text}")
+
+            def toggle_visibility(visible: bool) -> None:
+                field.setEchoMode(
+                    QLineEdit.EchoMode.Normal
+                    if visible
+                    else QLineEdit.EchoMode.Password
+                )
+                visibility_button.setToolTip("隐藏内容" if visible else "显示内容")
+                visibility_button.setAccessibleName(
+                    f"隐藏 {label_text}" if visible else f"显示 {label_text}"
+                )
+
+            visibility_button.toggled.connect(toggle_visibility)
+            add_config_row(label_text, field, visibility_button)
+
         self.workspace_edit = QLineEdit()
         self.workspace_edit.setPlaceholderText("选择需要授权给 MCP 的代码目录")
         choose_button = QPushButton("选择…")
@@ -152,14 +185,12 @@ class MainWindow(QMainWindow):
         add_config_row("Client ID", self.client_id_edit)
 
         self.client_secret_edit = QLineEdit()
-        self.client_secret_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.client_secret_edit.setPlaceholderText("MCP OAuth Client Secret（建议随机生成）")
-        add_config_row("Client Secret", self.client_secret_edit)
+        add_secret_row("Client Secret", self.client_secret_edit)
 
         self.password_edit = QLineEdit()
-        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_edit.setPlaceholderText("MCP OAuth 登录密码")
-        add_config_row("Password", self.password_edit)
+        add_secret_row("Password", self.password_edit)
 
         self.server_url_edit = QLineEdit()
         self.server_url_edit.setPlaceholderText(
@@ -168,11 +199,10 @@ class MainWindow(QMainWindow):
         add_config_row("Public URL", self.server_url_edit)
 
         self.tunnel_token_edit = QLineEdit()
-        self.tunnel_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.tunnel_token_edit.setPlaceholderText(
             "固定 Public URL 时必填：Cloudflare Tunnel 安装命令中的 --token"
         )
-        add_config_row("Tunnel Token", self.tunnel_token_edit)
+        add_secret_row("Tunnel Token", self.tunnel_token_edit)
 
         self.remember_secrets = QCheckBox("在这台电脑上保存 Client Secret 和 Password")
         self.remember_secrets.setChecked(True)

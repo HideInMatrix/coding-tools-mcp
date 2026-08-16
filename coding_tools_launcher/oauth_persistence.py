@@ -108,11 +108,11 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def install_oauth_registry_persistence() -> None:
-    """Patch coding-tools-mcp 0.3.x registry so RFC 7591 clients survive restarts.
+    """Attach JSON persistence to the in-tree OAuth client registry.
 
-    The upstream OAuthClientRegistry intentionally stores dynamic clients only in
-    process memory. The launcher supplies OAUTH_REGISTRY_FILE_ENV to opt into a
-    small JSON-backed registry without modifying the installed dependency.
+    The MCP runtime keeps its registry in memory by design; the desktop launcher
+    adds persistence because a fixed public MCP URL should keep dynamically
+    registered clients valid across application restarts.
     """
 
     raw_path = os.environ.get(OAUTH_REGISTRY_FILE_ENV, "").strip()
