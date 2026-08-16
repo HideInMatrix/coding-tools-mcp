@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QFileDialog,
-    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -81,6 +80,10 @@ class MainWindow(QMainWindow):
 
         form_card = QFrame()
         form_card.setFrameShape(QFrame.Shape.StyledPanel)
+        form_card.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         form_layout = QVBoxLayout(form_card)
         form_layout.setContentsMargins(20, 18, 20, 18)
         form_layout.setSpacing(14)
@@ -91,51 +94,85 @@ class MainWindow(QMainWindow):
         section.setFont(section_font)
         form_layout.addWidget(section)
 
-        workspace_row = QHBoxLayout()
-        workspace_row.setSpacing(8)
+        def add_config_row(
+            label_text: str,
+            field: QLineEdit,
+            trailing: QWidget | None = None,
+        ) -> None:
+            """Use the same layout model as the Public MCP URL row below.
+
+            The label keeps a stable column width, while the input field has a
+            minimum width and receives the stretch factor. This prevents the
+            field from being squeezed smaller than its minimum size when the
+            window is resized.
+            """
+
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+
+            label = QLabel(label_text)
+            label.setFixedWidth(96)
+            label.setSizePolicy(
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Fixed,
+            )
+            label.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+
+            field.setMinimumWidth(460)
+            field.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Fixed,
+            )
+
+            if trailing is not None:
+                trailing.setSizePolicy(
+                    QSizePolicy.Policy.Fixed,
+                    QSizePolicy.Policy.Fixed,
+                )
+
+            row.addWidget(label)
+            row.addWidget(field, 1)
+            if trailing is not None:
+                row.addWidget(trailing)
+
+            form_layout.addLayout(row)
+
         self.workspace_edit = QLineEdit()
-        self.workspace_edit.setFixedWidth(426)
         self.workspace_edit.setPlaceholderText("选择需要授权给 MCP 的代码目录")
         choose_button = QPushButton("选择…")
-        choose_button.setFixedWidth(86)
+        choose_button.setMinimumWidth(86)
         choose_button.clicked.connect(self._choose_workspace)
-        workspace_row.addWidget(self.workspace_edit)
-        workspace_row.addWidget(choose_button)
-        workspace_row.addStretch(1)
-
-        form = QFormLayout()
-        form.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint
-        )
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        form.setHorizontalSpacing(14)
-        form.setVerticalSpacing(12)
-        form.addRow("Workspace", workspace_row)
+        add_config_row("Workspace", self.workspace_edit, choose_button)
 
         self.client_id_edit = QLineEdit()
-        self.client_id_edit.setFixedWidth(520)
-        self.client_id_edit.setPlaceholderText("Cloudflare OAuth Client ID")
-        form.addRow("Client ID", self.client_id_edit)
+        self.client_id_edit.setPlaceholderText("MCP OAuth Client ID（自定义固定值，不是 Cloudflare 凭据）")
+        add_config_row("Client ID", self.client_id_edit)
 
         self.client_secret_edit = QLineEdit()
-        self.client_secret_edit.setFixedWidth(520)
         self.client_secret_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.client_secret_edit.setPlaceholderText("OAuth Client Secret")
-        form.addRow("Client Secret", self.client_secret_edit)
+        self.client_secret_edit.setPlaceholderText("MCP OAuth Client Secret（建议随机生成）")
+        add_config_row("Client Secret", self.client_secret_edit)
 
         self.password_edit = QLineEdit()
-        self.password_edit.setFixedWidth(520)
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_edit.setPlaceholderText("MCP OAuth 登录密码")
-        form.addRow("Password", self.password_edit)
+        add_config_row("Password", self.password_edit)
 
         self.server_url_edit = QLineEdit()
-        self.server_url_edit.setFixedWidth(520)
         self.server_url_edit.setPlaceholderText(
             "可选，例如 https://mcp.example.com；留空使用 Quick Tunnel"
         )
-        form.addRow("Public URL", self.server_url_edit)
-        form_layout.addLayout(form)
+        add_config_row("Public URL", self.server_url_edit)
+
+        self.tunnel_token_edit = QLineEdit()
+        self.tunnel_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.tunnel_token_edit.setPlaceholderText(
+            "固定 Public URL 时必填：Cloudflare Tunnel 安装命令中的 --token"
+        )
+        add_config_row("Tunnel Token", self.tunnel_token_edit)
 
         self.remember_secrets = QCheckBox("在这台电脑上保存 Client Secret 和 Password")
         self.remember_secrets.setChecked(True)
@@ -146,7 +183,12 @@ class MainWindow(QMainWindow):
         secret_note.setWordWrap(True)
         secret_note.setStyleSheet("color: palette(mid); font-size: 12px;")
         form_layout.addWidget(secret_note)
-        outer.addWidget(form_card)
+
+        # 连接设置属于静态配置区域，不应该随着窗口高度变化被压缩。
+        # 固定为自身 sizeHint 高度，把纵向伸缩空间全部留给日志区域。
+        form_layout.activate()
+        form_card.setFixedHeight(form_card.sizeHint().height())
+        outer.addWidget(form_card, 0)
 
         status_card = QFrame()
         status_card.setFrameShape(QFrame.Shape.StyledPanel)
@@ -202,8 +244,15 @@ class MainWindow(QMainWindow):
         self.logs = QPlainTextEdit()
         self.logs.setReadOnly(True)
         self.logs.setMaximumBlockCount(1000)
-        self.logs.setMinimumHeight(120)
+        # 日志区域是页面唯一允许随窗口高度变化的主体区域。
+        self.logs.setMinimumHeight(72)
         outer.addWidget(self.logs, 1)
+
+        # 依据实际布局内容设置最低窗口高度，避免 Qt 在总空间不足时
+        # 反向挤压连接设置等静态区域。
+        root.adjustSize()
+        required_height = root.minimumSizeHint().height()
+        self.setMinimumHeight(max(self.minimumHeight(), required_height))
 
     def _choose_workspace(self) -> None:
         current = self.workspace_edit.text().strip() or str(Path.home())
@@ -218,6 +267,7 @@ class MainWindow(QMainWindow):
             oauth_client_secret=self.client_secret_edit.text(),
             oauth_password=self.password_edit.text(),
             server_url=self.server_url_edit.text(),
+            tunnel_token=self.tunnel_token_edit.text(),
         ).validated()
 
     def _toggle_service(self) -> None:
@@ -315,6 +365,7 @@ class MainWindow(QMainWindow):
         if remember:
             self.client_secret_edit.setText(str(data.get("client_secret", "")))
             self.password_edit.setText(str(data.get("password", "")))
+            self.tunnel_token_edit.setText(str(data.get("tunnel_token", "")))
 
     def _save_settings(self) -> None:
         remember = self.remember_secrets.isChecked()
@@ -327,6 +378,7 @@ class MainWindow(QMainWindow):
         if remember:
             data["client_secret"] = self.client_secret_edit.text()
             data["password"] = self.password_edit.text()
+            data["tunnel_token"] = self.tunnel_token_edit.text()
         save_settings(data)
 
     def closeEvent(self, event: QCloseEvent) -> None:

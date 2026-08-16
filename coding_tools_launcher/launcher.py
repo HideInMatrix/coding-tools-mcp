@@ -7,6 +7,11 @@ import time
 from .cloudflared import CloudflaredTunnel
 from .config import LaunchConfig, LaunchInfo
 from .mcp_process import MCPServerProcess
+from .oauth_persistence import (
+    OAUTH_REGISTRY_FILE_ENV,
+    OAUTH_TOKEN_SECRET_ENV,
+    prepare_oauth_persistence,
+)
 from .process_utils import LogCallback, check_port_available
 
 
@@ -52,9 +57,15 @@ class MCPLauncher:
             self._exit_reason = ""
             check_port_available(config.host, config.port)
             try:
-                tunnel_url = self._tunnel.start(config.host, config.port)
+                tunnel_url = self._tunnel.start(
+                    config.host,
+                    config.port,
+                    public_url=config.server_url,
+                    tunnel_token=config.tunnel_token,
+                )
                 public_base_url = config.server_url or tunnel_url
-                url_mode = "Custom URL" if config.server_url else "Quick Tunnel"
+                url_mode = "Named Tunnel" if config.server_url else "Quick Tunnel"
+                oauth_persistence = prepare_oauth_persistence(public_base_url)
                 env = os.environ.copy()
                 env.update(
                     {
@@ -62,7 +73,12 @@ class MCPLauncher:
                         "CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET": config.oauth_client_secret,
                         "CODING_TOOLS_MCP_OAUTH_PASSWORD": config.oauth_password,
                         "CODING_TOOLS_MCP_SERVER_URL": public_base_url,
+                        OAUTH_TOKEN_SECRET_ENV: oauth_persistence.token_secret_hex,
+                        OAUTH_REGISTRY_FILE_ENV: str(oauth_persistence.registry_file),
                     }
+                )
+                self._log(
+                    "OAuth 状态持久化已启用：动态 client_id 与 token secret 将跨重启保留。"
                 )
                 self._mcp.start(config, env)
                 self._info = LaunchInfo(

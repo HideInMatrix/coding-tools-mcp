@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
-import shutil
 import subprocess
 import sys
 
 from .config import LaunchConfig
+from .oauth_persistence import install_oauth_registry_persistence
 from .process_utils import (
     LogCallback,
     forward_process_output,
@@ -35,27 +34,11 @@ def build_mcp_command(config: LaunchConfig) -> list[str]:
     arguments = _mcp_arguments(config)
     if is_frozen():
         return [sys.executable, INTERNAL_MCP_FLAG, *arguments]
-
-    executable = shutil.which("coding-tools-mcp")
-    if executable:
-        return [executable, *arguments]
-
-    name = "coding-tools-mcp.exe" if os.name == "nt" else "coding-tools-mcp"
-    candidate = (
-        PROJECT_ROOT
-        / ".venv"
-        / ("Scripts" if os.name == "nt" else "bin")
-        / name
-    )
-    if candidate.is_file():
-        return [str(candidate), *arguments]
-    raise RuntimeError(
-        "开发环境未找到 coding-tools-mcp。请先安装项目依赖；"
-        "正式桌面安装包会内置该依赖。"
-    )
+    return [sys.executable, "-m", "coding_tools_launcher.mcp_worker", *arguments]
 
 
 def run_internal_mcp_server(arguments: list[str]) -> int:
+    install_oauth_registry_persistence()
     from coding_tools_mcp.server import main as server_main
 
     old_argv = sys.argv[:]
@@ -78,6 +61,7 @@ class MCPServerProcess:
         self.process = subprocess.Popen(
             command,
             env=env,
+            cwd=str(PROJECT_ROOT),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

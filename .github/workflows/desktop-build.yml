@@ -1,0 +1,117 @@
+name: Build Desktop Apps
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            runner: windows-2025
+            python_arch: x64
+            artifact: coding-tools-mcp-windows-x64
+
+          - name: Windows ARM64
+            runner: windows-11-arm
+            python_arch: arm64
+            artifact: coding-tools-mcp-windows-arm64
+
+          - name: macOS Intel
+            runner: macos-15-intel
+            python_arch: x64
+            artifact: coding-tools-mcp-macos-intel
+
+          - name: macOS Apple Silicon
+            runner: macos-15
+            python_arch: arm64
+            artifact: coding-tools-mcp-macos-apple-silicon
+
+          - name: Linux x64
+            runner: ubuntu-24.04
+            python_arch: x64
+            artifact: coding-tools-mcp-linux-x64
+
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            python_arch: arm64
+            artifact: coding-tools-mcp-linux-arm64
+
+    runs-on: ${{ matrix.runner }}
+    env:
+      PACKAGE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('build-{0}', github.run_number) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          architecture: ${{ matrix.python_arch }}
+          cache: pip
+          cache-dependency-path: requirements-desktop.txt
+
+      - name: Install desktop dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-desktop.txt
+
+      - name: Verify native build environment
+        run: python scripts/verify_build_environment.py --expected-arch "${{ matrix.python_arch }}"
+
+      - name: Download bundled cloudflared
+        run: python scripts/fetch_cloudflared.py
+
+      - name: Build desktop application
+        run: python build_desktop.py
+
+      - name: Package release file
+        run: python scripts/package_release.py --version "${{ env.PACKAGE_VERSION }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: release-assets
+          pattern: coding-tools-mcp-*
+          merge-multiple: true
+
+      - name: Publish release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release-assets/* \
+              --title "Coding Tools MCP $GITHUB_REF_NAME" \
+              --generate-notes
+          fi

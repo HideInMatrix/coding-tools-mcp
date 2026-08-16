@@ -23,6 +23,7 @@ def main() -> int:
         "PyInstaller",
         "--noconfirm",
         "--clean",
+        "--onedir",
         "--windowed",
         "--name",
         "Coding Tools MCP",

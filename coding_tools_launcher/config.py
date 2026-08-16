@@ -61,6 +61,7 @@ class LaunchConfig:
     oauth_client_secret: str
     oauth_password: str
     server_url: str = ""
+    tunnel_token: str = ""
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
 
@@ -84,12 +85,27 @@ class LaunchConfig:
                 "缺少 OAuth 配置:\n" + "\n".join(f"  - {key}" for key in missing)
             )
 
+        server_url = normalize_server_url(self.server_url)
+        tunnel_token = self.tunnel_token.strip()
+        if server_url and not tunnel_token:
+            raise ValueError(
+                "固定 Public URL 需要 Cloudflare Named Tunnel Token。\n"
+                "请在 Cloudflare Zero Trust -> Networks -> Tunnels 中打开对应 Tunnel，"
+                "复制安装命令里 --token 后面的值。"
+            )
+        if tunnel_token and not server_url:
+            raise ValueError(
+                "已填写 Tunnel Token，但 Public URL 为空。\n"
+                "Named Tunnel 模式必须同时填写固定公网域名。"
+            )
+
         return LaunchConfig(
             workspace=workspace,
             oauth_client_id=values["CODING_TOOLS_MCP_OAUTH_CLIENT_ID"],
             oauth_client_secret=values["CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET"],
             oauth_password=values["CODING_TOOLS_MCP_OAUTH_PASSWORD"],
-            server_url=normalize_server_url(self.server_url),
+            server_url=server_url,
+            tunnel_token=tunnel_token,
             host=self.host.strip() or DEFAULT_HOST,
             port=self.port,
         )
@@ -109,6 +125,7 @@ class LaunchConfig:
             oauth_client_secret=env.get("CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET", ""),
             oauth_password=env.get("CODING_TOOLS_MCP_OAUTH_PASSWORD", ""),
             server_url=env.get("CODING_TOOLS_MCP_SERVER_URL", ""),
+            tunnel_token=env.get("CODING_TOOLS_MCP_TUNNEL_TOKEN", ""),
             host=host,
             port=port,
         ).validated()
