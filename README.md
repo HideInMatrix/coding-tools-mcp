@@ -1,4 +1,5 @@
-# AGPL-3.0 协议说明
+## 使用方式
+[查看文档](https://blog.micromatrix.org/archives/F8crFkU6)
 
 ## 协议核心要点
 
