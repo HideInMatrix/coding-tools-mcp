@@ -560,6 +560,13 @@ def main() -> int:
         ENV_FILE
     )
 
+    # 如果 .env 中显式配置了固定的公网 MCP 地址，则优先使用它。
+    # 未配置时才使用本次启动生成的 Cloudflare Quick Tunnel 地址。
+    configured_server_url = config.get(
+        "CODING_TOOLS_MCP_SERVER_URL",
+        "",
+    ).strip().rstrip("/")
+
     missing = [
         key
         for key in REQUIRED_ENV
@@ -594,13 +601,21 @@ def main() -> int:
     )
 
     # --------------------------------------------------------
-    # 7. 关键：
-    #    把真实 Tunnel URL 注入 MCP
+    # 7. 确定 MCP 对外公开地址
+    #
+    #    优先级：
+    #      1. .env 中配置的固定 CODING_TOOLS_MCP_SERVER_URL
+    #      2. 本次生成的 Cloudflare Quick Tunnel URL
     # --------------------------------------------------------
+
+    server_url = (
+        configured_server_url
+        or tunnel_url
+    )
 
     env[
         "CODING_TOOLS_MCP_SERVER_URL"
-    ] = tunnel_url
+    ] = server_url
 
     # --------------------------------------------------------
     # 8. 转发 cloudflared 后续日志
@@ -648,13 +663,18 @@ def main() -> int:
     )
 
     print(
+        f"Tunnel URL: "
+        f"{tunnel_url}"
+    )
+
+    print(
         f"Remote MCP: "
-        f"{tunnel_url}/mcp"
+        f"{server_url}/mcp"
     )
 
     print(
         f"OAuth URL : "
-        f"{tunnel_url}"
+        f"{server_url}"
     )
 
     print()
@@ -663,7 +683,7 @@ def main() -> int:
     )
 
     print(
-        f"  {tunnel_url}/mcp"
+        f"  {server_url}/mcp"
     )
 
     print()
