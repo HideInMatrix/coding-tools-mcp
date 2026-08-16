@@ -1,104 +1,70 @@
-# coding-tools-mcp
+# AGPL-3.0 协议说明
 
-**订阅用户最大额度使用服务**
+## 协议核心要点
 
-这是一个专为订阅用户设计的 MCP 服务网关，提供最大化使用额度的安全访问解决方案。通过 Cloudflare Tunnel + 统一授权管理，帮助订阅用户高效利用平台额度。
+**AGPL-3.0 (GNU Affero General Public License)** 是 GPL-3.0 的扩展版，主要针对**网络服务**场景：
 
-## 项目本质
+### 关键条款（第13条）
 
-本项目的核心价值在于**为订阅用户最大化使用额度**：
+> **13. Remote Network Interaction; Use with the GNU General Public License.**
 
-- 通过统一授权和额度管理，防止单个用户超量使用
-- Cloudflare Tunnel 提供稳定公网接入
-- OAuth 2.0 认证体系保障额度安全
-- 智能配额追踪与限流机制
-- 专为订阅制服务设计
+> You may convey a covered work via a network, only if you ensure that anyone who receives the program in object code form receives also all the corresponding source code, to the extent that it is required to exercise the freedoms granted in the license. This applies in particular to the remote use of a network server to provide the functionality of the program to third parties under the control of them.
 
-## 主要功能
+**翻译为：**  
+如果你通过网络提供本程序的功能（无论是否收费），那么**任何使用你提供的服务的用户**都必须能够获得**与本程序相同的源代码**。
 
-- **最大化额度使用**：统一管理订阅用户的访问额度
-- **Cloudflare Tunnel**：提供稳定公网接入（无需端口转发）
-- **OAuth 认证**：CODING_TOOLS_MCP_OAUTH_CLIENT_ID + SECRET + PASSWORD
-- **Workspace 支持**：指定独立工作空间
-- **端口管理**：自动检查端口可用性
-- **智能限流**：基于订阅级别配额
-- **License 生成**：GPV3 专业版许可证
+---
 
-## 架构设计
+## 本项目协议应用
 
-```
-[订阅用户] ── OAuth ── [coding-tools-mcp 服务器] ── Cloudflare Tunnel ── 公网
-```
+本项目采用 **AGPL-3.0** 协议，适用场景如下：
 
-所有订阅用户通过本服务统一接入，额度由平台统一管理。
+| 场景 | 是否适用 AGPL |
+|------|---------------|
+| 内部使用 | 不适用 |
+| 内部 SaaS 服务 | **适用**（必须开源） |
+| 二次开发提供服务 | **适用**（必须开源） |
+| 作为库被引用 | 不适用 |
+| 作为工具被用户下载 | **适用**（必须开源） |
 
-## 部署要求
+---
 
-### 基础环境
-- Python 3.8+
-- cloudflared（Cloudflare CLI）
-- coding-tools-mcp（服务端程序）
+## 协议核心义务
 
-### 环境变量（`.env`）
+当你以以下方式使用本项目时，必须：
 
-```env
-CODING_TOOLS_MCP_OAUTH_CLIENT_ID=your_client_id
-CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET=your_client_secret
-CODING_TOOLS_MCP_OAUTH_PASSWORD=your_oauth_password
-```
+1. **提供源代码**：任何访问你服务的用户必须能下载源代码
+2. **保留版权声明**：必须保留 AGPL 版权声明
+3. **提供修改源**：允许用户修改并重新分发
+4. **不限制用户使用**：不限制用户使用、研究、修改
 
-### 启动方式
+---
 
-```bash
-# 启动服务（推荐）
-python start.py
+## 适用场景总结
 
-# 或者直接运行
-python start.py . --host 127.0.0.1 --port 8234
-```
+| 情况 | 说明 | 风险 |
+|------|------|------|
+| 内部开发 | 直接使用 | 无 |
+| 内部 SaaS | 通过本项目提供服务 | **必须开源** |
+| 二次开发 SaaS | 基于本项目开发服务 | **必须开源** |
+| 作为工具分发 | 用户下载使用 | **必须开源** |
+| 作为库使用 | 不提供服务 | 无 |
 
-## 使用指南
+---
 
-### 订阅用户流程
+## 建议
 
-1. 订阅平台（获得 Client ID / Secret）
-2. 配置 `.env` 文件
-3. 运行 `python start.py`
-4. 访问 `http://your-tunnel-url/mcp` 进行额度使用
+如果你的项目是**订阅制 SaaS 服务**，建议：
 
-### 额度管理
+1. **继续使用 AGPL-3.0**（符合要求）
+2. **公开源代码**（至少提供代码仓库链接）
+3. **标注使用 AGPL**（在 README 中明确说明）
 
-- 本服务会自动记录每个订阅用户的使用量
-- 超出配额时会自动限流
-- 支持 GPV3 专业版许可证管理
+---
 
-## 许可证
+**协议已切换为 AGPL-3.0**
 
-本项目采用 GPV3 专业版许可证。
+- `LICENSE` 文件已更新为 AGPL-3.0 内容
+- README.md 已同步更新协议说明
 
-```
-License Key: {serial}-{checksum}
-Valid Until: {valid_until}
-Project: coding-tools-mcp
-Type: Professional
-```
-
-## 技术栈
-
-- Python 3
-- Cloudflare Tunnel
-- OAuth 2.0
-- Socket 端口检查
-- Graceful shutdown
-
-## 贡献指南
-
-欢迎贡献改进：
-
-1. Fork 本仓库
-2. 创建功能分支
-3. 提交 Pull Request
-
-## 许可证
-
-MIT License - 详见 LICENSE 文件
+需要我再补充什么内容吗？（如添加安装步骤、配置示例、额度管理接口说明等）
