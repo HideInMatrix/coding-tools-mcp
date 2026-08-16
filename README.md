@@ -1,6 +1,61 @@
 ## 使用方式
 [查看文档](https://blog.micromatrix.org/archives/F8crFkU6)
 
+## 桌面版
+
+项目现已拆分为可复用核心、CLI 和 PySide6 桌面端。桌面版会优先使用随应用一起打包的 `cloudflared`，最终用户无需自行安装 Cloudflare Tunnel。
+
+### 开发环境启动
+
+安装桌面依赖：
+
+```bash
+pip install -r requirements-desktop.txt
+```
+
+启动桌面程序：
+
+```bash
+python desktop.py
+```
+
+CLI 入口保持兼容：
+
+```bash
+python start.py /path/to/workspace
+```
+
+### cloudflared
+
+正式桌面安装包必须包含当前平台对应的 `cloudflared`。构建前执行：
+
+```bash
+python scripts/fetch_cloudflared.py
+```
+
+二进制会被下载到：
+
+```text
+vendor/cloudflared/<platform>/cloudflared
+```
+
+开发环境如果该文件不存在，会回退到系统 `PATH` 中的 `cloudflared`；打包后的桌面程序不会回退到系统环境。
+
+### 构建桌面应用
+
+```bash
+python build_desktop.py
+```
+
+macOS 会生成 `Coding Tools MCP.app`。Windows/Linux 需要在对应系统上分别构建。
+
+### URL 模式
+
+- 配置 `CODING_TOOLS_MCP_SERVER_URL`：OAuth 和 Public MCP URL 使用固定地址。
+- 未配置：自动使用 Cloudflare Quick Tunnel 随机地址。
+
+桌面端同样支持这两种模式；`Public URL` 留空即可使用 Quick Tunnel。
+
 ## 协议核心要点
 
 **AGPL-3.0 (GNU Affero General Public License)** 是 GPL-3.0 的扩展版，主要针对**网络服务**场景：
