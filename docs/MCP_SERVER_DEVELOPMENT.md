@@ -70,6 +70,13 @@ coding_tools_mcp/
 MainWindow
     ↓
 MCPLauncher
+    ├── NetworkProvider
+    │      ├── Cloudflare
+    │      ├── FRP
+    │      ├── ngrok
+    │      ├── Tailscale Funnel
+    │      └── External URL
+    │
     ↓
 MCPServerProcess
     ↓
@@ -80,7 +87,11 @@ coding_tools_launcher.mcp_process.run_internal_mcp_server()
 coding_tools_mcp.server.main()
 ```
 
-因此桌面 GUI、Cloudflare Tunnel 与现有配置保存逻辑不需要因 MCP Server 重构而改变。
+网络提供层与 MCP Server 本身完全解耦。Provider 只负责把本机
+`http://127.0.0.1:8234` 变成公网 HTTPS 地址；MCP 协议、OAuth、Workspace
+权限逻辑不需要知道当前使用的是 Cloudflare、FRP 还是其他方案。
+
+网络层详细设计见 `docs/NETWORK_PROVIDERS.md`。
 
 ## 4. 为什么 outputSchema 必须保留
 

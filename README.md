@@ -6,11 +6,17 @@
 
 - PySide6 桌面版
 - CLI 启动方式
-- Cloudflare Quick Tunnel 测试模式
-- Cloudflare Named Tunnel 固定域名模式
+- Cloudflare Quick / Named Tunnel
+- FRP
+- ngrok
+- Tailscale Funnel
+- 自定义公网 URL
 - macOS / Windows / Linux 桌面打包支持
 
-推荐日常使用 **Cloudflare Named Tunnel + 固定域名**。这样 MCP 地址不会随着程序重启发生变化。
+网络层已经模块化。Cloudflare 仍然是开箱即用的默认方案；如果你有自己的
+VPS/FRP、ngrok、Tailscale，或者已经有公网反向代理，也可以直接切换 Provider。
+
+详细说明见 `docs/NETWORK_PROVIDERS.md`。
 
 当前仓库内置自研 `coding-tools-mcp 1.0.0` 服务端，不再把外部
 `coding-tools-mcp` wheel 作为运行时依赖。服务端源码位于：
@@ -31,7 +37,7 @@ coding_tools_mcp/
 1. Cloudflare `Networking -> Tunnels` 创建一个 Named Tunnel。
 2. Tunnel 的 `Routes -> Add route -> Published application` 添加 `mcp.example.com -> http://localhost:8234`。
 3. Tunnel `Overview -> Add a replica`，复制安装命令中的 `eyJ...` Tunnel Token。
-4. 打开桌面程序，填写 Workspace、OAuth 参数、`Public URL = https://mcp.example.com` 和 Tunnel Token。
+4. 打开桌面程序，填写 Workspace、OAuth Password、`Public URL = https://mcp.example.com` 和 Tunnel Token。
 5. 启动后，在 MCP Client 中添加 `https://mcp.example.com/mcp`。
 
 参数速查：
@@ -39,12 +45,12 @@ coding_tools_mcp/
 | 参数 | 固定域名模式怎么填 | 是否来自 Cloudflare |
 |------|--------------------|---------------------|
 | Workspace | 你的代码项目目录 | 否 |
-| Client ID | 自定义固定值，例如 `coding-tools-desktop` | 否 |
-| Client Secret | 自己随机生成的强 Secret | 否 |
 | Password | OAuth 授权页登录密码 | 否 |
 | Public URL | `https://mcp.example.com` | 域名在 Cloudflare 中配置 |
 | Tunnel Token | `Add a replica` 命令里的 `eyJ...` | 是 |
 | MCP Client URL | `https://mcp.example.com/mcp` | 由 Public URL 派生 |
+
+普通用户不需要填写 `Client ID / Client Secret`。ChatGPT 等支持 RFC 7591 Dynamic Client Registration 的客户端会通过 `/oauth/register` 自动获得自己的 OAuth Client ID。桌面界面的“高级 OAuth 设置（预注册 Client）”仅用于兼容不支持 DCR 的客户端。
 
 ---
 
@@ -324,59 +330,48 @@ MCP 的文件读取、搜索、代码修改和命令执行都会限制在这个 
 
 不要直接选择整个用户主目录或磁盘根目录。
 
-### 6.2 Client ID
+### 6.2 Password
 
-这里的 Client ID 是：
+这是普通用户唯一需要填写的 MCP OAuth 配置项，用于 OAuth 授权页面登录。
 
-```text
-coding-tools-mcp 自己的 OAuth 预注册 Client ID
-```
-
-它不是 Cloudflare Client ID，也不需要去 Cloudflare Dashboard 获取。
-
-可以自己设置一个固定值，例如：
-
-```text
-coding-tools-desktop
-```
-
-也可以随机生成：
-
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(24))"
-```
-
-建议生成后长期保持不变。
-
-### 6.3 Client Secret
-
-这是与上面的 Client ID 配套的 OAuth Secret，同样不是 Cloudflare 的 Secret。
-
-建议随机生成：
-
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-不要使用 `123456`、`password`、`admin` 等弱密码。
-
-当前 `coding-tools-mcp` 同时支持 RFC 7591 Dynamic Client Registration。支持 DCR 的 MCP Client 会通过：
+当前 `coding-tools-mcp` 默认使用 RFC 7591 Dynamic Client Registration。支持 DCR 的 MCP Client 会通过：
 
 ```text
 /oauth/register
 ```
 
-动态注册自己的 Client，因此桌面界面里的 Client ID / Client Secret 主要作为服务端预注册 OAuth Client 配置保留。
-
-### 6.4 Password
-
-这是 OAuth 授权页面使用的登录密码。
+动态注册自己的 Client ID，因此不需要从 Cloudflare 或其他网络 Provider 获取 Client ID。
 
 当 MCP Client 第一次要求授权时，浏览器会打开类似：
 
 ```text
 https://mcp.example.com/oauth/authorize
 ```
+
+### 6.3 高级 OAuth：预注册 Client
+
+只有目标 MCP Client 不支持 Dynamic Client Registration 时，才需要在桌面界面打开：
+
+```text
+高级 OAuth 设置（预注册 Client）
+```
+
+然后自行填写：
+
+```text
+Client ID
+Client Secret（可选）
+```
+
+这些值属于 `coding-tools-mcp` 自己的 OAuth 配置，**不是 Cloudflare Tunnel Connector ID，也不是任何网络 Provider 的 Client ID**。
+
+Client ID 可以自行指定，例如：
+
+```text
+coding-tools-desktop
+```
+
+也可以随机生成。Client Secret 仅在需要 confidential OAuth client 时填写。
 
 授权页面要求输入 Password。
 
@@ -388,7 +383,7 @@ python -c "import secrets; print(secrets.token_urlsafe(24))"
 
 这个密码应长期保持不变。
 
-### 6.5 Public URL
+### 6.4 Public URL
 
 这是 MCP 对外使用的固定基础域名。
 
@@ -418,7 +413,7 @@ https://mcp.example.com/mcp
 Public URL = 留空
 ```
 
-### 6.6 Tunnel Token
+### 6.5 Tunnel Token
 
 只有固定域名模式需要填写。
 
@@ -454,7 +449,7 @@ Tunnel Token
 
 程序会阻止只有固定 URL、却没有 Named Tunnel Token 的错误配置。
 
-### 6.7 保存 Secret
+### 6.6 保存 Secret
 
 桌面端可以保存：
 
@@ -516,12 +511,6 @@ http://localhost:8234
 Workspace:
 /Users/muyi/Documents/Project/demo
 
-Client ID:
-coding-tools-desktop
-
-Client Secret:
-<随机生成的 Secret>
-
 Password:
 <随机生成的 OAuth 登录密码>
 
@@ -562,24 +551,63 @@ CLI 模式可以使用项目根目录中的 `.env`。
 cp .env.example .env
 ```
 
-固定域名模式示例：
+Cloudflare Named Tunnel 示例：
 
 ```dotenv
-CODING_TOOLS_MCP_OAUTH_CLIENT_ID="coding-tools-desktop"
-CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET="请替换为随机 Secret"
 CODING_TOOLS_MCP_OAUTH_PASSWORD="请替换为随机登录密码"
+CODING_TOOLS_MCP_NETWORK_PROVIDER="cloudflare"
 CODING_TOOLS_MCP_SERVER_URL="https://mcp.example.com"
 CODING_TOOLS_MCP_TUNNEL_TOKEN="eyJ......"
 ```
 
-Quick Tunnel 模式：
+Cloudflare Quick Tunnel：
 
 ```dotenv
-CODING_TOOLS_MCP_OAUTH_CLIENT_ID="coding-tools-desktop"
-CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET="请替换为随机 Secret"
 CODING_TOOLS_MCP_OAUTH_PASSWORD="请替换为随机登录密码"
+CODING_TOOLS_MCP_NETWORK_PROVIDER="cloudflare"
 CODING_TOOLS_MCP_SERVER_URL=""
 CODING_TOOLS_MCP_TUNNEL_TOKEN=""
+```
+
+默认不需要设置：
+
+```dotenv
+CODING_TOOLS_MCP_OAUTH_CLIENT_ID
+CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET
+```
+
+只有需要预注册 OAuth Client 时才设置它们。
+
+FRP：
+
+```dotenv
+CODING_TOOLS_MCP_NETWORK_PROVIDER="frp"
+CODING_TOOLS_MCP_SERVER_URL="https://mcp.example.com"
+CODING_TOOLS_MCP_FRPC="/path/to/frpc"
+CODING_TOOLS_MCP_FRP_CONFIG="/path/to/frpc.toml"
+```
+
+ngrok：
+
+```dotenv
+CODING_TOOLS_MCP_NETWORK_PROVIDER="ngrok"
+CODING_TOOLS_MCP_SERVER_URL=""
+CODING_TOOLS_MCP_NGROK="/path/to/ngrok"
+CODING_TOOLS_MCP_NGROK_AUTHTOKEN=""
+```
+
+Tailscale Funnel：
+
+```dotenv
+CODING_TOOLS_MCP_NETWORK_PROVIDER="tailscale"
+CODING_TOOLS_MCP_TAILSCALE="/path/to/tailscale"
+```
+
+自定义公网 URL：
+
+```dotenv
+CODING_TOOLS_MCP_NETWORK_PROVIDER="external"
+CODING_TOOLS_MCP_SERVER_URL="https://mcp.example.com"
 ```
 
 不要提交 `.env`，它应始终存在于 `.gitignore` 中。
@@ -594,23 +622,20 @@ CODING_TOOLS_MCP_TUNNEL_TOKEN=""
 python -m coding_tools_launcher.cli /path/to/workspace
 ```
 
-它会读取 `.env`，并根据以下参数自动选择模式：
+它会读取 `.env`，并根据：
 
 ```text
-CODING_TOOLS_MCP_SERVER_URL
-CODING_TOOLS_MCP_TUNNEL_TOKEN
+CODING_TOOLS_MCP_NETWORK_PROVIDER
 ```
 
-两者为空：
+选择网络方案：
 
 ```text
-Quick Tunnel
-```
-
-两者都有值：
-
-```text
-Named Tunnel
+cloudflare
+frp
+ngrok
+tailscale
+external
 ```
 
 项目根目录的 `start.py` 当前保留为原始 Quick Tunnel 兼容启动脚本，用于已经验证可工作的旧流程。

@@ -8,6 +8,7 @@ from PySide6.QtGui import QCloseEvent, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -19,14 +20,17 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpacerItem,
+    QStackedWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from ..config import LaunchConfig
+from ..config import LaunchConfig, NetworkConfig
+from ..executables import resolve_executable
 from ..launcher import MCPLauncher
 from ..user_settings import load_settings, save_settings
+from .executable_selector import ExecutableSelector
 
 
 class Bridge(QObject):
@@ -34,6 +38,8 @@ class Bridge(QObject):
     started = Signal(object)
     failed = Signal(str)
     stopped = Signal()
+    executable_detected = Signal(str, object)
+    executable_detection_failed = Signal(str, str)
 
 
 class MainWindow(QMainWindow):
@@ -51,9 +57,14 @@ class MainWindow(QMainWindow):
         self.bridge.started.connect(self._on_started)
         self.bridge.failed.connect(self._on_failed)
         self.bridge.stopped.connect(self._on_stopped)
+        self.bridge.executable_detected.connect(self._on_executable_detected)
+        self.bridge.executable_detection_failed.connect(
+            self._on_executable_detection_failed
+        )
 
         self.launcher = MCPLauncher(log=self.bridge.log.emit)
         self._busy = False
+        self._executable_selectors: dict[str, ExecutableSelector] = {}
         self._build_ui()
         self._restore_settings()
 
@@ -97,8 +108,10 @@ class MainWindow(QMainWindow):
 
         def add_config_row(
             label_text: str,
-            field: QLineEdit,
+            field: QWidget,
             trailing: QWidget | None = None,
+            *,
+            target_layout: QVBoxLayout | None = None,
         ) -> None:
             """Use the same layout model as the Public MCP URL row below.
 
@@ -139,9 +152,14 @@ class MainWindow(QMainWindow):
             if trailing is not None:
                 row.addWidget(trailing)
 
-            form_layout.addLayout(row)
+            (target_layout or form_layout).addLayout(row)
 
-        def add_secret_row(label_text: str, field: QLineEdit) -> None:
+        def add_secret_row(
+            label_text: str,
+            field: QLineEdit,
+            *,
+            target_layout: QVBoxLayout | None = None,
+        ) -> None:
             """Add a masked input with a click-to-show eye button.
 
             The button changes only the visual echo mode. The field's actual
@@ -171,7 +189,12 @@ class MainWindow(QMainWindow):
                 )
 
             visibility_button.toggled.connect(toggle_visibility)
-            add_config_row(label_text, field, visibility_button)
+            add_config_row(
+                label_text,
+                field,
+                visibility_button,
+                target_layout=target_layout,
+            )
 
         self.workspace_edit = QLineEdit()
         self.workspace_edit.setPlaceholderText("选择需要授权给 MCP 的代码目录")
@@ -180,35 +203,176 @@ class MainWindow(QMainWindow):
         choose_button.clicked.connect(self._choose_workspace)
         add_config_row("Workspace", self.workspace_edit, choose_button)
 
-        self.client_id_edit = QLineEdit()
-        self.client_id_edit.setPlaceholderText("MCP OAuth Client ID（自定义固定值，不是 Cloudflare 凭据）")
-        add_config_row("Client ID", self.client_id_edit)
-
-        self.client_secret_edit = QLineEdit()
-        self.client_secret_edit.setPlaceholderText("MCP OAuth Client Secret（建议随机生成）")
-        add_secret_row("Client Secret", self.client_secret_edit)
-
         self.password_edit = QLineEdit()
-        self.password_edit.setPlaceholderText("MCP OAuth 登录密码")
+        self.password_edit.setPlaceholderText("MCP OAuth 授权页登录密码")
         add_secret_row("Password", self.password_edit)
 
-        self.server_url_edit = QLineEdit()
-        self.server_url_edit.setPlaceholderText(
-            "可选，例如 https://mcp.example.com；留空使用 Quick Tunnel"
+        self.advanced_oauth_toggle = QCheckBox("高级 OAuth 设置（预注册 Client）")
+        self.advanced_oauth_toggle.setToolTip(
+            "默认关闭并使用 Dynamic Client Registration；只有不支持 DCR 的客户端才需要预注册 Client。"
         )
-        add_config_row("Public URL", self.server_url_edit)
+        form_layout.addWidget(self.advanced_oauth_toggle)
 
-        self.tunnel_token_edit = QLineEdit()
-        self.tunnel_token_edit.setPlaceholderText(
-            "固定 Public URL 时必填：Cloudflare Tunnel 安装命令中的 --token"
+        self.advanced_oauth_panel = QWidget()
+        advanced_oauth_layout = QVBoxLayout(self.advanced_oauth_panel)
+        advanced_oauth_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_oauth_layout.setSpacing(10)
+
+        self.client_id_edit = QLineEdit()
+        self.client_id_edit.setPlaceholderText("自定义 MCP OAuth Client ID；不是 Cloudflare Connector ID")
+        add_config_row("Client ID", self.client_id_edit, target_layout=advanced_oauth_layout)
+
+        self.client_secret_edit = QLineEdit()
+        self.client_secret_edit.setPlaceholderText("可选；需要 confidential OAuth client 时填写")
+        add_secret_row(
+            "Client Secret",
+            self.client_secret_edit,
+            target_layout=advanced_oauth_layout,
         )
-        add_secret_row("Tunnel Token", self.tunnel_token_edit)
+        oauth_note = QLabel(
+            "ChatGPT 默认通过 /oauth/register 动态生成 Client ID。这里的 Client ID/Secret 仅用于手动预注册 OAuth Client。"
+        )
+        oauth_note.setWordWrap(True)
+        oauth_note.setStyleSheet("color: palette(mid); font-size: 12px;")
+        advanced_oauth_layout.addWidget(oauth_note)
+        self.advanced_oauth_panel.setVisible(False)
+        form_layout.addWidget(self.advanced_oauth_panel)
+        self.advanced_oauth_toggle.toggled.connect(self._on_advanced_oauth_toggled)
 
-        self.remember_secrets = QCheckBox("在这台电脑上保存 Client Secret 和 Password")
+        self.network_provider_combo = QComboBox()
+        for label, key in (
+            ("Cloudflare Tunnel", "cloudflare"),
+            ("FRP", "frp"),
+            ("ngrok", "ngrok"),
+            ("Tailscale Funnel", "tailscale"),
+            ("自定义公网 URL", "external"),
+        ):
+            self.network_provider_combo.addItem(label, key)
+        add_config_row("网络方案", self.network_provider_combo)
+
+        self.network_stack = QStackedWidget()
+        self.network_stack.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        form_layout.addWidget(self.network_stack)
+        self._provider_page_indexes: dict[str, int] = {}
+
+        def provider_page(provider: str) -> tuple[QWidget, QVBoxLayout]:
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            layout.setContentsMargins(0, 2, 0, 0)
+            layout.setSpacing(10)
+            self._provider_page_indexes[provider] = self.network_stack.addWidget(page)
+            return page, layout
+
+        def add_note(layout: QVBoxLayout, text: str) -> None:
+            note = QLabel(text)
+            note.setWordWrap(True)
+            note.setStyleSheet("color: palette(mid); font-size: 12px;")
+            layout.addWidget(note)
+
+        _, cloudflare_layout = provider_page("cloudflare")
+        self.cf_public_url_edit = QLineEdit()
+        self.cf_public_url_edit.setPlaceholderText(
+            "留空使用 Quick Tunnel；固定域名例如 https://mcp.example.com"
+        )
+        add_config_row(
+            "Public URL",
+            self.cf_public_url_edit,
+            target_layout=cloudflare_layout,
+        )
+        self.cf_tunnel_token_edit = QLineEdit()
+        self.cf_tunnel_token_edit.setPlaceholderText(
+            "固定域名时填写 Cloudflare Named Tunnel --token"
+        )
+        add_secret_row(
+            "Tunnel Token",
+            self.cf_tunnel_token_edit,
+            target_layout=cloudflare_layout,
+        )
+        add_note(cloudflare_layout, "Public URL 与 Tunnel Token 都留空时自动创建 Quick Tunnel。")
+
+        _, frp_layout = provider_page("frp")
+        self.frp_public_url_edit = QLineEdit()
+        self.frp_public_url_edit.setPlaceholderText("例如 https://mcp.example.com")
+        add_config_row("Public URL", self.frp_public_url_edit, target_layout=frp_layout)
+        self.frp_executable_selector = ExecutableSelector("frpc")
+        self.frp_executable_edit = self.frp_executable_selector.path_edit
+        add_config_row(
+            "frpc",
+            self.frp_executable_selector,
+            target_layout=frp_layout,
+        )
+        self._register_executable_selector("frpc", self.frp_executable_selector)
+        self.frp_config_edit = QLineEdit()
+        self.frp_config_edit.setPlaceholderText("frpc.toml / frpc.yaml 配置文件")
+        frp_choose_button = QPushButton("选择…")
+        frp_choose_button.setMinimumWidth(86)
+        frp_choose_button.clicked.connect(self._choose_frp_config)
+        add_config_row(
+            "FRP Config",
+            self.frp_config_edit,
+            frp_choose_button,
+            target_layout=frp_layout,
+        )
+        add_note(
+            frp_layout,
+            "FRP 服务端和 HTTPS 域名由你自行管理；frpc 配置需把公网入口转发到本机 MCP 端口。",
+        )
+
+        _, ngrok_layout = provider_page("ngrok")
+        self.ngrok_public_url_edit = QLineEdit()
+        self.ngrok_public_url_edit.setPlaceholderText("可选：保留域名；留空使用 ngrok 动态 HTTPS URL")
+        add_config_row("Public URL", self.ngrok_public_url_edit, target_layout=ngrok_layout)
+        self.ngrok_executable_selector = ExecutableSelector("ngrok")
+        self.ngrok_executable_edit = self.ngrok_executable_selector.path_edit
+        add_config_row(
+            "ngrok",
+            self.ngrok_executable_selector,
+            target_layout=ngrok_layout,
+        )
+        self._register_executable_selector("ngrok", self.ngrok_executable_selector)
+        self.ngrok_authtoken_edit = QLineEdit()
+        self.ngrok_authtoken_edit.setPlaceholderText("可选：ngrok authtoken；已配置客户端时可留空")
+        add_secret_row("Auth Token", self.ngrok_authtoken_edit, target_layout=ngrok_layout)
+        add_note(ngrok_layout, "使用 ngrok Agent 建立 HTTPS Endpoint，动态 URL 会自动识别。")
+
+        _, tailscale_layout = provider_page("tailscale")
+        self.tailscale_executable_selector = ExecutableSelector("Tailscale")
+        self.tailscale_executable_edit = self.tailscale_executable_selector.path_edit
+        add_config_row(
+            "tailscale",
+            self.tailscale_executable_selector,
+            target_layout=tailscale_layout,
+        )
+        self._register_executable_selector(
+            "tailscale",
+            self.tailscale_executable_selector,
+        )
+        add_note(
+            tailscale_layout,
+            "使用 Tailscale Funnel HTTPS/443。首次启用可能需要在浏览器批准 Funnel 权限。",
+        )
+
+        _, external_layout = provider_page("external")
+        self.external_public_url_edit = QLineEdit()
+        self.external_public_url_edit.setPlaceholderText("例如 https://mcp.example.com")
+        add_config_row("Public URL", self.external_public_url_edit, target_layout=external_layout)
+        add_note(
+            external_layout,
+            "程序不启动隧道进程；你需要自行使用 VPS/Nginx/Caddy/SSH Tunnel 等把该 URL 转发到本机 MCP。",
+        )
+
+        self.network_provider_combo.currentIndexChanged.connect(
+            self._on_network_provider_changed
+        )
+
+        self.remember_secrets = QCheckBox("在这台电脑上保存敏感凭据")
         self.remember_secrets.setChecked(True)
         form_layout.addWidget(self.remember_secrets)
         secret_note = QLabel(
-            "当前版本保存在用户配置目录并限制文件权限；后续可接入 macOS Keychain。"
+            "敏感凭据保存在用户配置目录并限制文件权限；关闭后不会持久化 OAuth/Cloudflare/ngrok Secret。"
         )
         secret_note.setWordWrap(True)
         secret_note.setStyleSheet("color: palette(mid); font-size: 12px;")
@@ -216,6 +380,7 @@ class MainWindow(QMainWindow):
 
         # 连接设置属于静态配置区域，不应该随着窗口高度变化被压缩。
         # 固定为自身 sizeHint 高度，把纵向伸缩空间全部留给日志区域。
+        self._form_card = form_card
         form_layout.activate()
         form_card.setFixedHeight(form_card.sizeHint().height())
         outer.addWidget(form_card, 0)
@@ -228,7 +393,7 @@ class MainWindow(QMainWindow):
 
         status_top = QHBoxLayout()
         self.status_label = QLabel("●  Stopped")
-        self.status_label.setStyleSheet("color: palette(mid);")
+        self.status_label.setStyleSheet("color: #F56C6C;")
         self.mode_label = QLabel("Quick Tunnel")
         self.mode_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.mode_label.setStyleSheet("color: palette(mid);")
@@ -290,14 +455,156 @@ class MainWindow(QMainWindow):
         if path:
             self.workspace_edit.setText(path)
 
+    def _refresh_form_card_height(self) -> None:
+        if not hasattr(self, "_form_card"):
+            return
+        layout = self._form_card.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        self._form_card.setFixedHeight(self._form_card.sizeHint().height())
+
+    def _on_advanced_oauth_toggled(self, enabled: bool) -> None:
+        self.advanced_oauth_panel.setVisible(enabled)
+        QTimer.singleShot(0, self._refresh_form_card_height)
+
+    def _choose_frp_config(self) -> None:
+        current = self.frp_config_edit.text().strip()
+        initial = str(Path(current).expanduser().parent) if current else str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 frpc 配置文件",
+            initial,
+            "FRP Config (*.toml *.yaml *.yml *.json);;All Files (*)",
+        )
+        if path:
+            self.frp_config_edit.setText(path)
+
+    def _register_executable_selector(
+        self,
+        key: str,
+        selector: ExecutableSelector,
+    ) -> None:
+        self._executable_selectors[key] = selector
+        selector.detection_requested.connect(
+            lambda key=key: self._detect_executable_async(key, auto_only=True)
+        )
+        selector.selection_requested.connect(
+            lambda key=key: self._choose_executable(key)
+        )
+
+    def _choose_executable(self, key: str) -> None:
+        selector = self._executable_selectors[key]
+        current = selector.configured_path()
+        initial = (
+            str(Path(current).expanduser().parent)
+            if current
+            else str(Path.home())
+        )
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            f"选择 {selector.display_name} 客户端",
+            initial,
+            "All Files (*)",
+        )
+        if not path:
+            return
+        selector.set_configured_path(path)
+        self._detect_executable_async(key, configured=path)
+
+    def _detect_executable_async(
+        self,
+        key: str,
+        *,
+        configured: str = "",
+        auto_only: bool = False,
+    ) -> None:
+        selector = self._executable_selectors[key]
+        selector.set_detecting()
+
+        def worker() -> None:
+            try:
+                candidate = resolve_executable(
+                    key,
+                    configured=configured,
+                    auto_only=auto_only,
+                )
+            except Exception as exc:
+                self.bridge.executable_detection_failed.emit(key, str(exc))
+            else:
+                self.bridge.executable_detected.emit(key, candidate)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_executable_detected(self, key: str, candidate: object) -> None:
+        selector = self._executable_selectors.get(key)
+        if selector is None:
+            return
+        selector.set_candidate(candidate)
+        self._refresh_form_card_height()
+
+    def _on_executable_detection_failed(self, key: str, message: str) -> None:
+        selector = self._executable_selectors.get(key)
+        if selector is None:
+            return
+        selector.set_error(message)
+        self._refresh_form_card_height()
+
+    def _selected_network_provider(self) -> str:
+        return str(self.network_provider_combo.currentData() or "cloudflare")
+
+    def _on_network_provider_changed(self, _index: int | None = None) -> None:
+        provider = self._selected_network_provider()
+        index = self._provider_page_indexes.get(provider, 0)
+        self.network_stack.setCurrentIndex(index)
+        if hasattr(self, "mode_label") and not self.launcher.is_running:
+            self.mode_label.setText(self.network_provider_combo.currentText())
+        QTimer.singleShot(0, self._refresh_form_card_height)
+
+    def _network_config_from_form(self) -> NetworkConfig:
+        provider = self._selected_network_provider()
+        if provider == "cloudflare":
+            return NetworkConfig(
+                provider=provider,
+                public_url=self.cf_public_url_edit.text(),
+                options={"tunnel_token": self.cf_tunnel_token_edit.text()},
+            )
+        if provider == "frp":
+            return NetworkConfig(
+                provider=provider,
+                public_url=self.frp_public_url_edit.text(),
+                options={
+                    "executable": self.frp_executable_edit.text(),
+                    "config_file": self.frp_config_edit.text(),
+                },
+            )
+        if provider == "ngrok":
+            return NetworkConfig(
+                provider=provider,
+                public_url=self.ngrok_public_url_edit.text(),
+                options={
+                    "executable": self.ngrok_executable_edit.text(),
+                    "authtoken": self.ngrok_authtoken_edit.text(),
+                },
+            )
+        if provider == "tailscale":
+            return NetworkConfig(
+                provider=provider,
+                options={"executable": self.tailscale_executable_edit.text()},
+            )
+        return NetworkConfig(
+            provider="external",
+            public_url=self.external_public_url_edit.text(),
+        )
+
     def _config_from_form(self) -> LaunchConfig:
+        advanced_oauth = self.advanced_oauth_toggle.isChecked()
         return LaunchConfig(
             workspace=Path(self.workspace_edit.text().strip()),
-            oauth_client_id=self.client_id_edit.text(),
-            oauth_client_secret=self.client_secret_edit.text(),
             oauth_password=self.password_edit.text(),
-            server_url=self.server_url_edit.text(),
-            tunnel_token=self.tunnel_token_edit.text(),
+            oauth_client_id=self.client_id_edit.text() if advanced_oauth else "",
+            oauth_client_secret=self.client_secret_edit.text() if advanced_oauth else "",
+            network=self._network_config_from_form(),
         ).validated()
 
     def _toggle_service(self) -> None:
@@ -320,6 +627,7 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(False)
         self.start_button.setText("正在启动…")
         self.status_label.setText("●  Starting")
+        self.status_label.setStyleSheet("color: palette(mid);")
 
         def worker() -> None:
             try:
@@ -348,6 +656,7 @@ class MainWindow(QMainWindow):
         self.public_url_edit.setText(public_url)
         self.mode_label.setText(mode)
         self.status_label.setText("●  Running")
+        self.status_label.setStyleSheet("color: #67C23A;")
         self.start_button.setText("停止 MCP")
         self.start_button.setEnabled(True)
         self._busy = False
@@ -357,6 +666,7 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(True)
         self.start_button.setText("启动 MCP")
         self.status_label.setText("●  Error")
+        self.status_label.setStyleSheet("color: #F56C6C;")
         QMessageBox.critical(self, "启动失败", message)
 
     def _on_stopped(self) -> None:
@@ -364,6 +674,7 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(True)
         self.start_button.setText("启动 MCP")
         self.status_label.setText("●  Stopped")
+        self.status_label.setStyleSheet("color: #F56C6C;")
         self.public_url_edit.clear()
 
     def _poll_health(self) -> None:
@@ -389,26 +700,93 @@ class MainWindow(QMainWindow):
         data = load_settings()
         self.workspace_edit.setText(str(data.get("workspace", "")))
         self.client_id_edit.setText(str(data.get("client_id", "")))
-        self.server_url_edit.setText(str(data.get("server_url", "")))
+        self.advanced_oauth_toggle.setChecked(
+            bool(data.get("advanced_oauth_enabled", False))
+        )
+
+        raw_network = data.get("network")
+        network = raw_network if isinstance(raw_network, dict) else {}
+        provider = str(data.get("network_provider") or network.get("provider") or "cloudflare")
+        provider_index = self.network_provider_combo.findData(provider)
+        self.network_provider_combo.setCurrentIndex(max(0, provider_index))
+
+        cloudflare = network.get("cloudflare") if isinstance(network.get("cloudflare"), dict) else {}
+        frp = network.get("frp") if isinstance(network.get("frp"), dict) else {}
+        ngrok = network.get("ngrok") if isinstance(network.get("ngrok"), dict) else {}
+        tailscale = network.get("tailscale") if isinstance(network.get("tailscale"), dict) else {}
+        external = network.get("external") if isinstance(network.get("external"), dict) else {}
+
+        self.cf_public_url_edit.setText(
+            str(cloudflare.get("public_url") or data.get("server_url", ""))
+        )
+        self.frp_public_url_edit.setText(str(frp.get("public_url", "")))
+        self.frp_executable_selector.set_configured_path(
+            str(frp.get("executable", ""))
+        )
+        self.frp_config_edit.setText(str(frp.get("config_file", "")))
+        self.ngrok_public_url_edit.setText(str(ngrok.get("public_url", "")))
+        self.ngrok_executable_selector.set_configured_path(
+            str(ngrok.get("executable", ""))
+        )
+        self.tailscale_executable_selector.set_configured_path(
+            str(tailscale.get("executable", ""))
+        )
+        self.external_public_url_edit.setText(str(external.get("public_url", "")))
+
         remember = bool(data.get("remember_secrets", True))
         self.remember_secrets.setChecked(remember)
         if remember:
             self.client_secret_edit.setText(str(data.get("client_secret", "")))
             self.password_edit.setText(str(data.get("password", "")))
-            self.tunnel_token_edit.setText(str(data.get("tunnel_token", "")))
+            self.cf_tunnel_token_edit.setText(
+                str(cloudflare.get("tunnel_token") or data.get("tunnel_token", ""))
+            )
+            self.ngrok_authtoken_edit.setText(str(ngrok.get("authtoken", "")))
+        self._on_network_provider_changed()
+        self._on_advanced_oauth_toggled(self.advanced_oauth_toggle.isChecked())
 
     def _save_settings(self) -> None:
         remember = self.remember_secrets.isChecked()
-        data: dict[str, object] = {
-            "workspace": self.workspace_edit.text().strip(),
-            "client_id": self.client_id_edit.text().strip(),
-            "server_url": self.server_url_edit.text().strip(),
-            "remember_secrets": remember,
+        advanced_oauth = self.advanced_oauth_toggle.isChecked()
+        cloudflare: dict[str, object] = {
+            "public_url": self.cf_public_url_edit.text().strip(),
+        }
+        ngrok: dict[str, object] = {
+            "public_url": self.ngrok_public_url_edit.text().strip(),
+            "executable": self.ngrok_executable_edit.text().strip(),
         }
         if remember:
-            data["client_secret"] = self.client_secret_edit.text()
+            cloudflare["tunnel_token"] = self.cf_tunnel_token_edit.text()
+            ngrok["authtoken"] = self.ngrok_authtoken_edit.text()
+
+        data: dict[str, object] = {
+            "workspace": self.workspace_edit.text().strip(),
+            "advanced_oauth_enabled": advanced_oauth,
+            "network_provider": self._selected_network_provider(),
+            "network": {
+                "provider": self._selected_network_provider(),
+                "cloudflare": cloudflare,
+                "frp": {
+                    "public_url": self.frp_public_url_edit.text().strip(),
+                    "executable": self.frp_executable_edit.text().strip(),
+                    "config_file": self.frp_config_edit.text().strip(),
+                },
+                "ngrok": ngrok,
+                "tailscale": {
+                    "executable": self.tailscale_executable_edit.text().strip(),
+                },
+                "external": {
+                    "public_url": self.external_public_url_edit.text().strip(),
+                },
+            },
+            "remember_secrets": remember,
+        }
+        if advanced_oauth:
+            data["client_id"] = self.client_id_edit.text().strip()
+        if remember:
             data["password"] = self.password_edit.text()
-            data["tunnel_token"] = self.tunnel_token_edit.text()
+            if advanced_oauth:
+                data["client_secret"] = self.client_secret_edit.text()
         save_settings(data)
 
     def closeEvent(self, event: QCloseEvent) -> None:

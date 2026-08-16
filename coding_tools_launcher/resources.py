@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import platform
-import shutil
 import sys
 from pathlib import Path
 
@@ -34,9 +33,15 @@ def platform_tag() -> str:
     return f"{names[system]}-{arch}"
 
 
+def bundled_executable_path(product: str, executable_name: str) -> Path:
+    filename = executable_name
+    if os.name == "nt" and not filename.lower().endswith(".exe"):
+        filename += ".exe"
+    return resource_root() / "vendor" / product / platform_tag() / filename
+
+
 def bundled_cloudflared_path() -> Path:
-    filename = "cloudflared.exe" if os.name == "nt" else "cloudflared"
-    return resource_root() / "vendor" / "cloudflared" / platform_tag() / filename
+    return bundled_executable_path("cloudflared", "cloudflared")
 
 
 def resolve_cloudflared() -> Path:
@@ -50,6 +55,8 @@ def resolve_cloudflared() -> Path:
         raise RuntimeError(
             "应用包中缺少 cloudflared。请重新安装完整版本的 Coding Tools MCP。"
         )
+
+    import shutil
 
     executable = shutil.which("cloudflared")
     if executable:

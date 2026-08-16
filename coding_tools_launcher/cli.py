@@ -14,7 +14,7 @@ DEFAULT_ENV_FILE = PROJECT_ROOT / ".env"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="启动 coding-tools-mcp + Cloudflare Quick Tunnel"
+        description="启动 coding-tools-mcp，并通过配置的 Network Provider 提供公网 MCP 地址"
     )
     parser.add_argument(
         "workspace",
@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
         "--env-file",
         type=Path,
         default=DEFAULT_ENV_FILE,
-        help=f"OAuth 配置文件，默认: {DEFAULT_ENV_FILE}",
+        help=f"OAuth / Network Provider 配置文件，默认: {DEFAULT_ENV_FILE}",
     )
     return parser.parse_args()
 
@@ -68,10 +68,10 @@ def main() -> int:
         print("=" * 70)
         print(f"Workspace : {info.workspace}")
         print(f"Local MCP : {info.local_mcp_url}")
-        print(f"Tunnel    : {info.tunnel_url}")
+        print(f"Network   : {info.url_mode}")
+        print(f"Public URL: {info.public_base_url}")
         print(f"Public MCP: {info.public_mcp_url}")
         print(f"OAuth URL : {info.public_base_url}")
-        print(f"URL Mode  : {info.url_mode}")
         print()
         print("OpenAI MCP Server 地址:")
         print(f"  {info.public_mcp_url}")

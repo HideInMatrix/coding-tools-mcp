@@ -4,9 +4,9 @@ import os
 import threading
 import time
 
-from .cloudflared import CloudflaredTunnel
 from .config import LaunchConfig, LaunchInfo
 from .mcp_process import MCPServerProcess
+from .network import NetworkProvider, create_network_provider
 from .oauth_persistence import (
     OAUTH_REGISTRY_FILE_ENV,
     OAUTH_TOKEN_SECRET_ENV,
@@ -19,7 +19,7 @@ class MCPLauncher:
     def __init__(self, log: LogCallback | None = None):
         self._log_callback = log or (lambda _message: None)
         self._lock = threading.RLock()
-        self._tunnel = CloudflaredTunnel(self._log)
+        self._provider: NetworkProvider | None = None
         self._mcp = MCPServerProcess(self._log)
         self._info: LaunchInfo | None = None
         self._stopping = False
@@ -38,12 +38,12 @@ class MCPLauncher:
 
     @property
     def is_running(self) -> bool:
-        tunnel = self._tunnel.process
+        provider = self._provider
         mcp = self._mcp.process
         return bool(
-            tunnel
+            provider
             and mcp
-            and tunnel.poll() is None
+            and provider.is_running
             and mcp.poll() is None
             and not self._stopping
         )
@@ -57,26 +57,31 @@ class MCPLauncher:
             self._exit_reason = ""
             check_port_available(config.host, config.port)
             try:
-                tunnel_url = self._tunnel.start(
-                    config.host,
-                    config.port,
-                    public_url=config.server_url,
-                    tunnel_token=config.tunnel_token,
+                self._provider = create_network_provider(
+                    config.network.provider,
+                    self._log,
                 )
-                public_base_url = config.server_url or tunnel_url
-                url_mode = "Named Tunnel" if config.server_url else "Quick Tunnel"
+                network_info = self._provider.start(config.host, config.port, config.network)
+                public_base_url = network_info.public_base_url
                 oauth_persistence = prepare_oauth_persistence(public_base_url)
                 env = os.environ.copy()
                 env.update(
                     {
-                        "CODING_TOOLS_MCP_OAUTH_CLIENT_ID": config.oauth_client_id,
-                        "CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET": config.oauth_client_secret,
                         "CODING_TOOLS_MCP_OAUTH_PASSWORD": config.oauth_password,
                         "CODING_TOOLS_MCP_SERVER_URL": public_base_url,
                         OAUTH_TOKEN_SECRET_ENV: oauth_persistence.token_secret_hex,
                         OAUTH_REGISTRY_FILE_ENV: str(oauth_persistence.registry_file),
                     }
                 )
+                if config.oauth_client_id:
+                    env["CODING_TOOLS_MCP_OAUTH_CLIENT_ID"] = config.oauth_client_id
+                    if config.oauth_client_secret:
+                        env["CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET"] = config.oauth_client_secret
+                    else:
+                        env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET", None)
+                else:
+                    env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_ID", None)
+                    env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET", None)
                 self._log(
                     "OAuth 状态持久化已启用：动态 client_id 与 token secret 将跨重启保留。"
                 )
@@ -84,10 +89,10 @@ class MCPLauncher:
                 self._info = LaunchInfo(
                     workspace=config.workspace,
                     local_mcp_url=f"http://{config.host}:{config.port}/mcp",
-                    tunnel_url=tunnel_url,
+                    tunnel_url=public_base_url,
                     public_base_url=public_base_url,
                     public_mcp_url=f"{public_base_url}/mcp",
-                    url_mode=url_mode,
+                    url_mode=network_info.mode_label,
                 )
                 self._log(f"MCP 已启动: {self._info.public_mcp_url}")
                 threading.Thread(target=self._watch_children, daemon=True).start()
@@ -101,13 +106,13 @@ class MCPLauncher:
             with self._lock:
                 if self._stopping:
                     return
-                tunnel = self._tunnel.process
+                provider = self._provider
                 mcp = self._mcp.process
-                if tunnel is None or mcp is None:
+                if provider is None or mcp is None:
                     return
-                if tunnel.poll() is not None:
+                if not provider.is_running:
                     self._exit_reason = (
-                        f"cloudflared 已退出，退出码: {tunnel.returncode}"
+                        f"{provider.display_name} 已退出，退出码: {provider.exit_code}"
                     )
                     self._log(self._exit_reason)
                     self._stop_locked()
@@ -128,7 +133,9 @@ class MCPLauncher:
     def _stop_locked(self) -> None:
         self._stopping = True
         self._mcp.stop()
-        self._tunnel.stop()
+        if self._provider is not None:
+            self._provider.stop()
+        self._provider = None
         self._info = None
 
     def wait(self) -> None:
