@@ -1,0 +1,150 @@
+# ==========================================
+# Python
+# ==========================================
+
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Type checker / linter cache
+.mypy_cache/
+.pyright/
+.ruff_cache/
+
+
+# ==========================================
+# Environment / Secrets
+# ==========================================
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Local secrets
+*.secret
+*.secrets
+secrets/
+credentials/
+
+
+# ==========================================
+# coding-tools-mcp local files
+# ==========================================
+
+# Local MCP configuration
+.mcp/
+mcp.local.*
+*.local.json
+
+# Local startup configuration
+start.local.py
+
+
+# ==========================================
+# Cloudflare
+# ==========================================
+
+# Cloudflared local configuration
+.cloudflared/
+cloudflared.yml
+cloudflared.yaml
+config.yml
+config.yaml
+
+
+# ==========================================
+# macOS
+# ==========================================
+
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# macOS temporary files
+._*
+
+
+# ==========================================
+# IDE
+# ==========================================
+
+# VS Code
+.vscode/
+
+# JetBrains
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+
+# Emacs
+*~
+.#*
+
+
+# ==========================================
+# Logs
+# ==========================================
+
+*.log
+logs/
+
+
+# ==========================================
+# Temporary files
+# ==========================================
+
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Backup files
+*.bak
+*.backup
+*.orig
+
+
+# ==========================================
+# OS / editor
+# ==========================================
+
+.DS_Store
+Thumbs.db
+
+
+# ==========================================
+# Local project files
+# ==========================================
+
+# Local database
+*.db
+*.sqlite
+*.sqlite3
+
+# Local PID files
+*.pid
