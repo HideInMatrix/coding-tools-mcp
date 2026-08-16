@@ -2,6 +2,10 @@
 
 把本地代码目录通过 MCP 暴露给支持 Remote MCP 的客户端，并使用 OAuth 2.1 进行授权。
 
+![Coding Tools MCP 基础运行逻辑](docs/assets/coding-tools-mcp-basic-flow.svg)
+
+> 第一次使用？推荐先看：[网络提供商安装与部署教程（新手版）](docs/NETWORK_PROVIDER_BEGINNER_GUIDE.md)
+
 项目同时提供：
 
 - PySide6 桌面版
@@ -16,7 +20,10 @@
 网络层已经模块化。Cloudflare 仍然是开箱即用的默认方案；如果你有自己的
 VPS/FRP、ngrok、Tailscale，或者已经有公网反向代理，也可以直接切换 Provider。
 
-详细说明见 `docs/NETWORK_PROVIDERS.md`。
+网络相关文档：
+
+- [网络提供商安装与部署教程（新手版）](docs/NETWORK_PROVIDER_BEGINNER_GUIDE.md)
+- [NetworkProvider 架构与开发说明](docs/NETWORK_PROVIDERS.md)
 
 当前仓库内置自研 `coding-tools-mcp 1.0.0` 服务端，不再把外部
 `coding-tools-mcp` wheel 作为运行时依赖。服务端源码位于：
