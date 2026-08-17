@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import platform
 import re
+import ssl
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -23,6 +24,18 @@ class ReleaseInfo:
     asset_name: str
     download_url: str
     update_available: bool
+
+
+def _github_ssl_context() -> ssl.SSLContext:
+    """Build a TLS context that also works inside the packaged desktop app."""
+
+    try:
+        import certifi
+    except ImportError:
+        # Source/development environments can still use the operating system CA
+        # store. Release builds install certifi from requirements-desktop.txt.
+        return ssl.create_default_context()
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 def _version_tuple(value: str) -> tuple[int, int, int]:
@@ -90,7 +103,15 @@ def fetch_latest_release(
             "User-Agent": "Coding-Tools-MCP",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    # PyInstaller 打包后的 Python 运行时在部分 macOS/Windows 环境中无法可靠
+    # 找到系统 CA，直接使用 urllib 会出现 CERTIFICATE_VERIFY_FAILED。
+    # certifi 随桌面包一起分发，显式指定 CA 文件可保证 GitHub HTTPS 校验一致。
+    ssl_context = _github_ssl_context()
+    with urllib.request.urlopen(
+        request,
+        timeout=timeout,
+        context=ssl_context,
+    ) as response:
         payload = json.load(response)
     if not isinstance(payload, dict):
         raise RuntimeError("GitHub Release API 返回了无效数据")

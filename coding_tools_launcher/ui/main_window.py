@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from coding_tools_mcp import __version__ as MCP_VERSION
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont, QPalette
 from PySide6.QtWidgets import (
@@ -34,6 +33,7 @@ from ..executables import resolve_executable
 from ..launcher import MCPLauncher
 from ..updates import ReleaseInfo, fetch_latest_release
 from ..user_settings import load_settings, save_settings
+from ..version import current_version
 from .executable_selector import ExecutableSelector
 
 
@@ -563,7 +563,7 @@ class MainWindow(QMainWindow):
         version_row = QHBoxLayout()
         version_row.addWidget(QLabel("当前版本"))
         version_row.addStretch(1)
-        self.current_version_label = QLabel(MCP_VERSION)
+        self.current_version_label = QLabel(current_version())
         version_row.addWidget(self.current_version_label)
         card_layout.addLayout(version_row)
 
@@ -624,7 +624,7 @@ class MainWindow(QMainWindow):
 
         def worker() -> None:
             try:
-                info = fetch_latest_release(MCP_VERSION)
+                info = fetch_latest_release(current_version())
             except Exception as exc:
                 self.bridge.update_check_failed.emit(str(exc))
             else:

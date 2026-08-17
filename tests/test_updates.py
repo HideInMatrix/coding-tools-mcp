@@ -5,6 +5,8 @@ import json
 import unittest
 from unittest.mock import patch
 
+from build_desktop import resolve_build_version
+from coding_tools_launcher.version import DEV_VERSION, git_release_version
 from coding_tools_launcher.updates import (
     fetch_latest_release,
     is_newer_version,
@@ -14,6 +16,49 @@ from scripts.package_release import platform_label, release_base_name
 
 
 class UpdateNamingTests(unittest.TestCase):
+    def test_release_tag_becomes_desktop_build_version(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"GITHUB_REF_NAME": "v0.1.4"},
+            clear=False,
+        ):
+            self.assertEqual(resolve_build_version(), "0.1.4")
+
+    def test_explicit_build_version_has_priority(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "CODING_TOOLS_RELEASE_VERSION": "v1.2.3",
+                "GITHUB_REF_NAME": "v0.1.4",
+            },
+            clear=False,
+        ):
+            self.assertEqual(resolve_build_version(), "1.2.3")
+
+    def test_build_version_does_not_use_mcp_core_version(self) -> None:
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "CODING_TOOLS_RELEASE_VERSION": "",
+                    "GITHUB_REF_NAME": "main",
+                },
+                clear=False,
+            ),
+            patch("build_desktop.git_release_version", return_value=None),
+        ):
+            self.assertEqual(resolve_build_version(), DEV_VERSION)
+
+    def test_git_release_version_reads_exact_head_tag(self) -> None:
+        completed = __import__("subprocess").CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="v0.1.5\n",
+            stderr="",
+        )
+        with patch("coding_tools_launcher.version.subprocess.run", return_value=completed):
+            self.assertEqual(git_release_version(), "0.1.5")
+
     def test_version_comparison(self) -> None:
         self.assertTrue(is_newer_version("0.1.4", "0.1.0"))
         self.assertTrue(is_newer_version("v0.2.0", "0.1.9"))

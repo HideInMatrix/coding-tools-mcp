@@ -2,14 +2,53 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 from coding_tools_launcher.resources import bundled_cloudflared_path
+from coding_tools_launcher.version import (
+    BUILD_VERSION_FILENAME,
+    DEV_VERSION,
+    git_release_version,
+    normalize_version,
+)
 
 
 ROOT = Path(__file__).resolve().parent
+
+
+def resolve_build_version() -> str:
+    """Resolve the version embedded into the desktop bundle.
+
+    Tag builds use GitHub's GITHUB_REF_NAME (for example ``v0.1.4``).
+    CODING_TOOLS_RELEASE_VERSION is provided as an explicit local/CI override.
+    Local builds use the semantic Git tag attached to HEAD. The version of the
+    coding_tools_mcp package is intentionally unrelated to the desktop release.
+    """
+
+    candidates = (
+        os.environ.get("CODING_TOOLS_RELEASE_VERSION", ""),
+        os.environ.get("GITHUB_REF_NAME", ""),
+    )
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            return normalize_version(candidate)
+        except ValueError:
+            continue
+
+    return git_release_version(ROOT) or DEV_VERSION
+
+
+def write_build_version(version: str) -> Path:
+    metadata_dir = ROOT / ".build-meta"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    path = metadata_dir / BUILD_VERSION_FILENAME
+    path.write_text(f"{version}\n", encoding="utf-8")
+    return path
 
 
 def main() -> int:
@@ -20,6 +59,8 @@ def main() -> int:
             "请先运行: python scripts/fetch_cloudflared.py"
         )
 
+    build_version = resolve_build_version()
+    version_file = write_build_version(build_version)
     separator = ";" if sys.platform.startswith("win") else ":"
     command = [
         sys.executable,
@@ -37,8 +78,11 @@ def main() -> int:
         "coding_tools_mcp",
         "--add-binary",
         f"{cloudflared}{separator}vendor/cloudflared/{cloudflared.parent.name}",
+        "--add-data",
+        f"{version_file}{separator}coding_tools_launcher",
         "desktop.py",
     ]
+    print(f"Desktop build version: {build_version}")
     return subprocess.call(command, cwd=ROOT)
 
 

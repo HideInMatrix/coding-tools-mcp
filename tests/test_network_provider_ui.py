@@ -11,10 +11,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication
 
-from coding_tools_mcp import __version__ as MCP_VERSION
 from coding_tools_launcher.executables.models import ExecutableCandidate
 from coding_tools_launcher.ui.main_window import MainWindow
 from coding_tools_launcher.updates import ReleaseInfo
+from coding_tools_launcher.version import current_version
+
+
+DESKTOP_VERSION = current_version()
 
 
 class NetworkProviderUITests(unittest.TestCase):
@@ -61,7 +64,7 @@ class NetworkProviderUITests(unittest.TestCase):
         check.assert_called_once()
 
     def test_about_page_uses_project_version_and_micromatrix_copyright(self) -> None:
-        self.assertEqual(self.window.current_version_label.text(), MCP_VERSION)
+        self.assertEqual(self.window.current_version_label.text(), DESKTOP_VERSION)
         copyright_labels = [
             label.text()
             for label in self.window.about_page.findChildren(type(self.window.current_version_label))
@@ -70,7 +73,7 @@ class NetworkProviderUITests(unittest.TestCase):
 
     def test_update_available_turns_check_button_into_blue_update_button(self) -> None:
         info = ReleaseInfo(
-            current_version=MCP_VERSION,
+            current_version=DESKTOP_VERSION,
             latest_version="0.1.4",
             tag_name="v0.1.4",
             release_url="https://github.com/HideInMatrix/coding-tools-mcp/releases/tag/v0.1.4",
@@ -89,9 +92,9 @@ class NetworkProviderUITests(unittest.TestCase):
 
     def test_latest_version_keeps_check_version_button(self) -> None:
         info = ReleaseInfo(
-            current_version=MCP_VERSION,
-            latest_version=MCP_VERSION,
-            tag_name=f"v{MCP_VERSION}",
+            current_version=DESKTOP_VERSION,
+            latest_version=DESKTOP_VERSION,
+            tag_name=f"v{DESKTOP_VERSION}",
             release_url="https://github.com/HideInMatrix/coding-tools-mcp/releases/latest",
             asset_name="Coding-Tools-MCP-macos-arm64.dmg",
             download_url="",
