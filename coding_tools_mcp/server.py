@@ -816,18 +816,6 @@ def _oauth_config() -> OAuthConfig:
         token_ttl=token_ttl,
         refresh_token_ttl=refresh_token_ttl,
     )
-    client_id = os.environ.get(f"{ENV_PREFIX}_OAUTH_CLIENT_ID")
-    if client_id:
-        redirects = tuple(
-            value.strip()
-            for value in (os.environ.get(f"{ENV_PREFIX}_OAUTH_REDIRECT_URIS") or "http://127.0.0.1/callback").split(",")
-            if value.strip()
-        )
-        config.registry.add_preregistered(
-            client_id,
-            redirects,
-            client_secret=os.environ.get(f"{ENV_PREFIX}_OAUTH_CLIENT_SECRET") or None,
-        )
     return config
 
 

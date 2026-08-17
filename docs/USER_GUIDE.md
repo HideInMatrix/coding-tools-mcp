@@ -32,7 +32,6 @@
 ```text
 Workspace
 Password
-高级 OAuth 设置
 网络方案
 网络方案对应的配置区域
 运行状态
@@ -73,35 +72,19 @@ Password
 
 建议使用随机且不容易猜到的密码。
 
-普通用户不需要填写：
+桌面端不再提供 Client ID / Client Secret 手动配置。OAuth Client 必须通过 `/oauth/register` 使用 Dynamic Client Registration 创建，ChatGPT / MCP Client 每次建立新的 OAuth Client 时都由服务端生成新的 `client_id`。
+
+## 5. Dynamic Client Registration
+
+Coding Tools MCP 只支持动态 Client 注册，不支持手工预注册 Client。
+
+客户端连接时会先读取 OAuth metadata，然后调用：
 
 ```text
-Client ID
-Client Secret
+POST /oauth/register
 ```
 
-支持 Dynamic Client Registration 的 MCP Client 会在连接时动态注册自己的 Client ID。
-
-## 5. 高级 OAuth 设置
-
-界面中的：
-
-```text
-高级 OAuth 设置（预注册 Client）
-```
-
-默认关闭即可。
-
-只有在使用不支持 Dynamic Client Registration 的 MCP Client 时，才需要开启并填写：
-
-```text
-Client ID
-Client Secret
-```
-
-这里的 Client ID 是 Coding Tools MCP 自己的 OAuth Client ID，不是 Cloudflare Connector ID、Tunnel ID 或其他网络服务的设备 ID。
-
-如果不确定是否需要，保持关闭。
+服务端返回新的 `client_id`，之后客户端再使用该 ID 进入 `/oauth/authorize` 完成授权。
 
 ## 6. 选择网络方案
 
@@ -342,7 +325,7 @@ Coding-Tools-MCP-linux-arm64.tar.gz
 
 ### Client ID 应该填什么
 
-普通用户不需要填写，保持“高级 OAuth 设置”关闭即可。
+不需要填写，也没有手动配置入口。新的 OAuth Client 必须由 ChatGPT / MCP Client 调用 `/oauth/register` 动态注册。
 
 ## 17. 安全建议
 

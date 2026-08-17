@@ -127,7 +127,6 @@ def install_oauth_registry_persistence() -> None:
     registry_path = Path(raw_path).expanduser()
     original_init = OAuthClientRegistry.__init__
     original_register = OAuthClientRegistry.register
-    original_add_preregistered = OAuthClientRegistry.add_preregistered
 
     def load_clients(registry: Any) -> None:
         if not registry_path.exists():
@@ -200,23 +199,7 @@ def install_oauth_registry_persistence() -> None:
         save_clients(registry)
         return response
 
-    def persistent_add_preregistered(
-        registry: Any,
-        client_id: str,
-        redirect_uris: tuple[str, ...],
-        *,
-        client_secret: str | None,
-    ) -> None:
-        original_add_preregistered(
-            registry,
-            client_id,
-            redirect_uris,
-            client_secret=client_secret,
-        )
-        save_clients(registry)
-
     OAuthClientRegistry.__init__ = persistent_init
     OAuthClientRegistry.register = persistent_register
-    OAuthClientRegistry.add_preregistered = persistent_add_preregistered
     OAuthClientRegistry._launcher_persistence_installed = True
 

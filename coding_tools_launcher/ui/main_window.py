@@ -277,38 +277,13 @@ class MainWindow(QMainWindow):
         self.password_edit.setPlaceholderText("MCP OAuth 授权页登录密码")
         add_secret_row("Password", self.password_edit)
 
-        self.advanced_oauth_toggle = QCheckBox("高级 OAuth 设置（预注册 Client）")
-        self.advanced_oauth_toggle.setToolTip(
-            "默认关闭并使用 Dynamic Client Registration；只有不支持 DCR 的客户端才需要预注册 Client。"
-        )
-        form_layout.addWidget(self.advanced_oauth_toggle)
-
-        self.advanced_oauth_panel = QWidget()
-        advanced_oauth_layout = QVBoxLayout(self.advanced_oauth_panel)
-        advanced_oauth_layout.setContentsMargins(0, 0, 0, 0)
-        advanced_oauth_layout.setSpacing(10)
-
-        self.client_id_edit = QLineEdit()
-        self.client_id_edit.setPlaceholderText("自定义 MCP OAuth Client ID；不是 Cloudflare Connector ID")
-        add_config_row("Client ID", self.client_id_edit, target_layout=advanced_oauth_layout)
-
-        self.client_secret_edit = QLineEdit()
-        self.client_secret_edit.setPlaceholderText("可选；需要 confidential OAuth client 时填写")
-        add_secret_row(
-            "Client Secret",
-            self.client_secret_edit,
-            target_layout=advanced_oauth_layout,
-        )
         oauth_note = QLabel(
-            "ChatGPT 默认通过 /oauth/register 动态生成 Client ID。这里的 Client ID/Secret 仅用于手动预注册 OAuth Client。"
+            "OAuth Client ID 由 ChatGPT / MCP Client 通过 /oauth/register 动态生成，桌面端不提供手动 Client ID / Client Secret 配置。"
         )
         oauth_note.setWordWrap(True)
         oauth_note.setForegroundRole(QPalette.ColorRole.PlaceholderText)
         oauth_note.setStyleSheet("font-size: 12px;")
-        advanced_oauth_layout.addWidget(oauth_note)
-        self.advanced_oauth_panel.setVisible(False)
-        form_layout.addWidget(self.advanced_oauth_panel)
-        self.advanced_oauth_toggle.toggled.connect(self._on_advanced_oauth_toggled)
+        form_layout.addWidget(oauth_note)
 
         self.network_provider_combo = QComboBox()
         for label, key in (
@@ -680,10 +655,6 @@ class MainWindow(QMainWindow):
             layout.activate()
         self._form_card.setFixedHeight(self._form_card.sizeHint().height())
 
-    def _on_advanced_oauth_toggled(self, enabled: bool) -> None:
-        self.advanced_oauth_panel.setVisible(enabled)
-        QTimer.singleShot(0, self._refresh_form_card_height)
-
     def _choose_frp_config(self) -> None:
         current = self.frp_config_edit.text().strip()
         initial = str(Path(current).expanduser().parent) if current else str(Path.home())
@@ -828,12 +799,9 @@ class MainWindow(QMainWindow):
         )
 
     def _config_from_form(self) -> LaunchConfig:
-        advanced_oauth = self.advanced_oauth_toggle.isChecked()
         return LaunchConfig(
             workspace=Path(self.workspace_edit.text().strip()),
             oauth_password=self.password_edit.text(),
-            oauth_client_id=self.client_id_edit.text() if advanced_oauth else "",
-            oauth_client_secret=self.client_secret_edit.text() if advanced_oauth else "",
             network=self._network_config_from_form(),
         ).validated()
 
@@ -930,10 +898,6 @@ class MainWindow(QMainWindow):
     def _restore_settings(self) -> None:
         data = load_settings()
         self.workspace_edit.setText(str(data.get("workspace", "")))
-        self.client_id_edit.setText(str(data.get("client_id", "")))
-        self.advanced_oauth_toggle.setChecked(
-            bool(data.get("advanced_oauth_enabled", False))
-        )
 
         raw_network = data.get("network")
         network = raw_network if isinstance(raw_network, dict) else {}
@@ -967,18 +931,15 @@ class MainWindow(QMainWindow):
         remember = bool(data.get("remember_secrets", True))
         self.remember_secrets.setChecked(remember)
         if remember:
-            self.client_secret_edit.setText(str(data.get("client_secret", "")))
             self.password_edit.setText(str(data.get("password", "")))
             self.cf_tunnel_token_edit.setText(
                 str(cloudflare.get("tunnel_token") or data.get("tunnel_token", ""))
             )
             self.ngrok_authtoken_edit.setText(str(ngrok.get("authtoken", "")))
         self._on_network_provider_changed()
-        self._on_advanced_oauth_toggled(self.advanced_oauth_toggle.isChecked())
 
     def _save_settings(self) -> None:
         remember = self.remember_secrets.isChecked()
-        advanced_oauth = self.advanced_oauth_toggle.isChecked()
         cloudflare: dict[str, object] = {
             "public_url": self.cf_public_url_edit.text().strip(),
         }
@@ -992,7 +953,6 @@ class MainWindow(QMainWindow):
 
         data: dict[str, object] = {
             "workspace": self.workspace_edit.text().strip(),
-            "advanced_oauth_enabled": advanced_oauth,
             "network_provider": self._selected_network_provider(),
             "network": {
                 "provider": self._selected_network_provider(),
@@ -1012,12 +972,8 @@ class MainWindow(QMainWindow):
             },
             "remember_secrets": remember,
         }
-        if advanced_oauth:
-            data["client_id"] = self.client_id_edit.text().strip()
         if remember:
             data["password"] = self.password_edit.text()
-            if advanced_oauth:
-                data["client_secret"] = self.client_secret_edit.text()
         save_settings(data)
 
     def closeEvent(self, event: QCloseEvent) -> None:

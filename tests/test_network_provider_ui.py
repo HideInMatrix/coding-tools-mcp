@@ -194,41 +194,16 @@ class NetworkProviderUITests(unittest.TestCase):
         config = self.window._config_from_form()
         self.assertEqual(config.network.provider, "external")
         self.assertEqual(config.network.public_url, "https://mcp.example.com")
-        self.assertEqual(config.oauth_client_id, "")
-        self.assertEqual(config.oauth_client_secret, "")
+        self.assertFalse(hasattr(config, "oauth_client_id"))
+        self.assertFalse(hasattr(config, "oauth_client_secret"))
 
-    def test_advanced_oauth_is_hidden_and_disabled_by_default(self) -> None:
-        self.assertFalse(self.window.advanced_oauth_toggle.isChecked())
-        self.assertFalse(self.window.advanced_oauth_panel.isVisible())
+    def test_manual_oauth_client_controls_do_not_exist(self) -> None:
+        self.assertFalse(hasattr(self.window, "advanced_oauth_toggle"))
+        self.assertFalse(hasattr(self.window, "advanced_oauth_panel"))
+        self.assertFalse(hasattr(self.window, "client_id_edit"))
+        self.assertFalse(hasattr(self.window, "client_secret_edit"))
 
-    def test_disabled_advanced_oauth_ignores_old_client_values(self) -> None:
-        self.window.workspace_edit.setText(os.getcwd())
-        self.window.password_edit.setText("password")
-        self.window.client_id_edit.setText("old-cloudflare-connector-id")
-        self.window.client_secret_edit.setText("old-secret")
-        index = self.window.network_provider_combo.findData("external")
-        self.window.network_provider_combo.setCurrentIndex(index)
-        self.window.external_public_url_edit.setText("https://mcp.example.com")
-
-        config = self.window._config_from_form()
-        self.assertEqual(config.oauth_client_id, "")
-        self.assertEqual(config.oauth_client_secret, "")
-
-    def test_enabled_advanced_oauth_uses_preregistered_client_values(self) -> None:
-        self.window.workspace_edit.setText(os.getcwd())
-        self.window.password_edit.setText("password")
-        self.window.advanced_oauth_toggle.setChecked(True)
-        self.window.client_id_edit.setText("manual-client")
-        self.window.client_secret_edit.setText("manual-secret")
-        index = self.window.network_provider_combo.findData("external")
-        self.window.network_provider_combo.setCurrentIndex(index)
-        self.window.external_public_url_edit.setText("https://mcp.example.com")
-
-        config = self.window._config_from_form()
-        self.assertEqual(config.oauth_client_id, "manual-client")
-        self.assertEqual(config.oauth_client_secret, "manual-secret")
-
-    def test_legacy_saved_client_id_does_not_enable_advanced_oauth(self) -> None:
+    def test_legacy_saved_client_credentials_are_ignored(self) -> None:
         self.window.close()
         with patch(
             "coding_tools_launcher.ui.main_window.load_settings",
@@ -240,11 +215,8 @@ class NetworkProviderUITests(unittest.TestCase):
         ):
             legacy_window = MainWindow()
             try:
-                self.assertFalse(legacy_window.advanced_oauth_toggle.isChecked())
-                self.assertEqual(
-                    legacy_window.client_id_edit.text(),
-                    "cloudflare-connector-id-from-old-version",
-                )
+                self.assertFalse(hasattr(legacy_window, "client_id_edit"))
+                self.assertFalse(hasattr(legacy_window, "client_secret_edit"))
             finally:
                 legacy_window.close()
 

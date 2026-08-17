@@ -82,8 +82,6 @@ class NetworkConfig:
 class LaunchConfig:
     workspace: Path
     oauth_password: str
-    oauth_client_id: str = ""
-    oauth_client_secret: str = ""
     network: NetworkConfig = field(default_factory=NetworkConfig)
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
@@ -97,20 +95,14 @@ class LaunchConfig:
         if not 1 <= self.port <= 65535:
             raise ValueError(f"无效端口: {self.port}")
 
-        oauth_client_id = self.oauth_client_id.strip()
-        oauth_client_secret = self.oauth_client_secret.strip()
         oauth_password = self.oauth_password.strip()
         if not oauth_password:
             raise ValueError("缺少 OAuth 登录密码。")
-        if oauth_client_secret and not oauth_client_id:
-            raise ValueError("填写 OAuth Client Secret 时必须同时填写 Client ID。")
 
         network = self.network.validated()
 
         return LaunchConfig(
             workspace=workspace,
-            oauth_client_id=oauth_client_id,
-            oauth_client_secret=oauth_client_secret,
             oauth_password=oauth_password,
             network=network,
             host=self.host.strip() or DEFAULT_HOST,
@@ -155,8 +147,6 @@ class LaunchConfig:
 
         return cls(
             workspace=workspace,
-            oauth_client_id=env.get("CODING_TOOLS_MCP_OAUTH_CLIENT_ID", ""),
-            oauth_client_secret=env.get("CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET", ""),
             oauth_password=env.get("CODING_TOOLS_MCP_OAUTH_PASSWORD", ""),
             network=NetworkConfig(
                 provider=provider,

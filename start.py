@@ -29,8 +29,6 @@ TUNNEL_URL_PATTERN = re.compile(
 )
 
 REQUIRED_ENV = (
-    "CODING_TOOLS_MCP_OAUTH_CLIENT_ID",
-    "CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET",
     "CODING_TOOLS_MCP_OAUTH_PASSWORD",
 )
 
@@ -581,6 +579,8 @@ def main() -> int:
 
     env = os.environ.copy()
     env.update(config)
+    env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_ID", None)
+    env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET", None)
 
     # --------------------------------------------------------
     # 6. 先启动 Cloudflare Tunnel

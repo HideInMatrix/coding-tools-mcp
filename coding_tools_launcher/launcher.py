@@ -73,15 +73,12 @@ class MCPLauncher:
                         OAUTH_REGISTRY_FILE_ENV: str(oauth_persistence.registry_file),
                     }
                 )
-                if config.oauth_client_id:
-                    env["CODING_TOOLS_MCP_OAUTH_CLIENT_ID"] = config.oauth_client_id
-                    if config.oauth_client_secret:
-                        env["CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET"] = config.oauth_client_secret
-                    else:
-                        env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET", None)
-                else:
-                    env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_ID", None)
-                    env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET", None)
+                # OAuth clients are always created through RFC 7591 Dynamic
+                # Client Registration. Explicitly discard legacy environment
+                # variables so old shells/settings cannot silently re-enable
+                # preregistered client behaviour.
+                env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_ID", None)
+                env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET", None)
                 self._log(
                     "OAuth 状态持久化已启用：动态 client_id 与 token secret 将跨重启保留。"
                 )

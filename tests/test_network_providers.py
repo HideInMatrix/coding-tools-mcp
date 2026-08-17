@@ -23,17 +23,9 @@ class NetworkConfigTests(unittest.TestCase):
                     public_url="https://mcp.example.com",
                 ),
             ).validated()
-        self.assertEqual(config.oauth_client_id, "")
-        self.assertEqual(config.oauth_client_secret, "")
-
-    def test_client_secret_requires_client_id(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaisesRegex(ValueError, "Client ID"):
-                LaunchConfig(
-                    workspace=Path(temporary),
-                    oauth_password="password",
-                    oauth_client_secret="secret",
-                ).validated()
+        self.assertEqual(config.oauth_password, "password")
+        self.assertFalse(hasattr(config, "oauth_client_id"))
+        self.assertFalse(hasattr(config, "oauth_client_secret"))
 
     def test_public_url_is_normalized(self) -> None:
         config = NetworkConfig(
@@ -46,8 +38,6 @@ class NetworkConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             config = LaunchConfig(
                 workspace=Path(temporary),
-                oauth_client_id="client",
-                oauth_client_secret="secret",
                 oauth_password="password",
                 network=NetworkConfig(
                     provider="frp",
@@ -63,6 +53,8 @@ class NetworkConfigTests(unittest.TestCase):
             config = LaunchConfig.from_env(
                 workspace=Path(temporary),
                 env={
+                    # Legacy values are intentionally ignored. OAuth clients
+                    # are always created through Dynamic Client Registration.
                     "CODING_TOOLS_MCP_OAUTH_CLIENT_ID": "client",
                     "CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET": "secret",
                     "CODING_TOOLS_MCP_OAUTH_PASSWORD": "password",
@@ -74,6 +66,8 @@ class NetworkConfigTests(unittest.TestCase):
         self.assertEqual(config.network.provider, "ngrok")
         self.assertEqual(config.network.options["executable"], "/opt/ngrok")
         self.assertEqual(config.network.options["authtoken"], "token")
+        self.assertFalse(hasattr(config, "oauth_client_id"))
+        self.assertFalse(hasattr(config, "oauth_client_secret"))
 
     def test_from_env_allows_dynamic_client_registration_without_client_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -85,8 +79,8 @@ class NetworkConfigTests(unittest.TestCase):
                     "CODING_TOOLS_MCP_SERVER_URL": "https://mcp.example.com",
                 },
             )
-        self.assertEqual(config.oauth_client_id, "")
-        self.assertEqual(config.oauth_client_secret, "")
+        self.assertFalse(hasattr(config, "oauth_client_id"))
+        self.assertFalse(hasattr(config, "oauth_client_secret"))
 
 
 class ProviderTests(unittest.TestCase):
