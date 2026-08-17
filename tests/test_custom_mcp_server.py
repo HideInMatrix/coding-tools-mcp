@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import http.client
 import json
 import subprocess
@@ -7,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from coding_tools_mcp import __version__
 from coding_tools_mcp.oauth import OAuthConfig, create_access_token, validate_access_token
@@ -53,6 +56,25 @@ class CustomMCPServerContractTests(unittest.TestCase):
         self.assertFalse(result["isError"])
         self.assertTrue(result["structuredContent"]["ok"])
         self.assertIsInstance(result["content"], list)
+
+    def test_unexpected_tool_exception_is_returned_as_structured_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                with self.assertLogs("coding_tools_mcp.runtime", level="ERROR"):
+                    with patch.object(
+                        Runtime,
+                        "server_info",
+                        side_effect=ExceptionGroup("reader failure", [RuntimeError("boom")]),
+                    ):
+                        result = runtime.call_tool("server_info", {})
+            finally:
+                runtime.close()
+
+        self.assertTrue(result["isError"])
+        error = result["structuredContent"]["error"]
+        self.assertEqual(error["code"], "INTERNAL_TOOL_ERROR")
+        self.assertEqual(error["details"]["exception_type"], "ExceptionGroup")
 
     def test_legacy_initialize_and_tools_list(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -106,6 +128,26 @@ class CustomMCPServerContractTests(unittest.TestCase):
         self.assertEqual(result["resultType"], "complete")
         self.assertEqual(result["cacheScope"], "private")
         self.assertEqual(result["ttlMs"], 0)
+
+    def test_unexpected_dispatch_exception_returns_json_rpc_internal_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                with self.assertLogs("coding_tools_mcp.protocol", level="ERROR"):
+                    with patch.object(
+                        Runtime,
+                        "list_tools",
+                        side_effect=ExceptionGroup("list failure", [RuntimeError("boom")]),
+                    ):
+                        response = dispatch(
+                            runtime,
+                            {"jsonrpc": "2.0", "id": 99, "method": "tools/list", "params": {}},
+                        )
+            finally:
+                runtime.close()
+
+        self.assertEqual(response["error"]["code"], -32603)
+        self.assertEqual(response["error"]["data"]["exception_type"], "ExceptionGroup")
 
 
 class RuntimeSafetyTests(unittest.TestCase):
@@ -230,6 +272,22 @@ class HTTPTransportTests(unittest.TestCase):
                 unauthorized = connection.getresponse()
                 unauthorized.read()
                 self.assertEqual(unauthorized.status, 401)
+                self.assertNotIn("invalid_token", unauthorized.getheader("WWW-Authenticate", ""))
+
+                connection.request(
+                    "POST",
+                    "/mcp",
+                    body=json.dumps({"jsonrpc": "2.0", "id": 11, "method": "tools/list", "params": {}}),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer expired-or-invalid-token",
+                    },
+                )
+                invalid = connection.getresponse()
+                invalid_payload = json.loads(invalid.read())
+                self.assertEqual(invalid.status, 401)
+                self.assertEqual(invalid_payload["error"], "invalid_token")
+                self.assertIn("error=\"invalid_token\"", invalid.getheader("WWW-Authenticate", ""))
 
                 token = create_access_token(config, "http-test")
                 connection.request(
@@ -254,6 +312,48 @@ class HTTPTransportTests(unittest.TestCase):
                 runtime.close()
                 thread.join(timeout=2)
 
+    def test_dispatch_exception_returns_json_rpc_internal_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = OAuthConfig(
+                password="password",
+                server_url="http://127.0.0.1",
+                token_secret=b"d" * 32,
+            )
+            runtime = Runtime(Path(temporary), oauth_config=config)
+            server = MCPHTTPServer(("127.0.0.1", 0), runtime)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address[:2]
+                token = create_access_token(config, "dispatch-test")
+                connection = http.client.HTTPConnection(host, port, timeout=5)
+                with patch(
+                    "coding_tools_mcp.server.dispatch",
+                    side_effect=ExceptionGroup("transport failure", [RuntimeError("boom")]),
+                ):
+                    connection.request(
+                        "POST",
+                        "/mcp",
+                        body=json.dumps(
+                            {"jsonrpc": "2.0", "id": 99, "method": "tools/list", "params": {}}
+                        ),
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {token}",
+                        },
+                    )
+                    response = connection.getresponse()
+                    payload = json.loads(response.read())
+                self.assertEqual(response.status, 500)
+                self.assertEqual(payload["error"]["code"], -32603)
+                self.assertEqual(payload["error"]["data"]["exception_type"], "ExceptionGroup")
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                runtime.close()
+                thread.join(timeout=2)
+
 
 class OAuthTokenTests(unittest.TestCase):
     def test_signed_access_token_round_trip(self) -> None:
@@ -265,6 +365,134 @@ class OAuthTokenTests(unittest.TestCase):
         token = create_access_token(config, "client-1")
         self.assertTrue(validate_access_token(config, token))
         self.assertFalse(validate_access_token(config, token + "tampered"))
+
+    def test_access_token_is_bound_to_server_resource(self) -> None:
+        config = OAuthConfig(
+            password="password",
+            server_url="https://mcp.example.com",
+            token_secret=b"x" * 32,
+        )
+        other = OAuthConfig(
+            password="password",
+            server_url="https://other.example.com",
+            token_secret=b"x" * 32,
+        )
+        token = create_access_token(config, "client-1")
+        self.assertTrue(validate_access_token(config, token))
+        self.assertFalse(validate_access_token(other, token))
+
+    def test_refresh_token_is_single_use_and_rotated(self) -> None:
+        config = OAuthConfig(
+            password="password",
+            server_url="https://mcp.example.com",
+            token_secret=b"x" * 32,
+        )
+        token = config.issue_refresh_token("client-1")
+        self.assertIsNone(
+            config.consume_refresh_token(
+                token,
+                client_id="wrong-client",
+                resource=config.resource,
+            )
+        )
+        grant = config.consume_refresh_token(
+            token,
+            client_id="client-1",
+            resource=config.resource,
+        )
+        self.assertIsNotNone(grant)
+        self.assertIsNone(
+            config.consume_refresh_token(
+                token,
+                client_id="client-1",
+                resource=config.resource,
+            )
+        )
+
+
+class OAuthRefreshHTTPTests(unittest.TestCase):
+    def test_authorization_code_issues_refresh_token_and_refresh_rotates_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = OAuthConfig(
+                password="password",
+                server_url="http://127.0.0.1",
+                token_secret=b"r" * 32,
+            )
+            config.registry.add_preregistered(
+                "refresh-client",
+                ("http://127.0.0.1/callback",),
+                client_secret=None,
+            )
+            verifier = "a" * 43
+            challenge = base64.urlsafe_b64encode(
+                hashlib.sha256(verifier.encode("ascii")).digest()
+            ).decode("ascii").rstrip("=")
+            code = config.issue_code(
+                "refresh-client",
+                "http://127.0.0.1/callback",
+                challenge,
+                config.resource,
+            )
+            runtime = Runtime(Path(temporary), oauth_config=config)
+            server = MCPHTTPServer(("127.0.0.1", 0), runtime)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address[:2]
+                connection = http.client.HTTPConnection(host, port, timeout=5)
+                body = (
+                    "grant_type=authorization_code"
+                    f"&code={code}"
+                    "&client_id=refresh-client"
+                    "&redirect_uri=http%3A%2F%2F127.0.0.1%2Fcallback"
+                    f"&code_verifier={verifier}"
+                    "&resource=http%3A%2F%2F127.0.0.1%2Fmcp"
+                )
+                connection.request(
+                    "POST",
+                    "/oauth/token",
+                    body=body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                response = connection.getresponse()
+                first = json.loads(response.read())
+                self.assertEqual(response.status, 200)
+                self.assertIn("refresh_token", first)
+
+                refresh_body = (
+                    "grant_type=refresh_token"
+                    f"&refresh_token={first['refresh_token']}"
+                    "&client_id=refresh-client"
+                    "&resource=http%3A%2F%2F127.0.0.1%2Fmcp"
+                )
+                connection.request(
+                    "POST",
+                    "/oauth/token",
+                    body=refresh_body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                response = connection.getresponse()
+                second = json.loads(response.read())
+                self.assertEqual(response.status, 200)
+                self.assertNotEqual(first["refresh_token"], second["refresh_token"])
+                self.assertTrue(validate_access_token(config, second["access_token"]))
+
+                connection.request(
+                    "POST",
+                    "/oauth/token",
+                    body=refresh_body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                response = connection.getresponse()
+                replay = json.loads(response.read())
+                self.assertEqual(response.status, 400)
+                self.assertEqual(replay["error"], "invalid_grant")
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                runtime.close()
+                thread.join(timeout=2)
 
 
 if __name__ == "__main__":

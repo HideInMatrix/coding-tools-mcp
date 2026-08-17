@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import fnmatch
 import io
+import logging
 import mimetypes
 import os
 import re
@@ -24,6 +25,9 @@ from .protocol import KNOWN_PROTOCOL_VERSIONS, RequestContext
 from .results import make_tool_result
 from .schemas import TOOL_SPECS, exposed_specs, validate_value
 from .workspace import Workspace, matches_any
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 SERVER_NAME = "coding-tools-mcp"
@@ -123,6 +127,21 @@ class Runtime:
                 image = (str(image_value[0]), str(image_value[1]))
         except ToolError as exc:
             payload = {"ok": False, "error": exc.payload()}
+        except Exception as exc:
+            # Keep unexpected implementation failures inside the tool result
+            # boundary. Otherwise the HTTP transport can be interrupted and
+            # clients only see an opaque ExceptionGroup/TaskGroup failure.
+            LOGGER.exception("Unexpected failure while calling MCP tool %s", name)
+            payload = {
+                "ok": False,
+                "error": {
+                    "code": "INTERNAL_TOOL_ERROR",
+                    "message": "unexpected tool failure",
+                    "category": "runtime",
+                    "retryable": True,
+                    "details": {"exception_type": type(exc).__name__},
+                },
+            }
         return make_tool_result(name, payload, image=image)
 
     # ------------------------------------------------------------------

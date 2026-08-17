@@ -6,10 +6,14 @@ version in each request's ``_meta``; no per-client session state is required.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 from .errors import RpcError, rpc_error_payload
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 LEGACY_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18")
@@ -98,6 +102,22 @@ def dispatch(runtime: Any, request: dict[str, Any]) -> dict[str, Any] | None:
         if is_notification:
             return None
         return rpc_error_payload(request_id, exc)
+    except Exception as exc:
+        # JSON-RPC requests must fail as JSON-RPC responses, not as broken
+        # HTTP transports. This is the final boundary for unexpected protocol
+        # or runtime failures that occur outside Runtime.call_tool().
+        LOGGER.exception("Unexpected MCP dispatch failure for request %r", request_id)
+        if is_notification:
+            return None
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {
+                "code": -32603,
+                "message": "Internal error",
+                "data": {"exception_type": type(exc).__name__},
+            },
+        }
 
 
 def _dispatch_modern(runtime: Any, method: str, params: dict[str, Any], context: RequestContext) -> dict[str, Any] | None:

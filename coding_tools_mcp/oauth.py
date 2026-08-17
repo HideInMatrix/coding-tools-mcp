@@ -21,9 +21,11 @@ from urllib.parse import urlparse
 
 
 OAUTH_TOKEN_TTL_SECONDS = 3600
+OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 3600
 OAUTH_CODE_TTL_SECONDS = 300
 OAUTH_MAX_BODY_BYTES = 64 * 1024
 MAX_PENDING_CODES = 256
+MAX_REFRESH_TOKENS = 1024
 
 
 def _b64url(data: bytes) -> str:
@@ -109,8 +111,13 @@ class OAuthClientRegistry:
         if method not in {"none", "client_secret_post", "client_secret_basic"}:
             raise ValueError("unsupported token_endpoint_auth_method")
         grant_types = metadata.get("grant_types", ["authorization_code"])
-        if grant_types != ["authorization_code"] and "authorization_code" not in grant_types:
+        if not isinstance(grant_types, list) or not all(isinstance(item, str) for item in grant_types):
+            raise ValueError("grant_types must be an array of strings")
+        if "authorization_code" not in grant_types:
             raise ValueError("authorization_code grant is required")
+        unsupported_grants = set(grant_types) - {"authorization_code", "refresh_token"}
+        if unsupported_grants:
+            raise ValueError("unsupported grant_type")
         response_types = metadata.get("response_types", ["code"])
         if "code" not in response_types:
             raise ValueError("code response type is required")
@@ -132,7 +139,7 @@ class OAuthClientRegistry:
             "client_id": client_id,
             "client_id_issued_at": issued_at,
             "redirect_uris": raw_redirects,
-            "grant_types": ["authorization_code"],
+            "grant_types": grant_types,
             "response_types": ["code"],
             "token_endpoint_auth_method": method,
         }
@@ -160,6 +167,14 @@ class AuthorizationCode:
     client_id: str
     redirect_uri: str
     challenge: str
+    resource: str | None
+    expires_at: int
+
+
+@dataclass(slots=True)
+class RefreshGrant:
+    client_id: str
+    resource: str | None
     expires_at: int
 
 
@@ -169,18 +184,38 @@ class OAuthConfig:
     server_url: str | None
     token_secret: bytes
     token_ttl: int = OAUTH_TOKEN_TTL_SECONDS
+    refresh_token_ttl: int = OAUTH_REFRESH_TOKEN_TTL_SECONDS
     registry: OAuthClientRegistry = field(default_factory=OAuthClientRegistry)
     pending_codes: dict[str, AuthorizationCode] = field(default_factory=dict)
+    refresh_tokens: dict[str, RefreshGrant] = field(default_factory=dict)
     lock: threading.RLock = field(default_factory=threading.RLock)
 
-    def issue_code(self, client_id: str, redirect_uri: str, challenge: str) -> str:
+    @property
+    def resource(self) -> str | None:
+        if not self.server_url:
+            return None
+        return f"{self.server_url.rstrip('/')}/mcp"
+
+    def issue_code(
+        self,
+        client_id: str,
+        redirect_uri: str,
+        challenge: str,
+        resource: str | None = None,
+    ) -> str:
         with self.lock:
             now = int(time.time())
             self.pending_codes = {code: item for code, item in self.pending_codes.items() if item.expires_at > now}
             while len(self.pending_codes) >= MAX_PENDING_CODES:
                 self.pending_codes.pop(next(iter(self.pending_codes)))
             code = secrets.token_urlsafe(32)
-            self.pending_codes[code] = AuthorizationCode(client_id, redirect_uri, challenge, now + OAUTH_CODE_TTL_SECONDS)
+            self.pending_codes[code] = AuthorizationCode(
+                client_id,
+                redirect_uri,
+                challenge,
+                resource or self.resource,
+                now + OAUTH_CODE_TTL_SECONDS,
+            )
             return code
 
     def consume_code(self, code: str) -> AuthorizationCode | None:
@@ -189,6 +224,50 @@ class OAuthConfig:
         if item is None or item.expires_at <= int(time.time()):
             return None
         return item
+
+    def issue_refresh_token(self, client_id: str, resource: str | None = None) -> str:
+        token = secrets.token_urlsafe(48)
+        digest = _secret_digest(token)
+        now = int(time.time())
+        with self.lock:
+            self.refresh_tokens = {
+                key: item
+                for key, item in self.refresh_tokens.items()
+                if item.expires_at > now
+            }
+            while len(self.refresh_tokens) >= MAX_REFRESH_TOKENS:
+                self.refresh_tokens.pop(next(iter(self.refresh_tokens)))
+            self.refresh_tokens[digest] = RefreshGrant(
+                client_id=client_id,
+                resource=resource or self.resource,
+                expires_at=now + self.refresh_token_ttl,
+            )
+        return token
+
+    def consume_refresh_token(
+        self,
+        token: str,
+        *,
+        client_id: str,
+        resource: str | None = None,
+    ) -> RefreshGrant | None:
+        digest = _secret_digest(token)
+        with self.lock:
+            grant = self.refresh_tokens.get(digest)
+            if grant is None or grant.expires_at <= int(time.time()):
+                if grant is not None:
+                    self.refresh_tokens.pop(digest, None)
+                return None
+            expected_resource = resource or self.resource
+            if grant.client_id != client_id:
+                return None
+            if expected_resource and grant.resource and grant.resource != expected_resource:
+                return None
+            # Rotation is single-use: only consume after the client/resource
+            # binding has been validated, so an invalid request cannot revoke
+            # another client's legitimate refresh token.
+            self.refresh_tokens.pop(digest, None)
+            return grant
 
 
 def valid_pkce_challenge(value: str) -> bool:
@@ -206,7 +285,14 @@ def verify_pkce(verifier: str, challenge: str) -> bool:
 
 def create_access_token(config: OAuthConfig, client_id: str) -> str:
     now = int(time.time())
-    payload = json.dumps({"sub": client_id, "iat": now, "exp": now + config.token_ttl}, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    payload_value: dict[str, Any] = {
+        "sub": client_id,
+        "iat": now,
+        "exp": now + config.token_ttl,
+    }
+    if config.resource:
+        payload_value["aud"] = config.resource
+    payload = json.dumps(payload_value, separators=(",", ":"), sort_keys=True).encode("utf-8")
     encoded = _b64url(payload)
     signature = _b64url(hmac.new(config.token_secret, encoded.encode("ascii"), hashlib.sha256).digest())
     return f"ctm1.{encoded}.{signature}"
@@ -221,6 +307,15 @@ def validate_access_token(config: OAuthConfig, token: str) -> bool:
         if not hmac.compare_digest(signature, expected):
             return False
         payload = json.loads(_b64url_decode(encoded))
-        return isinstance(payload, dict) and isinstance(payload.get("sub"), str) and int(payload.get("exp", 0)) > int(time.time())
+        if not isinstance(payload, dict) or not isinstance(payload.get("sub"), str):
+            return False
+        if int(payload.get("exp", 0)) <= int(time.time()):
+            return False
+        audience = payload.get("aud")
+        # Accept legacy ctm1 access tokens without an audience until they expire,
+        # but all newly issued tokens are bound to this MCP resource.
+        if audience is not None and config.resource and audience != config.resource:
+            return False
+        return True
     except (ValueError, TypeError, json.JSONDecodeError):
         return False

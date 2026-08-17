@@ -7,6 +7,7 @@ import base64
 import html
 import http.server
 import json
+import logging
 import os
 import secrets
 import signal
@@ -18,6 +19,7 @@ from typing import Any
 
 from .oauth import (
     OAUTH_MAX_BODY_BYTES,
+    OAUTH_REFRESH_TOKEN_TTL_SECONDS,
     OAUTH_TOKEN_TTL_SECONDS,
     OAuthConfig,
     create_access_token,
@@ -32,6 +34,7 @@ from .transport_stdio import serve_stdio
 
 ENV_PREFIX = "CODING_TOOLS_MCP"
 MAX_HTTP_BODY_BYTES = 1_048_576
+LOGGER = logging.getLogger(__name__)
 
 
 def _truthy(value: str | None) -> bool:
@@ -139,24 +142,36 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             return value[7:].strip()
         return None
 
-    def _mcp_authorized(self) -> bool:
+    def _mcp_auth_error(self) -> str | None:
         if not self.runtime.auth_enabled():
-            return True
+            return None
         token = self._bearer()
         if not token:
-            return False
+            return "missing_token"
         if self.runtime.auth_token and secrets.compare_digest(token, self.runtime.auth_token):
-            return True
+            return None
         config = self.runtime.oauth_config
-        return bool(config and validate_access_token(config, token))
+        if config and validate_access_token(config, token):
+            return None
+        return "invalid_token"
 
-    def _unauthorized(self) -> None:
+    def _unauthorized(self, *, invalid_token: bool = False) -> None:
         base = self._base_url()
         metadata = f'{base}/.well-known/oauth-protected-resource'
+        challenge = f'Bearer resource_metadata="{metadata}"'
+        if invalid_token:
+            challenge += ', error="invalid_token", error_description="The access token is invalid or expired."'
         self._json(
             401,
-            {"error": "unauthorized", "error_description": "A valid bearer token is required."},
-            {"WWW-Authenticate": f'Bearer resource_metadata="{metadata}"'},
+            {
+                "error": "invalid_token" if invalid_token else "unauthorized",
+                "error_description": (
+                    "The access token is invalid or expired."
+                    if invalid_token
+                    else "A valid bearer token is required."
+                ),
+            },
+            {"WWW-Authenticate": challenge},
         )
 
     def _server_card(self) -> dict[str, Any]:
@@ -191,7 +206,7 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             "token_endpoint": f"{base}/oauth/token",
             "registration_endpoint": f"{base}/oauth/register",
             "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
         }
@@ -254,8 +269,9 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         if origin and not _allowed_origin(origin):
             self._json(403, {"error": "origin_not_allowed"})
             return
-        if not self._mcp_authorized():
-            self._unauthorized()
+        auth_error = self._mcp_auth_error()
+        if auth_error is not None:
+            self._unauthorized(invalid_token=auth_error == "invalid_token")
             return
         try:
             raw = self._read(MAX_HTTP_BODY_BYTES)
@@ -265,7 +281,27 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as exc:
             self._json(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"Parse error: {exc}"}})
             return
-        response = dispatch(self.runtime, request)
+        try:
+            response = dispatch(self.runtime, request)
+        except Exception as exc:
+            # Never tear down the HTTP request because an implementation
+            # exception escaped the tool/protocol boundary. A dropped MCP
+            # response is surfaced by clients as opaque TaskGroup/
+            # ExceptionGroup transport failures, which are not actionable.
+            LOGGER.exception("Unhandled MCP dispatch failure")
+            self._json(
+                500,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "error": {
+                        "code": -32603,
+                        "message": "Internal error",
+                        "data": {"exception_type": type(exc).__name__},
+                    },
+                },
+            )
+            return
         if response is None:
             self.send_response(202)
             self.send_header("Content-Length", "0")
@@ -349,7 +385,16 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         if not secrets.compare_digest(params.get("password", ""), config.password):
             self._html(401, self._authorize_page(params, "Incorrect password"))
             return
-        code = config.issue_code(params["client_id"], params["redirect_uri"], params["code_challenge"])
+        requested_resource = params.get("resource", "").strip()
+        if requested_resource and config.resource and requested_resource != config.resource:
+            self._html(400, self._authorize_page(params, "resource does not match this MCP server"))
+            return
+        code = config.issue_code(
+            params["client_id"],
+            params["redirect_uri"],
+            params["code_challenge"],
+            requested_resource or config.resource,
+        )
         parsed = urllib.parse.urlparse(params["redirect_uri"])
         query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
         query.append(("code", code))
@@ -383,7 +428,11 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError) as exc:
             self._json(400, {"error": "invalid_request", "error_description": str(exc)})
             return
-        if params.get("grant_type") != "authorization_code":
+        grant_type = params.get("grant_type")
+        if grant_type == "refresh_token":
+            self._refresh_token_post(config, params)
+            return
+        if grant_type != "authorization_code":
             self._json(400, {"error": "unsupported_grant_type"})
             return
         code = config.consume_code(params.get("code", ""))
@@ -413,12 +462,75 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         if params.get("redirect_uri") != code.redirect_uri:
             self._json(400, {"error": "invalid_grant", "error_description": "redirect_uri mismatch"})
             return
+        requested_resource = params.get("resource", "").strip()
+        if requested_resource and code.resource and requested_resource != code.resource:
+            self._json(400, {"error": "invalid_target", "error_description": "resource mismatch"})
+            return
         verifier = params.get("code_verifier", "")
         if not verify_pkce(verifier, code.challenge):
             self._json(400, {"error": "invalid_grant", "error_description": "PKCE verification failed"})
             return
         token = create_access_token(config, client_id)
-        self._json(200, {"access_token": token, "token_type": "Bearer", "expires_in": config.token_ttl})
+        refresh_token = config.issue_refresh_token(client_id, code.resource)
+        self._json(
+            200,
+            {
+                "access_token": token,
+                "refresh_token": refresh_token,
+                "token_type": "Bearer",
+                "expires_in": config.token_ttl,
+            },
+        )
+
+    def _refresh_token_post(self, config: OAuthConfig, params: dict[str, str]) -> None:
+        client_id = params.get("client_id", "")
+        basic_id, basic_secret = self._basic_client()
+        if basic_id:
+            client_id = basic_id
+            client_secret = basic_secret
+            auth_method = "client_secret_basic"
+        else:
+            client_secret = params.get("client_secret")
+            client = config.registry.get(client_id)
+            auth_method = client.token_endpoint_auth_method if client else "none"
+        client = config.registry.get(client_id)
+        if client is None:
+            self._json(401, {"error": "invalid_client"})
+            return
+        if client.token_endpoint_auth_method != "none" and not config.registry.authenticates(
+            client_id,
+            client_secret,
+            auth_method,
+        ):
+            self._json(401, {"error": "invalid_client"})
+            return
+        refresh_token = params.get("refresh_token", "")
+        requested_resource = params.get("resource", "").strip() or config.resource
+        grant = config.consume_refresh_token(
+            refresh_token,
+            client_id=client_id,
+            resource=requested_resource,
+        )
+        if grant is None:
+            self._json(
+                400,
+                {
+                    "error": "invalid_grant",
+                    "error_description": "refresh token is invalid, expired, or already used",
+                },
+            )
+            return
+        access_token = create_access_token(config, client_id)
+        rotated_refresh_token = config.issue_refresh_token(client_id, grant.resource)
+        self._json(
+            200,
+            {
+                "access_token": access_token,
+                "refresh_token": rotated_refresh_token,
+                "token_type": "Bearer",
+                "expires_in": config.token_ttl,
+            },
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -464,7 +576,21 @@ def _oauth_config() -> OAuthConfig:
     token_ttl = _env_int(f"{ENV_PREFIX}_OAUTH_TOKEN_TTL", OAUTH_TOKEN_TTL_SECONDS)
     if not 60 <= token_ttl <= 604_800:
         raise ValueError(f"{ENV_PREFIX}_OAUTH_TOKEN_TTL must be between 60 and 604800")
-    config = OAuthConfig(password=password, server_url=server_url, token_secret=token_secret, token_ttl=token_ttl)
+    refresh_token_ttl = _env_int(
+        f"{ENV_PREFIX}_OAUTH_REFRESH_TOKEN_TTL",
+        OAUTH_REFRESH_TOKEN_TTL_SECONDS,
+    )
+    if not 3600 <= refresh_token_ttl <= 31_536_000:
+        raise ValueError(
+            f"{ENV_PREFIX}_OAUTH_REFRESH_TOKEN_TTL must be between 3600 and 31536000"
+        )
+    config = OAuthConfig(
+        password=password,
+        server_url=server_url,
+        token_secret=token_secret,
+        token_ttl=token_ttl,
+        refresh_token_ttl=refresh_token_ttl,
+    )
     client_id = os.environ.get(f"{ENV_PREFIX}_OAUTH_CLIENT_ID")
     if client_id:
         redirects = tuple(
