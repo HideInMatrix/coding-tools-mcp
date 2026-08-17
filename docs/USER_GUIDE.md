@@ -283,7 +283,42 @@ cp .env.example .env
 
 普通用户优先推荐桌面版，CLI 更适合开发调试、自动化启动和远程开发环境。
 
-## 15. 常见问题
+## 15. 关于与检查更新
+
+桌面程序左侧提供：
+
+```text
+首页
+关于
+```
+
+“首页”就是 MCP 启动、网络方案、Workspace 和日志所在的主页面。
+
+进入“关于”页面后，可以查看：
+
+- 当前安装版本
+- GitHub 最新 Release 版本
+- 当前是否存在可用更新
+- Copyright © micromatrix.org
+
+程序首次进入“关于”页面时会自动检查一次 GitHub Release，也可以手动点击 `检查版本`。
+
+如果检测到 GitHub 上存在更高版本，按钮会变成蓝色的 `更新`。点击后优先打开当前系统对应的 Release 安装包；如果该 Release 缺少当前平台资产，则打开 Release 页面。
+
+Release 文件名不包含版本号，平台名称统一为：
+
+```text
+Coding-Tools-MCP-windows-x64.zip
+Coding-Tools-MCP-windows-arm64.zip
+Coding-Tools-MCP-macos-x64.dmg
+Coding-Tools-MCP-macos-arm64.dmg
+Coding-Tools-MCP-linux-x64.tar.gz
+Coding-Tools-MCP-linux-arm64.tar.gz
+```
+
+版本号只保留在 Git Tag / GitHub Release 中，例如 `v0.1.4`，不会重复写入压缩包文件名。
+
+## 16. 常见问题
 
 ### 启动后没有 Public MCP URL
 
@@ -309,7 +344,7 @@ cp .env.example .env
 
 普通用户不需要填写，保持“高级 OAuth 设置”关闭即可。
 
-## 16. 安全建议
+## 17. 安全建议
 
 - Workspace 只选择当前项目目录
 - 不要选择 `/`、`C:\` 或整个 Home 目录
@@ -318,7 +353,7 @@ cp .env.example .env
 - 执行高影响命令前确认 AI 当前操作的 Workspace
 - 公网 MCP 地址只提供给需要使用的客户端
 
-## 17. 进一步阅读
+## 18. 进一步阅读
 
 - [网络提供商安装与部署教程（新手版）](NETWORK_PROVIDER_BEGINNER_GUIDE.md)
 - [NetworkProvider 架构与开发说明](NETWORK_PROVIDERS.md)

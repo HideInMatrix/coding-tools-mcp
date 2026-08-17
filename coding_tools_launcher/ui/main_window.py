@@ -4,10 +4,11 @@ import threading
 from pathlib import Path
 
 from coding_tools_mcp import __version__ as MCP_VERSION
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QFont, QPalette
+from PySide6.QtCore import QObject, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont, QPalette
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpacerItem,
     QStackedWidget,
+    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
 from ..config import LaunchConfig, NetworkConfig
 from ..executables import resolve_executable
 from ..launcher import MCPLauncher
+from ..updates import ReleaseInfo, fetch_latest_release
 from ..user_settings import load_settings, save_settings
 from .executable_selector import ExecutableSelector
 
@@ -41,6 +44,8 @@ class Bridge(QObject):
     stopped = Signal()
     executable_detected = Signal(str, object)
     executable_detection_failed = Signal(str, str)
+    update_checked = Signal(object)
+    update_check_failed = Signal(str)
 
 
 class MainWindow(QMainWindow):
@@ -50,8 +55,8 @@ class MainWindow(QMainWindow):
         # macOS 下 700px 左右的初始宽度会让 QFormLayout 的标签列、
         # 输入框和右侧按钮互相挤压。默认给表单更充足的横向空间，
         # 同时保留一个不会把输入框压扁的最小尺寸。
-        self.resize(860, 760)
-        self.setMinimumSize(780, 680)
+        self.resize(980, 760)
+        self.setMinimumSize(900, 680)
 
         self.bridge = Bridge()
         self.bridge.log.connect(self._append_log)
@@ -62,11 +67,14 @@ class MainWindow(QMainWindow):
         self.bridge.executable_detection_failed.connect(
             self._on_executable_detection_failed
         )
+        self.bridge.update_checked.connect(self._on_update_checked)
+        self.bridge.update_check_failed.connect(self._on_update_check_failed)
 
         self.launcher = MCPLauncher(log=self.bridge.log.emit)
         self._busy = False
+        self._checking_update = False
+        self._release_info: ReleaseInfo | None = None
         self._executable_selectors: dict[str, ExecutableSelector] = {}
-        self._build_menu()
         self._build_ui()
         self._restore_settings()
 
@@ -74,30 +82,72 @@ class MainWindow(QMainWindow):
         self._health_timer.timeout.connect(self._poll_health)
         self._health_timer.start(700)
 
-    def _build_menu(self) -> None:
-        help_menu = self.menuBar().addMenu("帮助")
-        self.about_action = QAction("关于 Coding Tools MCP", self)
-        self.about_action.setMenuRole(QAction.MenuRole.AboutRole)
-        self.about_action.triggered.connect(self._show_about)
-        help_menu.addAction(self.about_action)
-
-    def _show_about(self) -> None:
-        QMessageBox.about(
-            self,
-            "关于 Coding Tools MCP",
-            (
-                "<h3>Coding Tools MCP</h3>"
-                f"<p>版本：{MCP_VERSION}</p>"
-                "<p>Copyright © micromatrix.org</p>"
-            ),
-        )
-
     def _build_ui(self) -> None:
         root = QWidget(self)
         self.setCentralWidget(root)
-        outer = QVBoxLayout(root)
+        shell = QHBoxLayout(root)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+
+        sidebar = QFrame()
+        sidebar.setFrameShape(QFrame.Shape.StyledPanel)
+        sidebar.setFixedWidth(92)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(10, 18, 10, 18)
+        sidebar_layout.setSpacing(10)
+
+        brand = QLabel("CT")
+        brand_font = QFont()
+        brand_font.setPointSize(18)
+        brand_font.setWeight(QFont.Weight.DemiBold)
+        brand.setFont(brand_font)
+        brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand.setFixedHeight(46)
+        sidebar_layout.addWidget(brand)
+
+        self.navigation_group = QButtonGroup(self)
+        self.navigation_group.setExclusive(True)
+
+        def navigation_button(
+            text: str,
+            icon: QStyle.StandardPixmap,
+        ) -> QToolButton:
+            button = QToolButton()
+            button.setText(text)
+            button.setIcon(self.style().standardIcon(icon))
+            button.setIconSize(QSize(24, 24))
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            button.setCheckable(True)
+            button.setAutoRaise(True)
+            button.setFixedSize(72, 64)
+            button.setStyleSheet(
+                "QToolButton { border: none; border-radius: 8px; padding: 5px; }"
+                "QToolButton:checked { background: palette(alternate-base); }"
+            )
+            self.navigation_group.addButton(button)
+            sidebar_layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
+            return button
+
+        self.home_nav_button = navigation_button(
+            "首页",
+            QStyle.StandardPixmap.SP_DirHomeIcon,
+        )
+        self.about_nav_button = navigation_button(
+            "关于",
+            QStyle.StandardPixmap.SP_MessageBoxInformation,
+        )
+        sidebar_layout.addStretch(1)
+
+        self.page_stack = QStackedWidget()
+        shell.addWidget(sidebar)
+        shell.addWidget(self.page_stack, 1)
+
+        home_page = QWidget()
+        self.home_page = home_page
+        outer = QVBoxLayout(home_page)
         outer.setContentsMargins(28, 24, 28, 24)
         outer.setSpacing(18)
+        self.page_stack.addWidget(home_page)
 
         title = QLabel("Coding Tools MCP")
         title_font = QFont()
@@ -467,11 +517,153 @@ class MainWindow(QMainWindow):
         self.logs.setMinimumHeight(72)
         outer.addWidget(self.logs, 1)
 
+        self.about_page = self._build_about_page()
+        self.page_stack.addWidget(self.about_page)
+        self.home_nav_button.clicked.connect(lambda: self._select_page("home"))
+        self.about_nav_button.clicked.connect(lambda: self._select_page("about"))
+        self.home_nav_button.setChecked(True)
+        self.page_stack.setCurrentWidget(self.home_page)
+
         # 依据实际布局内容设置最低窗口高度，避免 Qt 在总空间不足时
         # 反向挤压连接设置等静态区域。
         root.adjustSize()
         required_height = root.minimumSizeHint().height()
         self.setMinimumHeight(max(self.minimumHeight(), required_height))
+
+    def _build_about_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(34, 28, 34, 28)
+        layout.setSpacing(18)
+
+        title = QLabel("关于")
+        title_font = QFont()
+        title_font.setPointSize(24)
+        title_font.setWeight(QFont.Weight.DemiBold)
+        title.setFont(title_font)
+        layout.addWidget(title)
+
+        subtitle = QLabel("Coding Tools MCP 版本与更新信息")
+        subtitle.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+        layout.addWidget(subtitle)
+
+        card = QFrame()
+        card.setFrameShape(QFrame.Shape.StyledPanel)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(24, 22, 24, 22)
+        card_layout.setSpacing(16)
+
+        app_name = QLabel("Coding Tools MCP")
+        app_font = QFont()
+        app_font.setPointSize(19)
+        app_font.setWeight(QFont.Weight.DemiBold)
+        app_name.setFont(app_font)
+        card_layout.addWidget(app_name)
+
+        version_row = QHBoxLayout()
+        version_row.addWidget(QLabel("当前版本"))
+        version_row.addStretch(1)
+        self.current_version_label = QLabel(MCP_VERSION)
+        version_row.addWidget(self.current_version_label)
+        card_layout.addLayout(version_row)
+
+        latest_row = QHBoxLayout()
+        latest_row.addWidget(QLabel("GitHub 最新版本"))
+        latest_row.addStretch(1)
+        self.latest_version_label = QLabel("未检查")
+        latest_row.addWidget(self.latest_version_label)
+        card_layout.addLayout(latest_row)
+
+        self.update_status_label = QLabel("打开关于页面后会自动检查 GitHub Release。")
+        self.update_status_label.setWordWrap(True)
+        self.update_status_label.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+        card_layout.addWidget(self.update_status_label)
+
+        action_row = QHBoxLayout()
+        action_row.addStretch(1)
+        self.update_button = QPushButton("检查版本")
+        self.update_button.setMinimumWidth(120)
+        self.update_button.clicked.connect(self._on_update_button_clicked)
+        action_row.addWidget(self.update_button)
+        card_layout.addLayout(action_row)
+
+        copyright_label = QLabel("Copyright © micromatrix.org")
+        copyright_label.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+        card_layout.addWidget(copyright_label)
+        layout.addWidget(card)
+        layout.addStretch(1)
+        return page
+
+    def _select_page(self, page: str) -> None:
+        if page == "about":
+            self.page_stack.setCurrentWidget(self.about_page)
+            self.about_nav_button.setChecked(True)
+            if self._release_info is None and not self._checking_update:
+                self._check_for_updates_async()
+            return
+        self.page_stack.setCurrentWidget(self.home_page)
+        self.home_nav_button.setChecked(True)
+
+    def _on_update_button_clicked(self) -> None:
+        info = self._release_info
+        if info is not None and info.update_available:
+            target = info.download_url or info.release_url
+            if target:
+                QDesktopServices.openUrl(QUrl(target))
+                return
+        self._check_for_updates_async()
+
+    def _check_for_updates_async(self) -> None:
+        if self._checking_update:
+            return
+        self._checking_update = True
+        self.update_button.setEnabled(False)
+        self.update_button.setText("正在检查…")
+        self.update_button.setStyleSheet("")
+        self.update_status_label.setText("正在获取 GitHub 最新 Release 信息…")
+
+        def worker() -> None:
+            try:
+                info = fetch_latest_release(MCP_VERSION)
+            except Exception as exc:
+                self.bridge.update_check_failed.emit(str(exc))
+            else:
+                self.bridge.update_checked.emit(info)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_checked(self, value: object) -> None:
+        if not isinstance(value, ReleaseInfo):
+            self._on_update_check_failed("GitHub Release 返回了无法识别的数据")
+            return
+        self._checking_update = False
+        self._release_info = value
+        self.latest_version_label.setText(value.latest_version)
+        self.update_button.setEnabled(True)
+        if value.update_available:
+            self.update_button.setText("更新")
+            self.update_button.setStyleSheet(
+                "QPushButton { background-color: #409EFF; color: white; }"
+            )
+            if value.download_url:
+                self.update_status_label.setText(
+                    f"发现新版本 {value.latest_version}，点击更新获取 {value.asset_name}。"
+                )
+            else:
+                self.update_status_label.setText(
+                    f"发现新版本 {value.latest_version}，但当前 Release 缺少 {value.asset_name}；点击更新打开 Release 页面。"
+                )
+            return
+        self.update_button.setText("检查版本")
+        self.update_button.setStyleSheet("")
+        self.update_status_label.setText("当前已经是最新版本。")
+
+    def _on_update_check_failed(self, message: str) -> None:
+        self._checking_update = False
+        self.update_button.setEnabled(True)
+        self.update_button.setText("检查版本")
+        self.update_button.setStyleSheet("")
+        self.update_status_label.setText(f"检查更新失败：{message}")
 
     def _choose_workspace(self) -> None:
         current = self.workspace_edit.text().strip() or str(Path.home())

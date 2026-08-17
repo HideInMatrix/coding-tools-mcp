@@ -9,11 +9,12 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from coding_tools_mcp import __version__ as MCP_VERSION
 from coding_tools_launcher.executables.models import ExecutableCandidate
 from coding_tools_launcher.ui.main_window import MainWindow
+from coding_tools_launcher.updates import ReleaseInfo
 
 
 class NetworkProviderUITests(unittest.TestCase):
@@ -47,16 +48,59 @@ class NetworkProviderUITests(unittest.TestCase):
         ]
         self.assertEqual(actual, expected)
 
-    def test_about_dialog_uses_project_version_and_micromatrix_copyright(self) -> None:
-        self.assertEqual(self.window.about_action.text(), "关于 Coding Tools MCP")
-        with patch.object(QMessageBox, "about") as about:
-            self.window._show_about()
+    def test_sidebar_uses_home_and_about_pages(self) -> None:
+        self.assertEqual(self.window.home_nav_button.text(), "首页")
+        self.assertEqual(self.window.about_nav_button.text(), "关于")
+        self.assertIs(self.window.page_stack.currentWidget(), self.window.home_page)
 
-        about.assert_called_once()
-        _parent, title, body = about.call_args.args
-        self.assertEqual(title, "关于 Coding Tools MCP")
-        self.assertIn(f"版本：{MCP_VERSION}", body)
-        self.assertIn("Copyright © micromatrix.org", body)
+        with patch.object(self.window, "_check_for_updates_async") as check:
+            self.window._select_page("about")
+
+        self.assertIs(self.window.page_stack.currentWidget(), self.window.about_page)
+        self.assertTrue(self.window.about_nav_button.isChecked())
+        check.assert_called_once()
+
+    def test_about_page_uses_project_version_and_micromatrix_copyright(self) -> None:
+        self.assertEqual(self.window.current_version_label.text(), MCP_VERSION)
+        copyright_labels = [
+            label.text()
+            for label in self.window.about_page.findChildren(type(self.window.current_version_label))
+        ]
+        self.assertIn("Copyright © micromatrix.org", copyright_labels)
+
+    def test_update_available_turns_check_button_into_blue_update_button(self) -> None:
+        info = ReleaseInfo(
+            current_version=MCP_VERSION,
+            latest_version="0.1.4",
+            tag_name="v0.1.4",
+            release_url="https://github.com/HideInMatrix/coding-tools-mcp/releases/tag/v0.1.4",
+            asset_name="Coding-Tools-MCP-windows-arm64.zip",
+            download_url=(
+                "https://github.com/HideInMatrix/coding-tools-mcp/releases/download/"
+                "v0.1.4/Coding-Tools-MCP-windows-arm64.zip"
+            ),
+            update_available=True,
+        )
+        self.window._on_update_checked(info)
+
+        self.assertEqual(self.window.latest_version_label.text(), "0.1.4")
+        self.assertEqual(self.window.update_button.text(), "更新")
+        self.assertIn("#409EFF", self.window.update_button.styleSheet())
+
+    def test_latest_version_keeps_check_version_button(self) -> None:
+        info = ReleaseInfo(
+            current_version=MCP_VERSION,
+            latest_version=MCP_VERSION,
+            tag_name=f"v{MCP_VERSION}",
+            release_url="https://github.com/HideInMatrix/coding-tools-mcp/releases/latest",
+            asset_name="Coding-Tools-MCP-macos-arm64.dmg",
+            download_url="",
+            update_available=False,
+        )
+        self.window._on_update_checked(info)
+
+        self.assertEqual(self.window.update_button.text(), "检查版本")
+        self.assertEqual(self.window.update_button.styleSheet(), "")
 
     def test_switching_provider_changes_visible_configuration_page(self) -> None:
         for provider in ("cloudflare", "frp", "ngrok", "tailscale", "external"):

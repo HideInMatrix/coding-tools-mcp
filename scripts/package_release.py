@@ -24,8 +24,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--version",
-        required=True,
-        help="Version string used in release filenames, e.g. 1.2.0 or v1.2.0.",
+        required=False,
+        help="Deprecated compatibility option. Release filenames no longer contain versions.",
     )
     parser.add_argument(
         "--output-dir",
@@ -34,13 +34,6 @@ def parse_args() -> argparse.Namespace:
         help="Directory for release archives.",
     )
     return parser.parse_args()
-
-
-def normalized_version(value: str) -> str:
-    value = value.strip()
-    if value.lower().startswith("v") and len(value) > 1:
-        value = value[1:]
-    return value.replace("/", "-").replace("\\", "-")
 
 
 def architecture() -> str:
@@ -61,10 +54,14 @@ def platform_label() -> str:
     if system == "windows":
         return f"windows-{arch}"
     if system == "darwin":
-        return "macos-intel" if arch == "x64" else "macos-apple-silicon"
+        return f"macos-{arch}"
     if system == "linux":
         return f"linux-{arch}"
     raise SystemExit(f"Unsupported platform: {platform.system()} {platform.machine()}")
+
+
+def release_base_name() -> str:
+    return f"Coding-Tools-MCP-{platform_label()}"
 
 
 def write_sha256(path: Path) -> Path:
@@ -139,14 +136,11 @@ def package_macos(output_base: Path) -> Path:
 
 def main() -> int:
     args = parse_args()
-    version = normalized_version(args.version)
-    if not version:
-        raise SystemExit("Version must not be empty.")
 
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    base_name = f"Coding-Tools-MCP-{version}-{platform_label()}"
+    base_name = release_base_name()
     output_base = output_dir / base_name
 
     system = platform.system().lower()
