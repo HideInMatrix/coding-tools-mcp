@@ -7,8 +7,70 @@
 当前自研服务端版本：
 
 ```text
-coding-tools-mcp 1.0.0
+coding-tools-mcp 0.1.0
 ```
+
+### 兼容基线与版本规则
+
+`0.1.0` 是本仓库自研 `coding-tools-mcp` 的第一个版本。自研实现不沿用
+第三方包的版本号，因此不能因为第三方实现已经发布到 `0.3.0` 就把本项目
+首版标记为 `1.0.0`。
+
+当前兼容基线为已经验证可正常工作的第三方：
+
+```text
+coding-tools-mcp 0.3.0
+```
+
+这里的“兼容”指 **客户端可观察行为兼容**，不是复制第三方源码。开发时需要
+优先对齐以下行为：
+
+- 18 个工具的名称、输入 Schema、公共 outputSchema 与 annotations；
+- legacy `initialize`、modern MCP 请求和 JSON-RPC 错误语义；
+- HTTP transport 的状态码、Content-Type、协议 Header 与 modern mirror headers；
+- OAuth Authorization Code + PKCE、Dynamic Client Registration、Protected Resource Metadata；
+- 文件读取、目录/搜索、Patch、命令生命周期、TTY、输出分页、Git 返回结构；
+- 客户端可读取的结构化错误码、分页字段和 `next_action`。
+
+以下能力不是 `0.1.x` 达成客户端兼容的强制前提，可以在后续版本独立实现：
+
+- telemetry；
+- Linux Landlock 内核级沙箱；
+- 第三方包内部的单文件组织方式或私有实现细节。
+
+每次发现“第三方 `0.3.0` 正常、自研版本异常”的行为差异，都必须：
+
+1. 先确认差异是否属于客户端可观察行为；
+2. 修复自研实现，而不是直接依赖或复制第三方 wheel；
+3. 在 `tests/test_custom_mcp_server.py` 或对应测试文件增加回归测试；
+4. 保留已经对外使用的兼容字段，除非有明确的版本升级计划。
+
+### OAuth resource 兼容规则
+
+为兼容 `coding-tools-mcp 0.3.0` 和已经按其行为实现的 MCP Client，本项目的
+OAuth canonical resource 使用公网服务的 **base URL**：
+
+```text
+Public URL:       https://mcp.example.com
+MCP Endpoint:     https://mcp.example.com/mcp
+OAuth resource:   https://mcp.example.com
+```
+
+客户端在授权或 token 请求里传入 `https://mcp.example.com/mcp` 时，可以作为
+同一 MCP 服务的 endpoint alias 接受，但内部必须规范化回 base URL。其他域名
+或其他路径不能因为“看起来相似”而绕过 resource/audience 校验。
+
+`CODING_TOOLS_MCP_SERVER_URL` 同样允许填写 base URL 或完整 `/mcp` URL，服务端
+必须规范化，禁止产生 `.../mcp/mcp`。
+
+Protected Resource Metadata 同时兼容：
+
+```text
+/.well-known/oauth-protected-resource
+/.well-known/oauth-protected-resource/mcp
+```
+
+两者都应描述同一个 canonical OAuth resource。
 
 ## 1. 设计目标
 

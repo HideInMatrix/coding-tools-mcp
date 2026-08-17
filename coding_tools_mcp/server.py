@@ -27,7 +27,15 @@ from .oauth import (
     validate_access_token,
     verify_pkce,
 )
-from .protocol import KNOWN_PROTOCOL_VERSIONS, dispatch
+from .errors import RpcError
+from .protocol import (
+    HEADER_MISMATCH,
+    KNOWN_PROTOCOL_VERSIONS,
+    LEGACY_PROTOCOL_VERSIONS,
+    dispatch,
+    rpc_response_status,
+    validate_mirror_headers,
+)
 from .runtime import ENDPOINT_PATH, PERMISSION_MODES, Runtime
 from .transport_stdio import serve_stdio
 
@@ -53,6 +61,35 @@ def _env_int(name: str, default: int) -> int:
 
 def _loopback(host: str) -> bool:
     return host in {"", "localhost", "127.0.0.1", "::1"}
+
+
+def _normalize_public_server_url(value: str | None) -> str | None:
+    """Normalize a configured public MCP URL to the OAuth server base URL.
+
+    The desktop UI accepts either ``https://host`` or
+    ``https://host/mcp``.  Direct server launches should behave the same way;
+    otherwise OAuthConfig.resource would append ENDPOINT_PATH a second time
+    and advertise ``.../mcp/mcp`` as the token audience.
+    """
+
+    raw = str(value or "").strip().rstrip("/")
+    if not raw:
+        return None
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(
+            f"{ENV_PREFIX}_SERVER_URL must be a complete http/https URL"
+        )
+    if parsed.query or parsed.fragment:
+        raise ValueError(
+            f"{ENV_PREFIX}_SERVER_URL must not contain a query or fragment"
+        )
+    path = parsed.path.rstrip("/")
+    if path.endswith(ENDPOINT_PATH):
+        path = path[: -len(ENDPOINT_PATH)].rstrip("/")
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, path, "", "")
+    ).rstrip("/")
 
 
 def _allowed_origin(origin: str) -> bool:
@@ -158,18 +195,29 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
     def _unauthorized(self, *, invalid_token: bool = False) -> None:
         base = self._base_url()
         metadata = f'{base}/.well-known/oauth-protected-resource'
-        challenge = f'Bearer resource_metadata="{metadata}"'
+        challenge = (
+            'Bearer realm="coding-tools-mcp", '
+            f'resource_metadata="{metadata}"'
+        )
         if invalid_token:
             challenge += ', error="invalid_token", error_description="The access token is invalid or expired."'
+        message = (
+            "The access token is invalid or expired."
+            if invalid_token
+            else "Unauthorized"
+        )
         self._json(
             401,
             {
-                "error": "invalid_token" if invalid_token else "unauthorized",
-                "error_description": (
-                    "The access token is invalid or expired."
-                    if invalid_token
-                    else "A valid bearer token is required."
-                ),
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {
+                    "code": -32000,
+                    "message": message,
+                    "data": {
+                        "reason": "invalid_token" if invalid_token else "missing_token"
+                    },
+                },
             },
             {"WWW-Authenticate": challenge},
         )
@@ -200,7 +248,7 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
 
     def _oauth_metadata(self) -> dict[str, Any]:
         base = self._base_url()
-        return {
+        metadata: dict[str, Any] = {
             "issuer": base,
             "authorization_endpoint": f"{base}/oauth/authorize",
             "token_endpoint": f"{base}/oauth/token",
@@ -210,28 +258,38 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
         }
+        config = self.runtime.oauth_config
+        if config and config.resource:
+            metadata["protected_resources"] = [config.resource]
+        return metadata
 
     def _protected_resource_metadata(self) -> dict[str, Any]:
         base = self._base_url()
+        config = self.runtime.oauth_config
+        resource = config.resource if config and config.resource else base
         return {
-            "resource": f"{base}{ENDPOINT_PATH}",
+            "resource": resource,
+            "resource_name": "Coding Tools MCP",
             "authorization_servers": [base],
             "bearer_methods_supported": ["header"],
         }
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(204)
-        self.send_header("Allow", "GET, POST, OPTIONS")
+        self.send_header("Allow", "GET, HEAD, POST, OPTIONS")
         origin = self.headers.get("Origin")
         if origin and _allowed_origin(origin):
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, MCP-Protocol-Version, Mcp-Method, Mcp-Name")
-            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         path = urllib.parse.urlparse(self.path).path
         if path == "/":
+            self._json(200, self._server_card())
+            return
+        if path in {"/.well-known/mcp.json", "/.well-known/mcp/server-card.json"}:
             self._json(200, self._server_card())
             return
         if path in {"/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"}:
@@ -240,13 +298,62 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
                 return
             self._json(200, self._oauth_metadata())
             return
-        if path in {"/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"}:
+        if path in {
+            "/.well-known/oauth-protected-resource",
+            f"/.well-known/oauth-protected-resource{ENDPOINT_PATH}",
+        }:
             self._json(200, self._protected_resource_metadata())
             return
         if path == "/oauth/authorize":
             self._authorize_get()
             return
+        if path == ENDPOINT_PATH:
+            auth_error = self._mcp_auth_error()
+            if auth_error is not None:
+                self._unauthorized(invalid_token=auth_error == "invalid_token")
+                return
+            self._json(
+                405,
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "code": -32000,
+                        "message": "SSE GET stream is not supported",
+                    },
+                },
+                {"Allow": "POST"},
+            )
+            return
         self._json(404, {"error": "not_found"})
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        path = urllib.parse.urlparse(self.path).path
+        if path != ENDPOINT_PATH:
+            self._json(404, {"error": "not_found"})
+            return
+        auth_error = self._mcp_auth_error()
+        if auth_error is not None:
+            self._unauthorized(invalid_token=auth_error == "invalid_token")
+            return
+        self._json(
+            405,
+            {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {
+                    "code": -32601,
+                    "message": "DELETE is not supported: this endpoint has no sessions to terminate",
+                },
+            },
+            {"Allow": "POST"},
+        )
+
+    def _duplicate_mirror_header(self) -> str | None:
+        for header in ("MCP-Protocol-Version", "Mcp-Method", "Mcp-Name"):
+            if len(self.headers.get_all(header) or ()) > 1:
+                return header
+        return None
 
     def do_POST(self) -> None:  # noqa: N802
         path = urllib.parse.urlparse(self.path).path
@@ -273,16 +380,123 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         if auth_error is not None:
             self._unauthorized(invalid_token=auth_error == "invalid_token")
             return
+        if self.headers.get_content_type().lower() != "application/json":
+            self._json(
+                415,
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "Content-Type must be application/json"},
+                },
+            )
+            return
+        if self.headers.get("Content-Length") is None:
+            self._json(
+                411,
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "Content-Length is required"},
+                },
+            )
+            return
         try:
             raw = self._read(MAX_HTTP_BODY_BYTES)
             request = json.loads(raw)
-            if not isinstance(request, dict):
-                raise ValueError("JSON-RPC request must be an object")
         except (ValueError, json.JSONDecodeError) as exc:
             self._json(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"Parse error: {exc}"}})
             return
+        if isinstance(request, list):
+            self._json(
+                400,
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "code": -32600,
+                        "message": "JSON-RPC batch requests are not supported by Streamable HTTP",
+                    },
+                },
+            )
+            return
+        if not isinstance(request, dict):
+            self._json(
+                400,
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "Invalid Request"},
+                },
+            )
+            return
+        method = request.get("method")
+        raw_params = request.get("params")
+        params = raw_params if isinstance(raw_params, dict) else {}
+        protocol_version = self.headers.get("MCP-Protocol-Version")
+        duplicate = self._duplicate_mirror_header()
+        if duplicate is not None:
+            self._json(
+                400,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "error": {
+                        "code": HEADER_MISMATCH,
+                        "message": f"{duplicate} must appear exactly once",
+                        "data": {"header": duplicate, "reason": "duplicate"},
+                    },
+                },
+            )
+            return
+        if isinstance(method, str):
+            try:
+                validate_mirror_headers(
+                    method,
+                    params,
+                    version_header=protocol_version,
+                    method_header=self.headers.get("Mcp-Method"),
+                    name_header=self.headers.get("Mcp-Name"),
+                )
+            except RpcError as exc:
+                self._json(
+                    400,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request.get("id"),
+                        "error": {
+                            "code": exc.code,
+                            "message": exc.message,
+                            **({"data": exc.data} if exc.data is not None else {}),
+                        },
+                    },
+                )
+                return
+        if (
+            protocol_version
+            and protocol_version not in KNOWN_PROTOCOL_VERSIONS
+            and not (isinstance(params.get("_meta"), dict) and "io.modelcontextprotocol/protocolVersion" in params["_meta"])
+        ):
+            self._json(
+                400,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id"),
+                    "error": {
+                        "code": -32600,
+                        "message": "Unsupported MCP protocol version",
+                        "data": {"supported": list(KNOWN_PROTOCOL_VERSIONS), "received": protocol_version},
+                    },
+                },
+            )
+            return
         try:
-            response = dispatch(self.runtime, request)
+            response = dispatch(
+                self.runtime,
+                request,
+                transport_protocol_version=(
+                    protocol_version if protocol_version in LEGACY_PROTOCOL_VERSIONS else None
+                ),
+            )
         except Exception as exc:
             # Never tear down the HTTP request because an implementation
             # exception escaped the tool/protocol boundary. A dropped MCP
@@ -307,7 +521,7 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        self._json(200, response)
+        self._json(rpc_response_status(request, response), response)
 
     def _register_post(self) -> None:
         config = self.runtime.oauth_config
@@ -386,14 +600,22 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             self._html(401, self._authorize_page(params, "Incorrect password"))
             return
         requested_resource = params.get("resource", "").strip()
-        if requested_resource and config.resource and requested_resource != config.resource:
-            self._html(400, self._authorize_page(params, "resource does not match this MCP server"))
+        normalized_resource = config.normalize_resource(requested_resource)
+        if requested_resource and config.resource and normalized_resource != config.resource:
+            self._html(
+                400,
+                self._authorize_page(
+                    params,
+                    "resource does not match this MCP server: "
+                    f"expected {config.resource}, received {requested_resource}",
+                ),
+            )
             return
         code = config.issue_code(
             params["client_id"],
             params["redirect_uri"],
             params["code_challenge"],
-            requested_resource or config.resource,
+            normalized_resource,
         )
         parsed = urllib.parse.urlparse(params["redirect_uri"])
         query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
@@ -463,7 +685,8 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             self._json(400, {"error": "invalid_grant", "error_description": "redirect_uri mismatch"})
             return
         requested_resource = params.get("resource", "").strip()
-        if requested_resource and code.resource and requested_resource != code.resource:
+        normalized_resource = config.normalize_resource(requested_resource)
+        if requested_resource and code.resource and normalized_resource != code.resource:
             self._json(400, {"error": "invalid_target", "error_description": "resource mismatch"})
             return
         verifier = params.get("code_verifier", "")
@@ -505,7 +728,7 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             self._json(401, {"error": "invalid_client"})
             return
         refresh_token = params.get("refresh_token", "")
-        requested_resource = params.get("resource", "").strip() or config.resource
+        requested_resource = config.normalize_resource(params.get("resource", "").strip())
         grant = config.consume_refresh_token(
             refresh_token,
             client_id=client_id,
@@ -562,7 +785,9 @@ def _oauth_config() -> OAuthConfig:
     password = os.environ.get(f"{ENV_PREFIX}_OAUTH_PASSWORD") or secrets.token_urlsafe(32)
     if not os.environ.get(f"{ENV_PREFIX}_OAUTH_PASSWORD"):
         print(f"OAuth authorize password: {password}", file=sys.stderr)
-    server_url = (os.environ.get(f"{ENV_PREFIX}_SERVER_URL") or "").strip().rstrip("/") or None
+    server_url = _normalize_public_server_url(
+        os.environ.get(f"{ENV_PREFIX}_SERVER_URL")
+    )
     raw_secret = (os.environ.get(f"{ENV_PREFIX}_OAUTH_TOKEN_SECRET") or "").strip()
     if raw_secret:
         try:

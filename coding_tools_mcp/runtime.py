@@ -16,10 +16,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import __version__
+from . import __compatibility_baseline__, __version__
 from .errors import RpcError, ToolError
 from .patching import apply_patch as apply_patch_envelope
-from .processes import CommandManager, command_payload
+from .processes import (
+    STREAM_HEAD_BYTES,
+    STREAM_LIMIT_BYTES,
+    CommandManager,
+    command_payload,
+)
 from .project_context import ProjectContext, load_project_context
 from .protocol import KNOWN_PROTOCOL_VERSIONS, RequestContext
 from .results import make_tool_result
@@ -55,6 +60,42 @@ def _iso_mtime(path: Path) -> str:
         return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat().replace("+00:00", "Z")
     except OSError:
         return ""
+
+
+def _parse_git_branch_line(line: str) -> tuple[str, str, int, int]:
+    branch = line
+    upstream = ""
+    ahead = 0
+    behind = 0
+    if "..." in line:
+        branch, rest = line.split("...", 1)
+        upstream = rest.split(" ", 1)[0]
+    if "[" in line and "]" in line:
+        meta = line.split("[", 1)[1].split("]", 1)[0]
+        ahead_match = re.search(r"ahead (\d+)", meta)
+        behind_match = re.search(r"behind (\d+)", meta)
+        ahead = int(ahead_match.group(1)) if ahead_match else 0
+        behind = int(behind_match.group(1)) if behind_match else 0
+    return branch.strip(), upstream.strip(), ahead, behind
+
+
+def _parse_diff_files(diff_text: str) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split()
+            if len(parts) >= 4:
+                path = parts[3][2:] if parts[3].startswith("b/") else parts[3]
+                current = {"path": path, "status": "modified", "binary": False}
+                files.append(current)
+        elif current is not None and line.startswith("new file mode"):
+            current["status"] = "added"
+        elif current is not None and line.startswith("deleted file mode"):
+            current["status"] = "deleted"
+        elif current is not None and line.startswith("Binary files"):
+            current["binary"] = True
+    return files
 
 
 class Runtime:
@@ -153,18 +194,40 @@ class Runtime:
             "server": SERVER_NAME,
             "title": SERVER_TITLE,
             "version": __version__,
+            "compatibility_baseline": __compatibility_baseline__,
             "workspace": str(self.workspace.root),
             "permission_mode": self.permission_mode,
             "auth_enabled": self.auth_enabled(),
             "supported_protocol_versions": list(KNOWN_PROTOCOL_VERSIONS),
             "endpoint_path": ENDPOINT_PATH,
             "runtime_dir": str(self.commands.runtime_dir),
+            "home": str(self.commands.home_dir),
+            "tmpdir": str(self.commands.tmp_dir),
+            "cache_dir": str(self.commands.cache_dir),
             "network_allowed": self.allow_network,
+            "dangerously_skip_all_permissions": self.permission_mode == "dangerous",
+            "annotation_override": (
+                "fake_readonly" if self.fake_readonly_annotations else None
+            ),
+            "landlock": {
+                "available": False,
+                "enabled": False,
+                "abi_version": None,
+                "reason": "Landlock is not implemented by the project-owned 0.1.x runtime.",
+                "details": {},
+            },
             "exec_policy": {
                 "shell_expansion": "allowed" if self.permission_mode != "safe" else "blocked",
                 "inline_script": "allowed" if self.permission_mode != "safe" else "blocked",
                 "secret_env_filter": self.permission_mode != "dangerous",
                 "global_tmp_write": "allowed" if self.permission_mode == "dangerous" else "blocked",
+            },
+            "shell_env_inherit": "core",
+            "shell_env_include_only": [],
+            "shell_env_exclude": [],
+            "output_retention": {
+                "buffer_bytes_per_stream": STREAM_LIMIT_BYTES,
+                "head_bytes_per_stream": STREAM_HEAD_BYTES,
             },
             "project_context": {
                 "root_instruction_files": [item.path for item in self.project_context.root_files],
@@ -176,6 +239,11 @@ class Runtime:
         }
 
     def check_exec_environment(self, _args: dict[str, Any]) -> dict[str, Any]:
+        warnings = [
+            "OS-kernel filesystem confinement is unavailable; command safety relies on application policy."
+        ]
+        if self.permission_mode == "dangerous":
+            warnings.append("permission_mode=dangerous disables MCP safety gates")
         return {
             "workspace": str(self.workspace.root),
             "permission_mode": self.permission_mode,
@@ -184,6 +252,10 @@ class Runtime:
             "home": str(self.commands.home_dir),
             "tmpdir": str(self.commands.tmp_dir),
             "cache_dir": str(self.commands.cache_dir),
+            "landlock_enabled": False,
+            "landlock_abi": None,
+            "global_tmp_write": "allowed" if self.permission_mode == "dangerous" else "blocked",
+            "warnings": warnings,
             "sandbox": {
                 "type": "application-policy",
                 "os_kernel_sandbox": False,
@@ -196,44 +268,121 @@ class Runtime:
     # ------------------------------------------------------------------
     def read_file(self, args: dict[str, Any]) -> dict[str, Any]:
         resolved = self.workspace.existing(str(args["path"]))
+        if resolved.absolute.is_dir():
+            raise ToolError("IS_DIRECTORY", "path is a directory", "validation")
         if not resolved.absolute.is_file():
             raise ToolError("NOT_FILE", f"not a file: {resolved.display}", "filesystem")
-        try:
-            text = resolved.absolute.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            raise ToolError("NOT_UTF8", f"file is not valid UTF-8: {resolved.display}", "validation") from exc
-        except OSError as exc:
-            raise ToolError("READ_FAILED", f"cannot read file: {resolved.display}", "filesystem", True, {"error": str(exc)}) from exc
-        lines = text.splitlines()
+        max_bytes = int(args.get("max_bytes", 131_072))
         start = int(args.get("start_line", 1))
         requested_end = args.get("end_line")
-        max_lines = int(args.get("max_lines") or len(lines) or 1)
-        end = int(requested_end) if requested_end is not None else min(len(lines), start + max_lines - 1)
-        if end < start:
-            raise ToolError("INVALID_RANGE", "end_line must be greater than or equal to start_line", "validation")
-        selected = lines[start - 1 : end]
-        content = "\n".join(selected)
-        if selected and text.endswith("\n") and end >= len(lines):
-            content += "\n"
-        content, bytes_truncated = _truncate_text(content, int(args.get("max_bytes", 131_072)))
+        requested_max_lines = args.get("max_lines")
+        if requested_end is not None and requested_max_lines is not None:
+            calculated_end = start + int(requested_max_lines) - 1
+            if int(requested_end) != calculated_end:
+                raise ToolError(
+                    "INVALID_ARGUMENT",
+                    "end_line and max_lines select different ranges",
+                    "validation",
+                )
+        end = (
+            int(requested_end)
+            if requested_end is not None
+            else start + int(requested_max_lines) - 1
+            if requested_max_lines is not None
+            else None
+        )
+        if end is not None and end < start:
+            raise ToolError(
+                "INVALID_RANGE",
+                "end_line must be greater than or equal to start_line",
+                "validation",
+            )
+        try:
+            total_bytes = resolved.absolute.stat().st_size
+            with resolved.absolute.open("rb") as raw_handle:
+                if b"\x00" in raw_handle.read(4096):
+                    raise ToolError(
+                        "BINARY_FILE",
+                        f"binary file read blocked for text tool: {resolved.display}",
+                        "validation",
+                    )
+        except ToolError:
+            raise
+        except OSError as exc:
+            raise ToolError(
+                "READ_FAILED",
+                f"cannot read file: {resolved.display}",
+                "filesystem",
+                True,
+                {"error": str(exc)},
+            ) from exc
+
+        selected_parts: list[str] = []
+        selected_bytes = 0
+        total_lines = 0
+        byte_limit_hit = False
+        try:
+            with resolved.absolute.open(
+                "r",
+                encoding="utf-8",
+                errors="strict",
+                newline="",
+            ) as handle:
+                for total_lines, line in enumerate(handle, start=1):
+                    if total_lines < start:
+                        continue
+                    if end is not None and total_lines > end:
+                        continue
+                    if byte_limit_hit:
+                        continue
+                    encoded = line.encode("utf-8")
+                    remaining = max_bytes - selected_bytes
+                    if len(encoded) <= remaining:
+                        selected_parts.append(line)
+                        selected_bytes += len(encoded)
+                        continue
+                    if remaining > 0:
+                        selected_parts.append(
+                            encoded[:remaining].decode("utf-8", "ignore")
+                        )
+                        selected_bytes = max_bytes
+                    byte_limit_hit = True
+        except UnicodeDecodeError as exc:
+            raise ToolError(
+                "UNSUPPORTED_ENCODING",
+                f"file is not valid UTF-8: {resolved.display}",
+                "validation",
+            ) from exc
+        except OSError as exc:
+            raise ToolError("READ_FAILED", f"cannot read file: {resolved.display}", "filesystem", True, {"error": str(exc)}) from exc
+
+        content = "".join(selected_parts)
         actual_lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
-        actual_end = min(end, start + max(0, actual_lines - 1)) if content else start - 1
-        truncated = bytes_truncated or end < len(lines)
+        selected_end = min(end, total_lines) if end is not None else total_lines
+        actual_end = min(selected_end, start + max(0, actual_lines - 1)) if content else start - 1
+        range_has_more = selected_end < total_lines
+        truncated = byte_limit_hit or range_has_more
+        next_start_line = actual_end + 1 if truncated and actual_end < total_lines else None
         return {
             "path": resolved.display,
             "content": content,
             "encoding": "utf-8",
+            "max_bytes": max_bytes,
             "start_line": start,
             "end_line": actual_end,
-            "total_lines": len(lines),
+            "total_lines": total_lines,
+            "total_bytes": total_bytes,
+            "bytes_read": len(content.encode("utf-8")),
             "truncated": truncated,
-            "next_start_line": actual_end + 1 if truncated and actual_end < len(lines) else None,
+            "truncated_by": "bytes" if byte_limit_hit else "lines" if range_has_more else None,
+            "next_start_line": next_start_line,
+            "warnings": ["content truncated"] if truncated else [],
         }
 
     def list_dir(self, args: dict[str, Any]) -> dict[str, Any]:
         resolved = self.workspace.existing(str(args.get("path", ".")))
         if not resolved.absolute.is_dir():
-            raise ToolError("NOT_DIRECTORY", f"not a directory: {resolved.display}", "filesystem")
+            raise ToolError("NOT_A_DIRECTORY", f"not a directory: {resolved.display}", "filesystem")
         recursive = bool(args.get("recursive", False))
         max_depth = int(args.get("max_depth", 1))
         max_entries = int(args.get("max_entries", 1_000))
@@ -270,10 +419,17 @@ class Runtime:
         if sort == "type":
             entries.sort(key=lambda item: (item["type"], item["name"]))
         elif sort == "modified":
-            entries.sort(key=lambda item: item["modified"], reverse=True)
+            entries.sort(key=lambda item: item["modified"])
         else:
             entries.sort(key=lambda item: item["path"])
-        return {"path": resolved.display, "entries": entries, "count": len(entries), "truncated": bool(stack) or len(entries) >= max_entries}
+        truncated = bool(stack) or len(entries) >= max_entries
+        return {
+            "path": resolved.display,
+            "entries": entries,
+            "count": len(entries),
+            "truncated": truncated,
+            "warnings": ["entry limit reached"] if truncated else [],
+        }
 
     def list_files(self, args: dict[str, Any]) -> dict[str, Any]:
         base = self.workspace.existing(str(args.get("path", ".")))
@@ -415,8 +571,6 @@ class Runtime:
                     raise ToolError("PERMISSION_REQUIRED", "command path argument escapes the workspace", "permission", False, {"path": token}) from exc
 
     def exec_command(self, args: dict[str, Any]) -> dict[str, Any]:
-        if args.get("tty"):
-            raise ToolError("TTY_UNSUPPORTED", "TTY mode is not implemented by this desktop server", "validation")
         cmd = str(args["cmd"])
         timeout_ms = int(args.get("timeout_ms", 30_000))
         env_overrides = {str(key): str(value) for key, value in dict(args.get("env") or {}).items()}
@@ -424,14 +578,27 @@ class Runtime:
         cwd = self.workspace.existing(str(args.get("cwd") or args.get("workdir", "."))).absolute
         if not cwd.is_dir():
             raise ToolError("NOT_DIRECTORY", "command workdir is not a directory", "filesystem")
-        managed = self.commands.start(cmd, cwd=cwd, env=self._command_env(env_overrides), stdin_text=str(args.get("stdin", "")), timeout_ms=timeout_ms)
+        managed = self.commands.start(
+            cmd,
+            cwd=cwd,
+            env=self._command_env(env_overrides),
+            stdin_text=str(args.get("stdin", "")),
+            timeout_ms=timeout_ms,
+            tty=bool(args.get("tty", False)),
+        )
         self.commands.wait(managed, int(args.get("yield_time_ms", 10_000)))
-        return command_payload(managed, int(args.get("max_output_bytes", 65_536)))
+        return self._format_command_payload(
+            command_payload(managed, int(args.get("max_output_bytes", 65_536))),
+            args,
+        )
 
     def write_stdin(self, args: dict[str, Any]) -> dict[str, Any]:
         managed = self.commands.write(str(args["command_id"]), str(args.get("chars", "")))
         self.commands.wait(managed, int(args.get("yield_time_ms", 10_000)))
-        return command_payload(managed, int(args.get("max_output_bytes", 65_536)))
+        return self._format_command_payload(
+            command_payload(managed, int(args.get("max_output_bytes", 65_536))),
+            args,
+        )
 
     def kill_command(self, args: dict[str, Any]) -> dict[str, Any]:
         command_id = str(args["command_id"])
@@ -439,7 +606,57 @@ class Runtime:
         managed = self.commands.get(command_id)
         payload = command_payload(managed, int(args.get("max_output_bytes", 65_536)))
         payload["status"] = status
-        return payload
+        return self._format_command_payload(payload, args)
+
+    def _format_command_payload(
+        self,
+        payload: dict[str, Any],
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        if payload.get("status") == "running" and payload.get("command_id"):
+            payload["next_action"] = {
+                "tool": "write_stdin",
+                "arguments": {
+                    "command_id": payload["command_id"],
+                    "chars": "",
+                    "yield_time_ms": 10_000,
+                },
+            }
+        verbosity = str(args.get("verbosity") or "").strip().lower()
+        if not verbosity or verbosity == "full":
+            return payload
+        if verbosity not in {"summary", "preview"}:
+            raise ToolError(
+                "INVALID_ARGUMENT",
+                "verbosity must be one of: summary, preview, full",
+                "validation",
+            )
+        elapsed = float(payload.get("elapsed_ms") or 0) / 1000.0
+        exit_code = payload.get("exit_code")
+        state = f"exit {exit_code}" if exit_code is not None else str(payload.get("status", "running"))
+        summary = f"{state} | {elapsed:.1f}s"
+        compact = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"stdout", "stderr"}
+        }
+        compact["summary"] = summary
+        if verbosity == "preview":
+            sections: list[str] = []
+            stdout = payload.get("stdout")
+            stderr = payload.get("stderr")
+            if isinstance(stdout, str) and stdout:
+                sections.append(f"--- stdout ---\n{stdout}")
+            if isinstance(stderr, str) and stderr:
+                sections.append(f"--- stderr ---\n{stderr}")
+            preview, preview_truncated = _truncate_text(
+                "\n".join(sections),
+                int(args.get("preview_bytes", 4_096)),
+            )
+            compact["preview"] = preview
+            compact["preview_truncated"] = preview_truncated
+            compact["truncated"] = bool(compact.get("truncated") or preview_truncated)
+        return compact
 
     def read_output(self, args: dict[str, Any]) -> dict[str, Any]:
         ref = str(args["output_ref"])
@@ -447,25 +664,44 @@ class Runtime:
         if not match:
             raise ToolError("INVALID_OUTPUT_REF", "output_ref must be command:<id>:stdout|stderr", "validation")
         command = self.commands.get(match.group(1))
-        stream = str(args.get("stream") or match.group(2))
+        ref_stream = match.group(2)
+        stream = str(args.get("stream") or ref_stream)
+        if stream != ref_stream:
+            raise ToolError(
+                "INVALID_ARGUMENT",
+                "stream does not match output_ref",
+                "validation",
+            )
         return dict(self.commands.output(command, stream, int(args.get("offset", 0)), int(args.get("limit", 4_096))))
 
     def request_permissions(self, args: dict[str, Any]) -> dict[str, Any]:
-        permission = str(args["permission"])
         if self.permission_mode == "dangerous":
-            allowed = True
-        elif self.permission_mode == "trusted":
-            allowed = permission in {"network", "shell_expansion", "inline_script", "long_timeout"}
-        else:
-            allowed = permission == "write_generated_or_ignored" and args.get("tool_name") == "apply_patch"
+            return {
+                "ok": True,
+                "status": "granted",
+                "grant_id": "dangerously-skip-all-permissions",
+                "expires_at": None,
+                "constraints": {
+                    "mode": "dangerously_skip_all_permissions",
+                    "workspace": str(self.workspace.root),
+                    "requested": args,
+                },
+                "warnings": [
+                    "permission_mode=dangerous is enabled; permission-gated operations are auto-granted"
+                ],
+            }
         return {
-            "tool_name": args["tool_name"],
-            "permission": permission,
-            "status": "granted" if allowed else "denied",
-            "granted": allowed,
-            "permission_mode": self.permission_mode,
-            "reason": args["reason"],
-            "note": "This tool reports policy only; it never changes server permissions.",
+            "ok": False,
+            "status": "unsupported",
+            "grant_id": None,
+            "expires_at": None,
+            "error": {
+                "code": "ELICITATION_UNSUPPORTED",
+                "message": "Permission elicitation is not available for this client.",
+                "category": "permission",
+                "retryable": False,
+                "details": {"requested": args},
+            },
         }
 
     # ------------------------------------------------------------------
@@ -494,17 +730,66 @@ class Runtime:
     def git_status(self, args: dict[str, Any]) -> dict[str, Any]:
         cwd, is_repo = self._git_repo(str(args.get("path", ".")))
         if not is_repo:
-            return {"is_repo": False, "entries": [], "clean": True}
+            return {
+                "is_repo": False,
+                "branch": "",
+                "head": "",
+                "upstream": "",
+                "ahead": 0,
+                "behind": 0,
+                "entries": [],
+                "clean": True,
+                "truncated": False,
+                "warnings": [],
+            }
         untracked = "all" if args.get("include_untracked", True) else "no"
-        output, _, _, truncated = self._git(["status", "--porcelain=v1", f"--untracked-files={untracked}"], cwd=cwd)
-        entries = []
-        for line in output.splitlines()[: int(args.get("max_entries", 1_000))]:
+        output, _, _, truncated = self._git(
+            ["status", "--porcelain=v1", "-b", f"--untracked-files={untracked}"],
+            cwd=cwd,
+            max_bytes=1_048_576,
+        )
+        max_entries = int(args.get("max_entries", 1_000))
+        entries: list[dict[str, Any]] = []
+        branch = ""
+        upstream = ""
+        ahead = 0
+        behind = 0
+        status_lines = 0
+        for line in output.splitlines():
+            if line.startswith("## "):
+                branch, upstream, ahead, behind = _parse_git_branch_line(line[3:])
+                continue
             if len(line) < 3:
                 continue
-            entries.append({"status": line[:2], "path": line[3:]})
-        branch, _, _, _ = self._git(["branch", "--show-current"], cwd=cwd, max_bytes=4_096, check=False)
+            status_lines += 1
+            if len(entries) >= max_entries:
+                continue
+            path_text = line[3:]
+            original_path = None
+            if " -> " in path_text:
+                original_path, path_text = path_text.split(" -> ", 1)
+            entries.append(
+                {
+                    "status": line[:2],
+                    "path": path_text,
+                    "original_path": original_path,
+                    "index_status": line[0],
+                    "worktree_status": line[1],
+                }
+            )
         head, _, _, _ = self._git(["rev-parse", "HEAD"], cwd=cwd, max_bytes=4_096, check=False)
-        return {"is_repo": True, "branch": branch.strip(), "head": head.strip(), "entries": entries, "clean": not entries, "truncated": truncated or len(output.splitlines()) > len(entries)}
+        return {
+            "is_repo": True,
+            "branch": branch,
+            "head": head.strip(),
+            "upstream": upstream,
+            "ahead": ahead,
+            "behind": behind,
+            "entries": entries,
+            "clean": status_lines == 0,
+            "truncated": truncated or status_lines > len(entries),
+            "warnings": ["entry limit reached"] if status_lines > len(entries) else [],
+        }
 
     def _git_paths(self, args: dict[str, Any]) -> list[str]:
         values: list[str] = []
@@ -537,26 +822,99 @@ class Runtime:
             parts.append(text)
             truncated |= cut
         diff, extra_cut = _truncate_text("".join(parts), max_bytes)
-        return {"diff": diff, "truncated": truncated or extra_cut, "exit_code": 0}
+        is_truncated = truncated or extra_cut
+        return {
+            "diff": diff,
+            "files": _parse_diff_files(diff),
+            "truncated": is_truncated,
+            "exit_code": 0,
+            "warnings": ["diff truncated"] if is_truncated else [],
+        }
 
     def git_log(self, args: dict[str, Any]) -> dict[str, Any]:
         cwd, is_repo = self._git_repo(str(args.get("path", ".")))
         if not is_repo:
-            return {"is_repo": False, "commits": []}
+            return {
+                "is_repo": False,
+                "commits": [],
+                "count": 0,
+                "truncated": False,
+                "warnings": [],
+            }
+        ref = str(args.get("ref", "HEAD"))
+        if not ref or ref.startswith("-") or any(char in ref for char in "\x00\r\n"):
+            raise ToolError("INVALID_ARGUMENT", "invalid git revision", "validation")
+        max_count = int(args.get("max_count", 20))
+        skip = int(args.get("skip", 0))
         fmt = "%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1e"
-        output, _, _, truncated = self._git(["log", str(args.get("ref", "HEAD")), f"--max-count={int(args.get('max_count', 20))}", f"--skip={int(args.get('skip', 0))}", f"--format={fmt}"], cwd=cwd)
+        output, _, _, output_truncated = self._git(
+            [
+                "log",
+                ref,
+                f"--max-count={max_count + 1}",
+                f"--skip={skip}",
+                f"--format={fmt}",
+            ],
+            cwd=cwd,
+        )
         commits = []
         for record in output.strip("\x1e\n").split("\x1e"):
             if not record.strip():
                 continue
             fields = record.strip().split("\x1f", 5)
             if len(fields) == 6:
-                commits.append({"hash": fields[0], "short_hash": fields[1], "author_name": fields[2], "author_email": fields[3], "date": fields[4], "subject": fields[5]})
-        return {"is_repo": True, "commits": commits, "count": len(commits), "truncated": truncated}
+                commits.append(
+                    {
+                        "hash": fields[0],
+                        "short_hash": fields[1],
+                        "author_name": fields[2],
+                        "author_email": fields[3],
+                        "author_date": fields[4],
+                        "date": fields[4],
+                        "subject": fields[5],
+                    }
+                )
+        has_more = len(commits) > max_count
+        commits = commits[:max_count]
+        result: dict[str, Any] = {
+            "is_repo": True,
+            "ref": ref,
+            "path": str(args.get("path", ".")),
+            "max_count": max_count,
+            "skip": skip,
+            "commits": commits,
+            "count": len(commits),
+            "truncated": output_truncated or has_more,
+            "warnings": ["commit limit reached"] if has_more else [],
+        }
+        if has_more:
+            result["next_action"] = {
+                "tool": "git_log",
+                "arguments": {
+                    "path": str(args.get("path", ".")),
+                    "ref": ref,
+                    "max_count": max_count,
+                    "skip": skip + max_count,
+                },
+            }
+        return result
 
     def git_show(self, args: dict[str, Any]) -> dict[str, Any]:
+        _, is_repo = self._git_repo(".")
+        if not is_repo:
+            return {
+                "is_repo": False,
+                "content": "",
+                "output": "",
+                "files": [],
+                "truncated": False,
+                "warnings": [],
+            }
         max_bytes = int(args.get("max_bytes", 262_144))
-        argv = ["show", str(args.get("rev", "HEAD")), f"--unified={int(args.get('context_lines', 3))}"]
+        rev = str(args.get("rev", "HEAD"))
+        if not rev or rev.startswith("-") or any(char in rev for char in "\x00\r\n"):
+            raise ToolError("INVALID_ARGUMENT", "invalid git revision", "validation")
+        argv = ["show", rev, f"--unified={int(args.get('context_lines', 3))}"]
         if not args.get("include_diff", True):
             argv.append("--no-patch")
         paths = self._git_paths(args)
@@ -565,17 +923,39 @@ class Runtime:
         output, stderr, code, truncated = self._git(argv, max_bytes=max_bytes, check=False)
         if code != 0:
             raise ToolError("GIT_FAILED", stderr.strip() or "git show failed", "git", False, {"exit_code": code})
-        return {"output": output, "rev": str(args.get("rev", "HEAD")), "truncated": truncated, "exit_code": code}
+        return {
+            "is_repo": True,
+            "content": output,
+            "output": output,
+            "rev": rev,
+            "files": _parse_diff_files(output),
+            "truncated": truncated,
+            "exit_code": code,
+            "warnings": ["output truncated"] if truncated else [],
+        }
 
     def git_blame(self, args: dict[str, Any]) -> dict[str, Any]:
         resolved = self.workspace.existing(str(args["path"]))
         if not resolved.absolute.is_file():
             raise ToolError("NOT_FILE", "git_blame path must be a file", "validation")
+        _, is_repo = self._git_repo(".")
+        if not is_repo:
+            return {
+                "is_repo": False,
+                "path": resolved.display,
+                "lines": [],
+                "entries": [],
+                "truncated": False,
+                "warnings": [],
+            }
         start = int(args.get("start_line", 1))
         end = args.get("end_line")
-        if end is None:
-            end = start + int(args.get("max_lines", 200)) - 1
-        argv = ["blame", "--line-porcelain", "-L", f"{start},{int(end)}"]
+        max_lines = int(args.get("max_lines", 200))
+        requested_end = int(end) if end is not None else start + max_lines - 1
+        if requested_end < start:
+            raise ToolError("INVALID_ARGUMENT", "end_line must be >= start_line", "validation")
+        final_line = min(requested_end, start + max_lines - 1)
+        argv = ["blame", "--line-porcelain", "-L", f"{start},{final_line}"]
         if args.get("rev"):
             argv.append(str(args["rev"]))
         argv += ["--", resolved.display]
@@ -592,16 +972,44 @@ class Runtime:
             elif current is not None and line.startswith("author "):
                 current["author"] = line[7:]
             elif current is not None and line.startswith("author-mail "):
-                current["author_email"] = line[12:].strip("<>")
+                mail = line[12:].strip("<>")
+                current["author_mail"] = mail
+                current["author_email"] = mail
             elif current is not None and line.startswith("summary "):
                 current["summary"] = line[8:]
             elif current is not None and line.startswith("\t"):
                 current["content"] = line[1:]
-        max_lines = int(args.get("max_lines", 200))
         if len(entries) > max_lines:
             entries = entries[:max_lines]
             truncated = True
-        return {"path": resolved.display, "entries": entries, "count": len(entries), "truncated": truncated}
+        truncated = truncated or requested_end > final_line
+        result: dict[str, Any] = {
+            "is_repo": True,
+            "path": resolved.display,
+            "rev": str(args["rev"]) if args.get("rev") else None,
+            "start_line": start,
+            "end_line": final_line,
+            "max_lines": max_lines,
+            "lines": entries,
+            "entries": entries,
+            "count": len(entries),
+            "truncated": truncated,
+            "warnings": ["line limit reached"] if truncated else [],
+        }
+        if requested_end > final_line:
+            next_args: dict[str, Any] = {
+                "path": str(args["path"]),
+                "start_line": final_line + 1,
+                "end_line": requested_end,
+                "max_lines": max_lines,
+            }
+            if args.get("rev"):
+                next_args["rev"] = str(args["rev"])
+            result["next_action"] = {
+                "tool": "git_blame",
+                "arguments": next_args,
+            }
+        return result
 
     # ------------------------------------------------------------------
     # Image

@@ -4,15 +4,23 @@ import base64
 import hashlib
 import http.client
 import json
+import os
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from coding_tools_mcp import __version__
-from coding_tools_mcp.oauth import OAuthConfig, create_access_token, validate_access_token
+from coding_tools_mcp import __compatibility_baseline__, __version__
+from coding_tools_mcp.oauth import (
+    OAUTH_TOKEN_TTL_SECONDS,
+    OAuthConfig,
+    create_access_token,
+    valid_pkce_challenge,
+    validate_access_token,
+)
 from coding_tools_mcp.protocol import (
     META_CLIENT_CAPABILITIES,
     META_PROTOCOL_VERSION,
@@ -20,11 +28,41 @@ from coding_tools_mcp.protocol import (
 )
 from coding_tools_mcp.runtime import Runtime
 from coding_tools_mcp.server import MCPHTTPServer
+from coding_tools_mcp.server import _normalize_public_server_url
 
 
 class CustomMCPServerContractTests(unittest.TestCase):
     def test_project_owned_version(self) -> None:
-        self.assertEqual(__version__, "1.0.0")
+        self.assertEqual(__version__, "0.1.0")
+        self.assertEqual(__compatibility_baseline__, "0.3.0")
+
+    def test_oauth_defaults_match_030_compatibility_baseline(self) -> None:
+        self.assertEqual(OAUTH_TOKEN_TTL_SECONDS, 24 * 60 * 60)
+        self.assertTrue(valid_pkce_challenge("A" * 43))
+        self.assertFalse(valid_pkce_challenge("A" * 44))
+        self.assertFalse(valid_pkce_challenge("~" * 43))
+
+        config = OAuthConfig(
+            password="password",
+            server_url="https://mcp.example.com",
+            token_secret=b"x" * 32,
+        )
+        with self.assertRaises(ValueError):
+            config.registry.register({"redirect_uris": ["myapp://callback"]})
+
+    def test_public_server_url_accepts_base_or_full_mcp_url(self) -> None:
+        self.assertEqual(
+            _normalize_public_server_url("https://mcp.example.com"),
+            "https://mcp.example.com",
+        )
+        self.assertEqual(
+            _normalize_public_server_url("https://mcp.example.com/mcp"),
+            "https://mcp.example.com",
+        )
+        self.assertEqual(
+            _normalize_public_server_url("https://mcp.example.com/mcp/"),
+            "https://mcp.example.com",
+        )
 
     def test_every_exposed_tool_has_input_and_output_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -103,6 +141,81 @@ class CustomMCPServerContractTests(unittest.TestCase):
         self.assertEqual(initialized["result"]["protocolVersion"], "2025-11-25")
         self.assertEqual(len(listed["result"]["tools"]), 18)
 
+    def test_legacy_null_params_are_treated_as_empty_object(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                response = dispatch(
+                    runtime,
+                    {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": None},
+                )
+            finally:
+                runtime.close()
+
+        self.assertEqual(len(response["result"]["tools"]), 18)
+
+    def test_invalid_json_rpc_id_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                response = dispatch(
+                    runtime,
+                    {"jsonrpc": "2.0", "id": True, "method": "ping", "params": {}},
+                )
+            finally:
+                runtime.close()
+
+        self.assertEqual(response["error"]["code"], -32600)
+
+    def test_initialize_requires_non_null_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                response = dispatch(
+                    runtime,
+                    {"jsonrpc": "2.0", "id": None, "method": "initialize", "params": {}},
+                )
+            finally:
+                runtime.close()
+
+        self.assertEqual(response["error"]["code"], -32600)
+
+    def test_modern_client_capabilities_are_required(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                response = dispatch(
+                    runtime,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "tools/list",
+                        "params": {"_meta": {META_PROTOCOL_VERSION: "2026-07-28"}},
+                    },
+                )
+            finally:
+                runtime.close()
+
+        self.assertEqual(response["error"]["code"], -32602)
+
+    def test_tool_call_accepts_null_arguments_as_empty_object(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                response = dispatch(
+                    runtime,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 5,
+                        "method": "tools/call",
+                        "params": {"name": "server_info", "arguments": None},
+                    },
+                )
+            finally:
+                runtime.close()
+
+        self.assertFalse(response["result"]["isError"])
+
     def test_modern_tools_list_marks_complete_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary))
@@ -172,6 +285,155 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertEqual(command_result["structuredContent"]["exit_code"], 0)
         self.assertEqual(command_result["structuredContent"]["stdout"], "hello")
 
+    def test_read_file_rejects_binary_and_conflicting_line_range(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "binary.dat").write_bytes(b"abc\x00def")
+            (root / "lines.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+            runtime = Runtime(root)
+            try:
+                binary = runtime.call_tool("read_file", {"path": "binary.dat"})
+                conflict = runtime.call_tool(
+                    "read_file",
+                    {
+                        "path": "lines.txt",
+                        "start_line": 1,
+                        "end_line": 3,
+                        "max_lines": 1,
+                    },
+                )
+            finally:
+                runtime.close()
+
+        self.assertTrue(binary["isError"])
+        self.assertEqual(binary["structuredContent"]["error"]["code"], "BINARY_FILE")
+        self.assertTrue(conflict["isError"])
+        self.assertEqual(
+            conflict["structuredContent"]["error"]["code"],
+            "INVALID_ARGUMENT",
+        )
+
+    def test_non_tty_initial_stdin_is_closed_after_write(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                result = runtime.call_tool(
+                    "exec_command",
+                    {
+                        "cmd": "cat",
+                        "stdin": "hello\n",
+                        "yield_time_ms": 2_000,
+                    },
+                )
+            finally:
+                runtime.close()
+
+        payload = result["structuredContent"]
+        self.assertFalse(result["isError"])
+        self.assertEqual(payload["status"], "exited")
+        self.assertEqual(payload["stdout"], "hello\n")
+
+    def test_command_timeout_watchdog_works_without_continuous_polling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                started = runtime.call_tool(
+                    "exec_command",
+                    {
+                        "cmd": "sleep 2",
+                        "timeout_ms": 100,
+                        "yield_time_ms": 0,
+                    },
+                )
+                command_id = started["structuredContent"]["command_id"]
+                time.sleep(0.25)
+                polled = runtime.call_tool(
+                    "write_stdin",
+                    {
+                        "command_id": command_id,
+                        "chars": "",
+                        "yield_time_ms": 100,
+                    },
+                )
+            finally:
+                runtime.close()
+
+        self.assertEqual(polled["structuredContent"]["status"], "timeout")
+        self.assertTrue(polled["structuredContent"]["timed_out"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX PTY test")
+    def test_tty_command_accepts_follow_up_stdin(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                started = runtime.call_tool(
+                    "exec_command",
+                    {
+                        "cmd": "printf 'ready\\n'; read value; echo got",
+                        "tty": True,
+                        "yield_time_ms": 100,
+                    },
+                )
+                command_id = started["structuredContent"]["command_id"]
+                completed = runtime.call_tool(
+                    "write_stdin",
+                    {
+                        "command_id": command_id,
+                        "chars": "hello\n",
+                        "yield_time_ms": 2_000,
+                    },
+                )
+            finally:
+                runtime.close()
+
+        self.assertFalse(completed["isError"])
+        self.assertEqual(completed["structuredContent"]["status"], "exited")
+        self.assertIn("got", completed["structuredContent"]["stdout"])
+
+    def test_command_verbosity_summary_and_preview_are_honored(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                summary = runtime.call_tool(
+                    "exec_command",
+                    {"cmd": "printf hello", "verbosity": "summary"},
+                )
+                preview = runtime.call_tool(
+                    "exec_command",
+                    {"cmd": "printf hello", "verbosity": "preview"},
+                )
+            finally:
+                runtime.close()
+
+        self.assertNotIn("stdout", summary["structuredContent"])
+        self.assertIn("summary", summary["structuredContent"])
+        self.assertIn("hello", preview["structuredContent"]["preview"])
+
+    def test_read_output_rejects_stream_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                started = runtime.call_tool(
+                    "exec_command",
+                    {"cmd": "sleep 1", "yield_time_ms": 0},
+                )
+                command_id = started["structuredContent"]["command_id"]
+                result = runtime.call_tool(
+                    "read_output",
+                    {
+                        "output_ref": f"command:{command_id}:stdout",
+                        "stream": "stderr",
+                    },
+                )
+            finally:
+                runtime.close()
+
+        self.assertTrue(result["isError"])
+        self.assertEqual(
+            result["structuredContent"]["error"]["code"],
+            "INVALID_ARGUMENT",
+        )
+
     def test_git_status_reports_workspace_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -194,6 +456,52 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertTrue(payload["is_repo"])
         self.assertFalse(payload["clean"])
         self.assertEqual(payload["entries"][0]["path"], "tracked.txt")
+        self.assertEqual(payload["entries"][0]["index_status"], " ")
+        self.assertEqual(payload["entries"][0]["worktree_status"], "M")
+        self.assertIn("upstream", payload)
+        self.assertIn("ahead", payload)
+        self.assertIn("behind", payload)
+
+    def test_git_read_tools_keep_030_compatible_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            target = root / "tracked.txt"
+            target.write_text("first\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "-qm",
+                    "initial",
+                ],
+                cwd=root,
+                check=True,
+            )
+            target.write_text("changed\n", encoding="utf-8")
+            runtime = Runtime(root)
+            try:
+                diff = runtime.call_tool("git_diff", {})["structuredContent"]
+                log = runtime.call_tool("git_log", {"max_count": 1})["structuredContent"]
+                show = runtime.call_tool("git_show", {"rev": "HEAD"})["structuredContent"]
+                blame = runtime.call_tool(
+                    "git_blame",
+                    {"path": "tracked.txt", "start_line": 1, "max_lines": 1},
+                )["structuredContent"]
+            finally:
+                runtime.close()
+
+        self.assertEqual(diff["files"][0]["path"], "tracked.txt")
+        self.assertIn("author_date", log["commits"][0])
+        self.assertEqual(show["content"], show["output"])
+        self.assertTrue(show["is_repo"])
+        self.assertEqual(blame["lines"], blame["entries"])
+        self.assertTrue(blame["is_repo"])
 
     def test_path_escape_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -218,6 +526,29 @@ class RuntimeSafetyTests(unittest.TestCase):
         error = result["structuredContent"]["error"]
         self.assertEqual(error["code"], "PERMISSION_REQUIRED")
         self.assertEqual(error["details"]["permission"], "network")
+
+    def test_request_permissions_does_not_report_fake_grant(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary), permission_mode="trusted")
+            try:
+                result = runtime.call_tool(
+                    "request_permissions",
+                    {
+                        "tool_name": "exec_command",
+                        "permission": "network",
+                        "reason": "compatibility test",
+                        "arguments": {"cmd": "curl https://example.com"},
+                    },
+                )
+            finally:
+                runtime.close()
+
+        self.assertTrue(result["isError"])
+        self.assertEqual(result["structuredContent"]["status"], "unsupported")
+        self.assertEqual(
+            result["structuredContent"]["error"]["code"],
+            "ELICITATION_UNSUPPORTED",
+        )
 
     def test_patch_handles_multiple_hunks_in_one_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -247,14 +578,161 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertFalse(result["isError"])
         self.assertEqual(final_text, "ONE\ntwo\nthree\nFOUR\n")
 
+    def test_patch_move_preserves_mode_and_reports_030_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "script.sh"
+            source.write_text("#!/bin/sh\necho old\n", encoding="utf-8")
+            source.chmod(0o755)
+            runtime = Runtime(root)
+            try:
+                result = runtime.call_tool(
+                    "apply_patch",
+                    {
+                        "patch": """*** Begin Patch
+*** Update File: script.sh
+*** Move to: bin/script.sh
+@@
+-echo old
++echo new
+*** End Patch"""
+                    },
+                )
+            finally:
+                runtime.close()
+
+            destination = root / "bin" / "script.sh"
+            self.assertFalse(source.exists())
+            self.assertTrue(destination.exists())
+            self.assertEqual(destination.read_text(encoding="utf-8"), "#!/bin/sh\necho new\n")
+            self.assertEqual(destination.stat().st_mode & 0o777, 0o755)
+
+        payload = result["structuredContent"]
+        self.assertFalse(result["isError"])
+        self.assertEqual(payload["affected_files"], [
+            {"operation": "move", "path": "bin/script.sh", "old_path": "script.sh"}
+        ])
+
+    def test_patch_rejects_ambiguous_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "repeat.txt").write_text("same\nother\nsame\n", encoding="utf-8")
+            runtime = Runtime(root)
+            try:
+                result = runtime.call_tool(
+                    "apply_patch",
+                    {
+                        "patch": """*** Begin Patch
+*** Update File: repeat.txt
+@@
+-same
++changed
+*** End Patch"""
+                    },
+                )
+            finally:
+                runtime.close()
+
+        self.assertTrue(result["isError"])
+        self.assertEqual(
+            result["structuredContent"]["error"]["code"],
+            "PATCH_CONTEXT_AMBIGUOUS",
+        )
+
 
 class HTTPTransportTests(unittest.TestCase):
+    def test_protected_resource_metadata_matches_030_compatibility_resource(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = OAuthConfig(
+                password="password",
+                server_url="https://mcp.example.com",
+                token_secret=b"p" * 32,
+            )
+            runtime = Runtime(Path(temporary), oauth_config=config)
+            server = MCPHTTPServer(("127.0.0.1", 0), runtime)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address[:2]
+                connection = http.client.HTTPConnection(host, port, timeout=5)
+                connection.request(
+                    "POST",
+                    "/mcp",
+                    body=json.dumps(
+                        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+                    ),
+                    headers={"Content-Type": "application/json"},
+                )
+                unauthorized = connection.getresponse()
+                unauthorized.read()
+                self.assertEqual(unauthorized.status, 401)
+                self.assertIn(
+                    'realm="coding-tools-mcp"',
+                    unauthorized.getheader("WWW-Authenticate", ""),
+                )
+                self.assertIn(
+                    'resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"',
+                    unauthorized.getheader("WWW-Authenticate", ""),
+                )
+
+                for metadata_path in (
+                    "/.well-known/oauth-protected-resource",
+                    "/.well-known/oauth-protected-resource/mcp",
+                ):
+                    connection.request("GET", metadata_path)
+                    metadata_response = connection.getresponse()
+                    metadata = json.loads(metadata_response.read())
+                    self.assertEqual(metadata_response.status, 200)
+                    self.assertEqual(metadata["resource"], "https://mcp.example.com")
+                    self.assertEqual(
+                        metadata["authorization_servers"],
+                        ["https://mcp.example.com"],
+                    )
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                runtime.close()
+                thread.join(timeout=2)
+
+    def test_http_rejects_batch_and_scalar_json_as_invalid_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            server = MCPHTTPServer(("127.0.0.1", 0), runtime)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address[:2]
+                connection = http.client.HTTPConnection(host, port, timeout=5)
+                for body in ("[]", '"not-an-object"'):
+                    connection.request(
+                        "POST",
+                        "/mcp",
+                        body=body,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    response = connection.getresponse()
+                    payload = json.loads(response.read())
+                    self.assertEqual(response.status, 400)
+                    self.assertEqual(payload["error"]["code"], -32600)
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                runtime.close()
+                thread.join(timeout=2)
+
     def test_authenticated_mcp_tools_list_exposes_output_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             config = OAuthConfig(
                 password="password",
                 server_url="http://127.0.0.1",
                 token_secret=b"z" * 32,
+            )
+            config.registry.add_preregistered(
+                "http-test",
+                ("http://127.0.0.1/callback",),
+                client_secret=None,
             )
             runtime = Runtime(Path(temporary), oauth_config=config)
             server = MCPHTTPServer(("127.0.0.1", 0), runtime)
@@ -286,7 +764,11 @@ class HTTPTransportTests(unittest.TestCase):
                 invalid = connection.getresponse()
                 invalid_payload = json.loads(invalid.read())
                 self.assertEqual(invalid.status, 401)
-                self.assertEqual(invalid_payload["error"], "invalid_token")
+                self.assertEqual(invalid_payload["error"]["code"], -32000)
+                self.assertEqual(
+                    invalid_payload["error"]["data"]["reason"],
+                    "invalid_token",
+                )
                 self.assertIn("error=\"invalid_token\"", invalid.getheader("WWW-Authenticate", ""))
 
                 token = create_access_token(config, "http-test")
@@ -318,6 +800,11 @@ class HTTPTransportTests(unittest.TestCase):
                 password="password",
                 server_url="http://127.0.0.1",
                 token_secret=b"d" * 32,
+            )
+            config.registry.add_preregistered(
+                "dispatch-test",
+                ("http://127.0.0.1/callback",),
+                client_secret=None,
             )
             runtime = Runtime(Path(temporary), oauth_config=config)
             server = MCPHTTPServer(("127.0.0.1", 0), runtime)
@@ -355,12 +842,87 @@ class HTTPTransportTests(unittest.TestCase):
                 thread.join(timeout=2)
 
 
+    def test_modern_http_requests_require_and_accept_mirror_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = OAuthConfig(
+                password="password",
+                server_url="http://127.0.0.1",
+                token_secret=b"m" * 32,
+            )
+            config.registry.add_preregistered(
+                "modern-test",
+                ("http://127.0.0.1/callback",),
+                client_secret=None,
+            )
+            runtime = Runtime(Path(temporary), oauth_config=config)
+            server = MCPHTTPServer(("127.0.0.1", 0), runtime)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address[:2]
+                token = create_access_token(config, "modern-test")
+                body = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 20,
+                        "method": "tools/list",
+                        "params": {
+                            "_meta": {
+                                META_PROTOCOL_VERSION: "2026-07-28",
+                                META_CLIENT_CAPABILITIES: {},
+                            }
+                        },
+                    }
+                )
+                connection = http.client.HTTPConnection(host, port, timeout=5)
+                connection.request(
+                    "POST",
+                    "/mcp",
+                    body=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}",
+                    },
+                )
+                missing = connection.getresponse()
+                missing_payload = json.loads(missing.read())
+                self.assertEqual(missing.status, 400)
+                self.assertEqual(missing_payload["error"]["code"], -32020)
+
+                connection.request(
+                    "POST",
+                    "/mcp",
+                    body=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}",
+                        "MCP-Protocol-Version": "2026-07-28",
+                        "Mcp-Method": "tools/list",
+                    },
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read())
+                self.assertEqual(response.status, 200)
+                self.assertEqual(len(payload["result"]["tools"]), 18)
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                runtime.close()
+                thread.join(timeout=2)
+
+
 class OAuthTokenTests(unittest.TestCase):
     def test_signed_access_token_round_trip(self) -> None:
         config = OAuthConfig(
             password="password",
             server_url="https://mcp.example.com",
             token_secret=b"x" * 32,
+        )
+        config.registry.add_preregistered(
+            "client-1",
+            ("http://127.0.0.1/callback",),
+            client_secret=None,
         )
         token = create_access_token(config, "client-1")
         self.assertTrue(validate_access_token(config, token))
@@ -377,9 +939,27 @@ class OAuthTokenTests(unittest.TestCase):
             server_url="https://other.example.com",
             token_secret=b"x" * 32,
         )
+        for item in (config, other):
+            item.registry.add_preregistered(
+                "client-1",
+                ("http://127.0.0.1/callback",),
+                client_secret=None,
+            )
         token = create_access_token(config, "client-1")
         self.assertTrue(validate_access_token(config, token))
         self.assertFalse(validate_access_token(other, token))
+
+    def test_oauth_resource_accepts_base_and_mcp_endpoint_alias(self) -> None:
+        config = OAuthConfig(
+            password="password",
+            server_url="https://mcp.example.com",
+            token_secret=b"x" * 32,
+        )
+        self.assertEqual(config.resource, "https://mcp.example.com")
+        self.assertEqual(
+            config.normalize_resource("https://mcp.example.com/mcp"),
+            "https://mcp.example.com",
+        )
 
     def test_refresh_token_is_single_use_and_rotated(self) -> None:
         config = OAuthConfig(

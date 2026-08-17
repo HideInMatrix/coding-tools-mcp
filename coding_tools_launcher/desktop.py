@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 
+from coding_tools_mcp import __version__ as MCP_VERSION
+
 from .mcp_process import INTERNAL_MCP_FLAG, run_internal_mcp_server
 
 
@@ -21,7 +23,9 @@ def main() -> int:
     from .ui.main_window import MainWindow
 
     QCoreApplication.setOrganizationName("MicroMatrix")
+    QCoreApplication.setOrganizationDomain("micromatrix.org")
     QCoreApplication.setApplicationName("Coding Tools MCP")
+    QCoreApplication.setApplicationVersion(MCP_VERSION)
 
     app = QApplication(sys.argv)
     app.setApplicationDisplayName("Coding Tools MCP")

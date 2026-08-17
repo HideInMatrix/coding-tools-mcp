@@ -20,7 +20,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 
-OAUTH_TOKEN_TTL_SECONDS = 3600
+OAUTH_TOKEN_TTL_SECONDS = 24 * 60 * 60
 OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 3600
 OAUTH_CODE_TTL_SECONDS = 300
 OAUTH_MAX_BODY_BYTES = 64 * 1024
@@ -50,9 +50,7 @@ def _redirect_uri_allowed(uri: str) -> bool:
         return True
     if parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}:
         return True
-    # Native app custom schemes are allowed when they are syntactically valid
-    # and cannot be confused with HTTP origins.
-    return bool(parsed.scheme and parsed.scheme not in {"http", "https"} and not parsed.username and not parsed.password)
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,7 +192,29 @@ class OAuthConfig:
     def resource(self) -> str | None:
         if not self.server_url:
             return None
-        return f"{self.server_url.rstrip('/')}/mcp"
+        # Compatibility baseline: coding-tools-mcp 0.3.0 binds OAuth tokens
+        # to the public server origin/base URL.  /mcp is the transport
+        # endpoint, not a distinct authorization server resource.
+        return self.server_url.rstrip("/")
+
+    def normalize_resource(self, resource: str | None) -> str | None:
+        """Canonicalize resource values accepted from MCP OAuth clients.
+
+        The 0.3.0 compatibility baseline uses the public base URL, while some
+        newer MCP clients send the concrete ``/mcp`` endpoint.  Both identify
+        this single workspace MCP service, so accept only those two forms and
+        bind codes/tokens to the canonical base URL.
+        """
+
+        canonical = self.resource
+        raw = str(resource or "").strip().rstrip("/")
+        if not raw:
+            return canonical
+        if canonical is None:
+            return raw
+        if raw == canonical or raw == f"{canonical}/mcp":
+            return canonical
+        return raw
 
     def issue_code(
         self,
@@ -213,7 +233,7 @@ class OAuthConfig:
                 client_id,
                 redirect_uri,
                 challenge,
-                resource or self.resource,
+                self.normalize_resource(resource),
                 now + OAUTH_CODE_TTL_SECONDS,
             )
             return code
@@ -239,7 +259,7 @@ class OAuthConfig:
                 self.refresh_tokens.pop(next(iter(self.refresh_tokens)))
             self.refresh_tokens[digest] = RefreshGrant(
                 client_id=client_id,
-                resource=resource or self.resource,
+                resource=self.normalize_resource(resource),
                 expires_at=now + self.refresh_token_ttl,
             )
         return token
@@ -258,7 +278,7 @@ class OAuthConfig:
                 if grant is not None:
                     self.refresh_tokens.pop(digest, None)
                 return None
-            expected_resource = resource or self.resource
+            expected_resource = self.normalize_resource(resource)
             if grant.client_id != client_id:
                 return None
             if expected_resource and grant.resource and grant.resource != expected_resource:
@@ -271,9 +291,9 @@ class OAuthConfig:
 
 
 def valid_pkce_challenge(value: str) -> bool:
-    if not 43 <= len(value) <= 128:
+    if len(value) != 43:
         return False
-    return all(char.isalnum() or char in "-._~" for char in value)
+    return all(char.isalnum() or char in "-_" for char in value)
 
 
 def verify_pkce(verifier: str, challenge: str) -> bool:
@@ -287,10 +307,13 @@ def create_access_token(config: OAuthConfig, client_id: str) -> str:
     now = int(time.time())
     payload_value: dict[str, Any] = {
         "sub": client_id,
+        "client_id": client_id,
         "iat": now,
         "exp": now + config.token_ttl,
+        "scope": "mcp",
     }
     if config.resource:
+        payload_value["iss"] = config.resource
         payload_value["aud"] = config.resource
     payload = json.dumps(payload_value, separators=(",", ":"), sort_keys=True).encode("utf-8")
     encoded = _b64url(payload)
@@ -310,6 +333,12 @@ def validate_access_token(config: OAuthConfig, token: str) -> bool:
         if not isinstance(payload, dict) or not isinstance(payload.get("sub"), str):
             return False
         if int(payload.get("exp", 0)) <= int(time.time()):
+            return False
+        client_id = payload.get("client_id", payload.get("sub"))
+        if not isinstance(client_id, str) or config.registry.get(client_id) is None:
+            return False
+        issuer = payload.get("iss")
+        if issuer is not None and config.resource and issuer != config.resource:
             return False
         audience = payload.get("aud")
         # Accept legacy ctm1 access tokens without an audience until they expire,

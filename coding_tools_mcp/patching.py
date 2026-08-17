@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,7 @@ class PatchSection:
     operation: str
     path: str
     body: list[str]
+    move_to: str | None = None
 
 
 @dataclass(slots=True)
@@ -29,6 +31,8 @@ class PreparedChange:
     display: str
     original: bytes | None
     replacement: bytes | None
+    mode: int | None = None
+    old_display: str | None = None
     additions: int = 0
     removals: int = 0
 
@@ -44,6 +48,16 @@ def parse_envelope(text: str) -> list[PatchSection]:
         if match:
             current = PatchSection(match.group(1).lower(), match.group(2).strip(), [])
             sections.append(current)
+        elif line.startswith("*** Move to: "):
+            if current is None or current.operation != "update" or current.body:
+                raise ToolError(
+                    "INVALID_PATCH",
+                    "*** Move to: must immediately follow an Update File header",
+                    "validation",
+                )
+            current.move_to = line.removeprefix("*** Move to: ").strip()
+            if not current.move_to:
+                raise ToolError("INVALID_PATCH", "Move to path cannot be empty", "validation")
         elif current is None:
             if line.strip():
                 raise ToolError("INVALID_PATCH", "content appears before the first file section", "validation")
@@ -92,15 +106,34 @@ def _sequences(hunk: list[str]) -> tuple[list[str], list[str], int, int]:
 def _locate(lines: list[str], needle: list[str], start: int) -> int:
     if not needle:
         return start
-    for index in list(range(start, max(start, len(lines) - len(needle) + 1))) + list(range(0, max(0, start))):
-        if lines[index : index + len(needle)] == needle:
-            return index
-    return -1
+    search_order = list(range(start, max(start, len(lines) - len(needle) + 1))) + list(
+        range(0, max(0, start))
+    )
+    matches = [
+        index
+        for index in search_order
+        if lines[index : index + len(needle)] == needle
+    ]
+    if not matches:
+        return -1
+    if len(matches) > 1:
+        raise ToolError(
+            "PATCH_CONTEXT_AMBIGUOUS",
+            "update hunk context matched multiple locations; add more unchanged context",
+            "conflict",
+            True,
+            {"match_count": len(matches), "context": "\n".join(needle[:8])},
+        )
+    return matches[0]
 
 
 def _updated_text(original: str, body: list[str]) -> tuple[str, int, int]:
-    final_newline = original.endswith("\n")
-    lines = original.splitlines()
+    bom = "\ufeff" if original.startswith("\ufeff") else ""
+    text = original[1:] if bom else original
+    line_ending = "\r\n" if "\r\n" in text and text.find("\r\n") <= text.find("\n") else "\n"
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    final_newline = normalized.endswith("\n")
+    lines = normalized.splitlines()
     cursor = 0
     additions = removals = 0
     for hunk in _split_hunks(body):
@@ -115,7 +148,9 @@ def _updated_text(original: str, body: list[str]) -> tuple[str, int, int]:
     result = "\n".join(lines)
     if final_newline:
         result += "\n"
-    return result, additions, removals
+    if line_ending == "\r\n":
+        result = result.replace("\n", "\r\n")
+    return bom + result, additions, removals
 
 
 def prepare(workspace: Workspace, patch_text: str) -> list[PreparedChange]:
@@ -128,6 +163,7 @@ def prepare(workspace: Workspace, patch_text: str) -> list[PreparedChange]:
             raise ToolError("INVALID_PATCH", f"multiple sections target the same file: {section.path}", "validation")
         seen.add(path)
         original = path.read_bytes() if path.is_file() else None
+        original_mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else None
         if section.operation == "add":
             if path.exists():
                 raise ToolError("ALREADY_EXISTS", f"cannot add existing file: {section.path}", "conflict")
@@ -137,11 +173,35 @@ def prepare(workspace: Workspace, patch_text: str) -> list[PreparedChange]:
                     raise ToolError("INVALID_PATCH", "Add File lines must start with '+'", "validation")
                 output.append(line[1:] if line.startswith("+") else "")
             replacement = ("\n".join(output) + ("\n" if section.body else "")).encode("utf-8")
-            changes.append(PreparedChange("add", path, resolved.display, None, replacement, len(output), 0))
+            changes.append(
+                PreparedChange(
+                    "add",
+                    path,
+                    resolved.display,
+                    None,
+                    replacement,
+                    0o644,
+                    None,
+                    len(output),
+                    0,
+                )
+            )
         elif section.operation == "delete":
             if original is None:
                 raise ToolError("NOT_FOUND", f"cannot delete missing file: {section.path}", "filesystem")
-            changes.append(PreparedChange("delete", path, resolved.display, original, None, 0, len(original.decode("utf-8", "replace").splitlines())))
+            changes.append(
+                PreparedChange(
+                    "delete",
+                    path,
+                    resolved.display,
+                    original,
+                    None,
+                    original_mode,
+                    None,
+                    0,
+                    len(original.decode("utf-8", "replace").splitlines()),
+                )
+            )
         else:
             if original is None:
                 raise ToolError("NOT_FOUND", f"cannot update missing file: {section.path}", "filesystem")
@@ -150,7 +210,63 @@ def prepare(workspace: Workspace, patch_text: str) -> list[PreparedChange]:
             except UnicodeDecodeError as exc:
                 raise ToolError("NOT_TEXT", f"cannot patch non-UTF-8 file: {section.path}", "validation") from exc
             updated, additions, removals = _updated_text(text, section.body)
-            changes.append(PreparedChange("update", path, resolved.display, original, updated.encode("utf-8"), additions, removals))
+            replacement = updated.encode("utf-8")
+            if section.move_to:
+                destination = workspace.writable(section.move_to)
+                if destination.absolute in seen:
+                    raise ToolError(
+                        "INVALID_PATCH",
+                        f"multiple sections target the same file: {section.move_to}",
+                        "validation",
+                    )
+                if destination.absolute.exists() and destination.absolute != path:
+                    raise ToolError(
+                        "ALREADY_EXISTS",
+                        f"cannot move over existing file: {section.move_to}",
+                        "conflict",
+                    )
+                if destination.absolute != path:
+                    seen.add(destination.absolute)
+                    changes.append(
+                        PreparedChange(
+                            "move_source",
+                            path,
+                            resolved.display,
+                            original,
+                            None,
+                            original_mode,
+                            None,
+                            0,
+                            removals,
+                        )
+                    )
+                    changes.append(
+                        PreparedChange(
+                            "move",
+                            destination.absolute,
+                            destination.display,
+                            None,
+                            replacement,
+                            original_mode,
+                            resolved.display,
+                            additions,
+                            0,
+                        )
+                    )
+                    continue
+            changes.append(
+                PreparedChange(
+                    "update",
+                    path,
+                    resolved.display,
+                    original,
+                    replacement,
+                    original_mode,
+                    None,
+                    additions,
+                    removals,
+                )
+            )
     return changes
 
 
@@ -169,6 +285,8 @@ def commit(changes: list[PreparedChange]) -> None:
                         handle.write(change.replacement)
                         handle.flush()
                         os.fsync(handle.fileno())
+                    if change.mode is not None:
+                        os.chmod(temp_path, change.mode)
                     os.replace(temp_path, change.path)
                 finally:
                     temp_path.unlink(missing_ok=True)
@@ -181,6 +299,8 @@ def commit(changes: list[PreparedChange]) -> None:
                 else:
                     change.path.parent.mkdir(parents=True, exist_ok=True)
                     change.path.write_bytes(change.original)
+                    if change.mode is not None:
+                        os.chmod(change.path, change.mode)
             except OSError:
                 pass
         raise ToolError("PATCH_COMMIT_FAILED", "patch commit failed; rollback was attempted", "filesystem", True, {"error": str(exc)}) from exc
@@ -192,10 +312,20 @@ def apply_patch(workspace: Workspace, patch_text: str, *, dry_run: bool) -> dict
         commit(changes)
     additions = sum(item.additions for item in changes)
     removals = sum(item.removals for item in changes)
+    affected_files: list[dict[str, str]] = []
+    for item in changes:
+        if item.operation == "move_source":
+            continue
+        affected = {"operation": item.operation, "path": item.display}
+        if item.operation == "move" and item.old_display:
+            affected["old_path"] = item.old_display
+        affected_files.append(affected)
     return {
         "dry_run": dry_run,
-        "affected_files": [{"operation": item.operation, "path": item.display} for item in changes],
+        "clean": True,
+        "affected_files": affected_files,
         "additions": additions,
         "removals": removals,
-        "summary": f"{len(changes)} file(s), +{additions} -{removals}",
+        "summary": f"{len(affected_files)} file(s), +{additions} -{removals}",
+        "warnings": [],
     }

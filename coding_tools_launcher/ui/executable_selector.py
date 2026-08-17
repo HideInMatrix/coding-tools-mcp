@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -42,7 +43,8 @@ class ExecutableSelector(QWidget):
 
         self.status_label = QLabel("未检测")
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("color: palette(mid); font-size: 12px;")
+        self.status_label.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+        self.status_label.setStyleSheet("font-size: 12px;")
         layout.addWidget(self.status_label)
 
     def configured_path(self) -> str:

@@ -8,8 +8,10 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import QApplication, QMessageBox
 
+from coding_tools_mcp import __version__ as MCP_VERSION
 from coding_tools_launcher.executables.models import ExecutableCandidate
 from coding_tools_launcher.ui.main_window import MainWindow
 
@@ -45,6 +47,17 @@ class NetworkProviderUITests(unittest.TestCase):
         ]
         self.assertEqual(actual, expected)
 
+    def test_about_dialog_uses_project_version_and_micromatrix_copyright(self) -> None:
+        self.assertEqual(self.window.about_action.text(), "关于 Coding Tools MCP")
+        with patch.object(QMessageBox, "about") as about:
+            self.window._show_about()
+
+        about.assert_called_once()
+        _parent, title, body = about.call_args.args
+        self.assertEqual(title, "关于 Coding Tools MCP")
+        self.assertIn(f"版本：{MCP_VERSION}", body)
+        self.assertIn("Copyright © micromatrix.org", body)
+
     def test_switching_provider_changes_visible_configuration_page(self) -> None:
         for provider in ("cloudflare", "frp", "ngrok", "tailscale", "external"):
             index = self.window.network_provider_combo.findData(provider)
@@ -53,6 +66,35 @@ class NetworkProviderUITests(unittest.TestCase):
                 self.window.network_stack.currentIndex(),
                 self.window._provider_page_indexes[provider],
             )
+            self.assertEqual(
+                self.window.network_stack.height(),
+                self.window.network_stack.currentWidget().sizeHint().height(),
+            )
+
+    def test_muted_text_uses_system_placeholder_palette_role(self) -> None:
+        subtitle = next(
+            label
+            for label in self.window.findChildren(type(self.window.mode_label))
+            if label.text() == "把本地代码目录安全地连接到支持 MCP 的客户端"
+        )
+        self.assertEqual(
+            subtitle.foregroundRole(),
+            QPalette.ColorRole.PlaceholderText,
+        )
+        self.assertEqual(
+            self.window.mode_label.foregroundRole(),
+            QPalette.ColorRole.PlaceholderText,
+        )
+        self.assertEqual(
+            self.window.ngrok_executable_selector.status_label.foregroundRole(),
+            QPalette.ColorRole.PlaceholderText,
+        )
+
+    def test_cloudflare_page_uses_compact_vertical_spacing(self) -> None:
+        index = self.window.network_provider_combo.findData("cloudflare")
+        self.window.network_provider_combo.setCurrentIndex(index)
+        page = self.window.network_stack.currentWidget()
+        self.assertEqual(page.layout().spacing(), 6)
 
     def test_provider_pages_share_executable_selector_behavior(self) -> None:
         self.assertEqual(

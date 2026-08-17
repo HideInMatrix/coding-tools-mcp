@@ -3,8 +3,9 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+from coding_tools_mcp import __version__ as MCP_VERSION
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QFont
+from PySide6.QtGui import QAction, QCloseEvent, QFont, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -65,12 +66,31 @@ class MainWindow(QMainWindow):
         self.launcher = MCPLauncher(log=self.bridge.log.emit)
         self._busy = False
         self._executable_selectors: dict[str, ExecutableSelector] = {}
+        self._build_menu()
         self._build_ui()
         self._restore_settings()
 
         self._health_timer = QTimer(self)
         self._health_timer.timeout.connect(self._poll_health)
         self._health_timer.start(700)
+
+    def _build_menu(self) -> None:
+        help_menu = self.menuBar().addMenu("帮助")
+        self.about_action = QAction("关于 Coding Tools MCP", self)
+        self.about_action.setMenuRole(QAction.MenuRole.AboutRole)
+        self.about_action.triggered.connect(self._show_about)
+        help_menu.addAction(self.about_action)
+
+    def _show_about(self) -> None:
+        QMessageBox.about(
+            self,
+            "关于 Coding Tools MCP",
+            (
+                "<h3>Coding Tools MCP</h3>"
+                f"<p>版本：{MCP_VERSION}</p>"
+                "<p>Copyright © micromatrix.org</p>"
+            ),
+        )
 
     def _build_ui(self) -> None:
         root = QWidget(self)
@@ -86,7 +106,7 @@ class MainWindow(QMainWindow):
         title.setFont(title_font)
 
         subtitle = QLabel("把本地代码目录安全地连接到支持 MCP 的客户端")
-        subtitle.setStyleSheet("color: palette(mid);")
+        subtitle.setForegroundRole(QPalette.ColorRole.PlaceholderText)
         outer.addWidget(title)
         outer.addWidget(subtitle)
 
@@ -233,7 +253,8 @@ class MainWindow(QMainWindow):
             "ChatGPT 默认通过 /oauth/register 动态生成 Client ID。这里的 Client ID/Secret 仅用于手动预注册 OAuth Client。"
         )
         oauth_note.setWordWrap(True)
-        oauth_note.setStyleSheet("color: palette(mid); font-size: 12px;")
+        oauth_note.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+        oauth_note.setStyleSheet("font-size: 12px;")
         advanced_oauth_layout.addWidget(oauth_note)
         self.advanced_oauth_panel.setVisible(False)
         form_layout.addWidget(self.advanced_oauth_panel)
@@ -269,10 +290,12 @@ class MainWindow(QMainWindow):
         def add_note(layout: QVBoxLayout, text: str) -> None:
             note = QLabel(text)
             note.setWordWrap(True)
-            note.setStyleSheet("color: palette(mid); font-size: 12px;")
+            note.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+            note.setStyleSheet("font-size: 12px;")
             layout.addWidget(note)
 
         _, cloudflare_layout = provider_page("cloudflare")
+        cloudflare_layout.setSpacing(6)
         self.cf_public_url_edit = QLineEdit()
         self.cf_public_url_edit.setPlaceholderText(
             "留空使用 Quick Tunnel；固定域名例如 https://mcp.example.com"
@@ -375,7 +398,8 @@ class MainWindow(QMainWindow):
             "敏感凭据保存在用户配置目录并限制文件权限；关闭后不会持久化 OAuth/Cloudflare/ngrok Secret。"
         )
         secret_note.setWordWrap(True)
-        secret_note.setStyleSheet("color: palette(mid); font-size: 12px;")
+        secret_note.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+        secret_note.setStyleSheet("font-size: 12px;")
         form_layout.addWidget(secret_note)
 
         # 连接设置属于静态配置区域，不应该随着窗口高度变化被压缩。
@@ -396,7 +420,7 @@ class MainWindow(QMainWindow):
         self.status_label.setStyleSheet("color: #F56C6C;")
         self.mode_label = QLabel("Quick Tunnel")
         self.mode_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self.mode_label.setStyleSheet("color: palette(mid);")
+        self.mode_label.setForegroundRole(QPalette.ColorRole.PlaceholderText)
         status_top.addWidget(self.status_label)
         status_top.addStretch(1)
         status_top.addWidget(self.mode_label)
@@ -541,6 +565,7 @@ class MainWindow(QMainWindow):
         if selector is None:
             return
         selector.set_candidate(candidate)
+        self._refresh_network_stack_height()
         self._refresh_form_card_height()
 
     def _on_executable_detection_failed(self, key: str, message: str) -> None:
@@ -548,15 +573,28 @@ class MainWindow(QMainWindow):
         if selector is None:
             return
         selector.set_error(message)
+        self._refresh_network_stack_height()
         self._refresh_form_card_height()
 
     def _selected_network_provider(self) -> str:
         return str(self.network_provider_combo.currentData() or "cloudflare")
 
+    def _refresh_network_stack_height(self) -> None:
+        current_page = self.network_stack.currentWidget()
+        if current_page is None:
+            return
+        layout = current_page.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        current_page.adjustSize()
+        self.network_stack.setFixedHeight(current_page.sizeHint().height())
+
     def _on_network_provider_changed(self, _index: int | None = None) -> None:
         provider = self._selected_network_provider()
         index = self._provider_page_indexes.get(provider, 0)
         self.network_stack.setCurrentIndex(index)
+        self._refresh_network_stack_height()
         if hasattr(self, "mode_label") and not self.launcher.is_running:
             self.mode_label.setText(self.network_provider_combo.currentText())
         QTimer.singleShot(0, self._refresh_form_card_height)
@@ -627,7 +665,8 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(False)
         self.start_button.setText("正在启动…")
         self.status_label.setText("●  Starting")
-        self.status_label.setStyleSheet("color: palette(mid);")
+        self.status_label.setStyleSheet("")
+        self.status_label.setForegroundRole(QPalette.ColorRole.PlaceholderText)
 
         def worker() -> None:
             try:
