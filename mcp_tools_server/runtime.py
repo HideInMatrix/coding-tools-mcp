@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -102,6 +103,7 @@ ELICITABLE_PERMISSIONS = frozenset(
         "sensitive_env",
         "shell_expansion",
         "inline_script",
+        "privileged_executable",
     }
 )
 PERMISSION_STATE_TTL_SECONDS = 300
@@ -193,11 +195,9 @@ class Runtime:
         self._consumed_permission_states: dict[str, float] = {}
         self._permission_grants_lock = threading.RLock()
         self._permission_grants: dict[str, dict[str, Any]] = {}
-        self.toolchains = ToolchainResolver(self.workspace.root)
-        self._toolchain_snapshot = self.toolchains.discover()
-        self.safe_exec_path = [str(item) for item in self._toolchain_snapshot.get("safe_path", [])]
-        self.toolchain_read_roots = self._selected_toolchain_roots()
-        sandbox_readable_roots = [*self.toolchain_read_roots, *self._platform_read_roots()]
+        self.safe_exec_path = ToolchainResolver.default_search_path(self.workspace.root)
+        self.toolchain_read_roots: list[Path] = []
+        sandbox_readable_roots = self._platform_read_roots()
         sandbox_writable_roots = [
             self.commands.runtime_dir,
             self.commands.home_dir,
@@ -209,6 +209,35 @@ class Runtime:
             for path in (self.workspace.root / ".git",)
             if path.exists()
         ]
+        # Build the baseline sandbox before discovery. Tool lookup and version
+        # probes must observe the same filesystem/PATH restrictions as commands.
+        self.process_sandbox = create_process_sandbox(
+            mode=self.permission_mode,
+            workspace=self.workspace.root,
+            runtime_dir=self.commands.runtime_dir,
+            readable_roots=sandbox_readable_roots,
+            writable_roots=sandbox_writable_roots,
+            protected_paths=sandbox_protected_paths,
+            network=self.allow_network,
+        )
+        self.toolchains = ToolchainResolver(
+            self.workspace.root,
+            safe_path=self.safe_exec_path,
+            probe_runner=self._run_toolchain_probe,
+        )
+        self._toolchain_snapshot = self.toolchains.discover(
+            privileged=self.permission_mode == "dangerous"
+        )
+        self.safe_exec_path = [
+            str(item) for item in self._toolchain_snapshot.get("safe_path", [])
+        ]
+        self.toolchain_read_roots = self._selected_toolchain_roots()
+        sandbox_readable_roots = [
+            *self.toolchain_read_roots,
+            *self._platform_read_roots(),
+        ]
+        # Rebuild once with the roots actually proven executable by the
+        # sandboxed probes. No guessed NVM/FNM/Mise directories are admitted.
         self.process_sandbox = create_process_sandbox(
             mode=self.permission_mode,
             workspace=self.workspace.root,
@@ -275,6 +304,35 @@ class Runtime:
                 Path("/usr/local"),
             ]
         return []
+
+    def _run_toolchain_probe(
+        self,
+        argv: list[str],
+        env: Mapping[str, str],
+        timeout: float,
+        privileged: bool,
+        readable_roots: Sequence[Path],
+    ) -> subprocess.CompletedProcess[str]:
+        permissions = (
+            frozenset({"privileged_executable"}) if privileged else frozenset()
+        )
+        command = self.process_sandbox.wrap(
+            argv,
+            cwd=self.workspace.root,
+            permissions=permissions,
+            readable_roots=tuple(readable_roots),
+        )
+        return subprocess.run(
+            command,
+            cwd=str(self.workspace.root),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout,
+            shell=False,
+            env=dict(env),
+        )
 
     def server_identity(self) -> dict[str, str]:
         return {"name": SERVER_NAME, "title": SERVER_TITLE, "version": __version__}
@@ -568,6 +626,7 @@ class Runtime:
             "sensitive_env": "该操作需要向子进程传入敏感环境变量。",
             "shell_expansion": "该操作需要启用受限制的 Shell 展开能力。",
             "inline_script": "该操作需要执行内联脚本。",
+            "privileged_executable": "沙箱 PATH 中未找到所需工具，需要读取用户工具环境并扩大只读执行范围后重试。",
         }
         try:
             rendered = json.dumps(
@@ -952,11 +1011,35 @@ class Runtime:
 
     def discover_toolchains(self, args: dict[str, Any]) -> dict[str, Any]:
         kinds = [str(item) for item in list(args.get("kinds") or ["node", "python", "go"])]
-        discovered = self.toolchains.discover(kinds)
+        privileged = self.permission_mode == "dangerous" or self._permission_granted(
+            "privileged_executable"
+        )
+        discovered = self.toolchains.discover(kinds, privileged=privileged)
+        toolchains = discovered.get("toolchains")
+        missing = [
+            kind
+            for kind in kinds
+            if not isinstance(toolchains, dict)
+            or not isinstance(toolchains.get(kind), dict)
+            or toolchains[kind].get("selected") is None
+        ]
+        if missing and not privileged:
+            raise ToolError(
+                "PERMISSION_REQUIRED",
+                "沙箱环境中未找到请求的工具链；需要读取用户登录环境后重试。",
+                "permission",
+                False,
+                {
+                    "permission": "privileged_executable",
+                    "missing": missing,
+                    "sandbox_path": list(self.safe_exec_path),
+                },
+            )
         return {
             **discovered,
-            "shell_startup_files_evaluated": False,
+            "shell_startup_files_evaluated": privileged and os.name != "nt",
             "home_scanned_recursively": False,
+            "elevated_user_environment_queried": privileged,
         }
 
     # ------------------------------------------------------------------
@@ -1233,7 +1316,11 @@ class Runtime:
                 for key, value in os.environ.items()
                 if key.upper() in allowed and not SENSITIVE_ENV_RE.search(key)
             }
-            env["PATH"] = os.pathsep.join(self.safe_exec_path)
+            env["PATH"] = (
+                os.environ.get("PATH", "")
+                if self._permission_granted("privileged_executable")
+                else os.pathsep.join(self.safe_exec_path)
+            )
             env.update({"HOME": str(self.commands.home_dir), "TMPDIR": str(self.commands.tmp_dir), "TEMP": str(self.commands.tmp_dir), "TMP": str(self.commands.tmp_dir)})
             if os.name == "nt":
                 roaming = self.commands.home_dir / "AppData" / "Roaming"
@@ -1359,14 +1446,33 @@ class Runtime:
     ) -> str:
         display = subprocess.list2cmdline([program, *argv])
         self._validate_command(display, env, timeout_ms)
-        resolved = self.toolchains.resolve_program(program)
+        privileged = self.permission_mode == "dangerous" or self._permission_granted(
+            "privileged_executable"
+        )
+        resolved = self.toolchains.resolve_program(program, privileged=privileged)
         if resolved is None:
+            if not privileged:
+                raise ToolError(
+                    "PERMISSION_REQUIRED",
+                    f"沙箱执行 PATH 中未找到 {program}；需要读取用户工具环境后重试。",
+                    "permission",
+                    False,
+                    {
+                        "permission": "privileged_executable",
+                        "program": program,
+                        "sandbox_path": list(self.safe_exec_path),
+                    },
+                )
             raise ToolError(
                 "EXECUTABLE_NOT_FOUND",
-                f"program is not available in the validated execution PATH: {program}",
+                f"program is not available in either the sandbox or elevated user environment: {program}",
                 "process",
                 False,
-                {"program": program, "safe_path": list(self.safe_exec_path)},
+                {
+                    "program": program,
+                    "safe_path": list(self.safe_exec_path),
+                    "elevated_lookup": True,
+                },
             )
         return resolved
 
@@ -1376,6 +1482,10 @@ class Runtime:
         timeout_ms = int(args.get("timeout_ms", 30_000))
         env_overrides = {str(key): str(value) for key, value in dict(args.get("env") or {}).items()}
         resolved_program = self._validate_process(program, argv, env_overrides, timeout_ms)
+        privileged_execution = (
+            self.permission_mode == "dangerous"
+            or self._permission_granted("privileged_executable")
+        )
         cwd = self.workspace.existing(str(args.get("cwd") or args.get("workdir", "."))).absolute
         if not cwd.is_dir():
             raise ToolError("NOT_DIRECTORY", "process workdir is not a directory", "filesystem")
@@ -1405,11 +1515,27 @@ class Runtime:
             command,
             cwd=cwd,
             permissions=ACTIVE_PERMISSIONS.get(),
+            readable_roots=(
+                (
+                    self.toolchains.readable_root_for_program(
+                        program,
+                        resolved_program,
+                        privileged=True,
+                    ),
+                )
+                if privileged_execution
+                else ()
+            ),
         )
+        process_env = self._command_env(env_overrides)
+        if privileged_execution:
+            process_env["PATH"] = os.pathsep.join(
+                [str(Path(resolved_program).resolve().parent), process_env.get("PATH", "")]
+            )
         managed = self.commands.start(
             command,
             cwd=cwd,
-            env=self._command_env(env_overrides),
+            env=process_env,
             stdin_text=str(args.get("stdin", "")),
             timeout_ms=timeout_ms,
             tty=bool(args.get("tty", False)),
@@ -1422,6 +1548,49 @@ class Runtime:
         payload["shell"] = False
         return self._format_command_payload(payload, args)
 
+    @staticmethod
+    def _shell_program_names(cmd: str) -> list[str]:
+        """Extract external command heads from the restricted shell subset."""
+
+        builtins = {
+            ".", ":", "alias", "bg", "break", "cd", "continue", "echo",
+            "eval", "exec", "exit", "export", "false", "fg", "getopts",
+            "hash", "jobs", "printf", "pwd", "read", "readonly", "return",
+            "set", "shift", "test", "times", "trap", "true", "type",
+            "ulimit", "umask", "unalias", "unset", "wait",
+        }
+        prefixes = {"do", "done", "elif", "else", "fi", "if", "then", "while", "until"}
+        control_heads = {"case", "esac", "for", "function", "in", "select", "{", "}"}
+        wrappers = {"builtin", "command", "env", "time"}
+        names: list[str] = []
+        for segment in re.split(r"(?:&&|\|\||[;|])", cmd):
+            try:
+                tokens = shlex.split(segment, posix=os.name != "nt")
+            except ValueError:
+                continue
+            if tokens and tokens[0] in control_heads:
+                continue
+            while tokens and (
+                tokens[0] in prefixes
+                or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tokens[0])
+            ):
+                tokens.pop(0)
+            while tokens and tokens[0] in wrappers:
+                tokens.pop(0)
+                while tokens and (
+                    tokens[0].startswith("-")
+                    or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tokens[0])
+                ):
+                    tokens.pop(0)
+            if not tokens:
+                continue
+            name = tokens[0]
+            if name in builtins or "/" in name or "\\" in name:
+                continue
+            if name not in names:
+                names.append(name)
+        return names
+
     def exec_command(self, args: dict[str, Any]) -> dict[str, Any]:
         cmd = str(args["cmd"])
         timeout_ms = int(args.get("timeout_ms", 30_000))
@@ -1430,6 +1599,44 @@ class Runtime:
         cwd = self.workspace.existing(str(args.get("cwd") or args.get("workdir", "."))).absolute
         if not cwd.is_dir():
             raise ToolError("NOT_DIRECTORY", "command workdir is not a directory", "filesystem")
+        privileged = self.permission_mode == "dangerous" or self._permission_granted(
+            "privileged_executable"
+        )
+        command_roots: list[Path] = []
+        command_bins: list[Path] = []
+        for program in self._shell_program_names(cmd):
+            resolved = self.toolchains.resolve_program(program, privileged=privileged)
+            if resolved is None:
+                if not privileged:
+                    raise ToolError(
+                        "PERMISSION_REQUIRED",
+                        f"沙箱执行 PATH 中未找到 {program}；需要读取用户工具环境后重试。",
+                        "permission",
+                        False,
+                        {
+                            "permission": "privileged_executable",
+                            "program": program,
+                            "sandbox_path": list(self.safe_exec_path),
+                        },
+                    )
+                raise ToolError(
+                    "EXECUTABLE_NOT_FOUND",
+                    f"program is not available in either the sandbox or elevated user environment: {program}",
+                    "process",
+                    False,
+                    {"program": program, "elevated_lookup": True},
+                )
+            if privileged:
+                root = self.toolchains.readable_root_for_program(
+                    program,
+                    resolved,
+                    privileged=True,
+                )
+                if root not in command_roots:
+                    command_roots.append(root)
+                bin_dir = Path(resolved).resolve().parent
+                if bin_dir not in command_bins:
+                    command_bins.append(bin_dir)
         if self.permission_mode == "dangerous":
             launch_command: str | list[str] = cmd
             launch_shell = True
@@ -1445,11 +1652,20 @@ class Runtime:
                 launch_command,
                 cwd=cwd,
                 permissions=ACTIVE_PERMISSIONS.get(),
+                readable_roots=tuple(command_roots),
+            )
+        command_env = self._command_env(env_overrides)
+        if privileged and command_bins:
+            command_env["PATH"] = os.pathsep.join(
+                [
+                    *(str(path) for path in command_bins),
+                    command_env.get("PATH", ""),
+                ]
             )
         managed = self.commands.start(
             launch_command,
             cwd=cwd,
-            env=self._command_env(env_overrides),
+            env=command_env,
             stdin_text=str(args.get("stdin", "")),
             timeout_ms=timeout_ms,
             tty=bool(args.get("tty", False)),

@@ -10,8 +10,11 @@ from build_desktop import MACOS_BUNDLE_IDENTIFIER, resolve_build_version
 from coding_tools_launcher.self_update import _parse_checksum
 from coding_tools_launcher.version import DEV_VERSION, git_release_version
 from coding_tools_launcher.updates import (
+    DEFAULT_GITHUB_DOWNLOAD_PROXY,
+    apply_download_proxy,
     fetch_latest_release,
     is_newer_version,
+    normalize_download_proxy_prefix,
     platform_asset_name,
     updater_asset_name,
 )
@@ -19,6 +22,29 @@ from scripts.package_release import platform_label, release_base_name
 
 
 class UpdateNamingTests(unittest.TestCase):
+    def test_download_proxy_prefix_is_normalized_and_can_be_disabled(self) -> None:
+        self.assertEqual(
+            normalize_download_proxy_prefix("https://mirror.example.com/base"),
+            "https://mirror.example.com/base/",
+        )
+        self.assertEqual(normalize_download_proxy_prefix(""), "")
+        with self.assertRaisesRegex(ValueError, "http/https"):
+            normalize_download_proxy_prefix("file:///tmp/proxy")
+        with self.assertRaisesRegex(ValueError, "查询参数"):
+            normalize_download_proxy_prefix("https://mirror.example.com/?token=x")
+
+    def test_download_proxy_only_rewrites_github_assets(self) -> None:
+        github_url = "https://github.com/org/repo/releases/download/v1/app.zip"
+        self.assertEqual(
+            apply_download_proxy(github_url, "https://mirror.example.com"),
+            "https://mirror.example.com/" + github_url,
+        )
+        external = "https://downloads.example.com/app.zip"
+        self.assertEqual(
+            apply_download_proxy(external, "https://mirror.example.com"),
+            external,
+        )
+
     def test_release_tag_becomes_desktop_build_version(self) -> None:
         with patch.dict(
             "os.environ",
@@ -178,6 +204,9 @@ class UpdateNamingTests(unittest.TestCase):
         self.assertEqual(info.update_asset_name, "Coding-Tools-MCP-windows-arm64.zip")
         self.assertTrue(info.update_download_url.endswith("/Coding-Tools-MCP-windows-arm64.zip"))
         self.assertTrue(info.checksum_url.endswith(".zip.sha256"))
+        self.assertTrue(info.download_url.startswith(DEFAULT_GITHUB_DOWNLOAD_PROXY))
+        self.assertTrue(info.update_download_url.startswith(DEFAULT_GITHUB_DOWNLOAD_PROXY))
+        self.assertTrue(info.checksum_url.startswith(DEFAULT_GITHUB_DOWNLOAD_PROXY))
 
     def test_latest_release_retries_incomplete_read(self) -> None:
         payload = {

@@ -106,6 +106,28 @@ class DesktopAPITests(unittest.TestCase):
         self.assertEqual(len(bootstrap["servers"]), 2)
         self.assertNotEqual(first["server_id"], second["server_id"])
 
+    def test_app_version_is_stable_and_available_without_bootstrap(self) -> None:
+        self.api._close()
+        self.api = DesktopAPI(app_version="0.2.7")
+
+        self.assertEqual(self.api.get_app_version(), "0.2.7")
+        self.assertEqual(self.api.bootstrap()["version"], "0.2.7")
+
+    def test_update_download_proxy_defaults_and_persists_custom_value(self) -> None:
+        self.assertEqual(
+            self.api.bootstrap()["update_download_proxy_prefix"],
+            "https://cdn.gh-proxy.org/",
+        )
+        saved = self.api.save_update_download_proxy("https://mirror.example.com/base")
+        self.assertEqual(saved, "https://mirror.example.com/base/")
+        self.assertEqual(
+            self.api.bootstrap()["update_download_proxy_prefix"],
+            "https://mirror.example.com/base/",
+        )
+
+        self.assertEqual(self.api.save_update_download_proxy(""), "")
+        self.assertEqual(self.api.bootstrap()["update_download_proxy_prefix"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

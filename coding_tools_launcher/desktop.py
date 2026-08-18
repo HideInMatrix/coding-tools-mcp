@@ -35,9 +35,10 @@ def main() -> int:
             "找不到桌面 Web UI 构建产物。请先在 coding_tools_launcher/web 下执行 npm install && npm run build。"
         )
 
-    api = DesktopAPI()
+    app_version = current_version()
+    api = DesktopAPI(app_version=app_version)
     window = webview.create_window(
-        f"Coding Tools MCP {current_version()}",
+        f"Coding Tools MCP {app_version}",
         str(entrypoint),
         js_api=api,
         width=1180,

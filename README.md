@@ -6,6 +6,8 @@ Coding Tools MCP 是一个面向本地开发环境的 MCP 桌面工具。
 
 项目的重点不是把整个电脑或整个文件系统暴露出去，而是让 AI 在你明确指定的 Workspace 范围内完成读取、搜索、修改和受限命令执行等开发工作。
 
+![](/assets/7ad1fe7dcf793a4f3d5f304a6f9c68c8.png)
+
 ## 这个项目适合谁
 
 Coding Tools MCP 主要面向以下用户：

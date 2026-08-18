@@ -407,7 +407,7 @@ mcp_tools_server/patching.py
 
 ## 10. 受控进程执行与工具链发现
 
-`discover_toolchains` 在不执行用户 shell 启动文件的前提下发现 Node.js、Python 和 Go。
+`discover_toolchains` 统一通过执行环境查询 Node.js、Python 和 Go，不再扫描或猜测版本管理器目录。
 
 当前会读取 Workspace 内的版本提示：
 
@@ -420,15 +420,17 @@ package.json engines.node（仅精确版本）
 go.mod 的 go 版本
 ```
 
-并检查有限、可预测的版本管理器目录，例如：
+查询分两阶段：
 
 ```text
-nvm / fnm / volta / mise / asdf / nodenv / n / nodebrew
-pyenv
-goenv
+受控 PATH + OS sandbox 查询
+  -> 找到：短时版本探测并加入当前 Safe PATH
+  -> 未找到：请求 privileged_executable 一次性权限
+       -> 用户批准后读取登录环境并重查
+       -> 用户拒绝或无授权通道时保持找不到
 ```
 
-不会执行：
+默认阶段不会执行：
 
 ```text
 ~/.zshrc
@@ -438,7 +440,7 @@ goenv
 eval "$(...)"
 ```
 
-也不会递归扫描整个 Home 目录。
+授权后的查询可能执行用户登录 shell 启动文件，但只发生在精确绑定的当前工具调用中；不会递归扫描 Home，也不会把整个 Server 切换成 Dangerous。Node、Python、Go 以及 `exec_process` 的其他程序名使用同一套查询逻辑。
 
 `exec_process` 接收结构化 `program + args`，最终使用 `shell=False` 启动。对于不需要 shell 管道、重定向或条件表达式的构建命令，应优先使用它：
 
@@ -599,6 +601,7 @@ long_timeout
 sensitive_env
 shell_expansion
 inline_script
+privileged_executable
 ```
 
 不会通过弹窗提升破坏沙箱根边界的能力，例如覆盖 `HOME/PATH/TMP`、任意 Workspace 外写入等。

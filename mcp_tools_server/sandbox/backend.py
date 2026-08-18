@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
 import shutil
@@ -33,6 +34,7 @@ class ProcessSandboxBackend:
         *,
         cwd: Path,
         permissions: frozenset[str] = frozenset(),
+        readable_roots: tuple[Path, ...] = (),
     ) -> list[str]:
         return list(argv)
 
@@ -178,20 +180,27 @@ class MacSeatbeltBackend(ProcessSandboxBackend):
             )
         return "\n".join(components) + "\n"
 
-    def _profile_path_for_permissions(self, permissions: frozenset[str]) -> Path:
+    def _profile_path_for_permissions(
+        self,
+        permissions: frozenset[str],
+        readable_roots: tuple[Path, ...] = (),
+    ) -> Path:
         network = self.network or "network" in permissions
         allow_protected_write = "git_metadata_write" in permissions
-        if network == self.network and not allow_protected_write:
+        if network == self.network and not allow_protected_write and not readable_roots:
             return self.profile_path
+        roots_key = hashlib.sha256(
+            "\0".join(sorted(str(path.resolve()) for path in readable_roots)).encode("utf-8")
+        ).hexdigest()[:12]
         suffix = (
-            f"network-{int(network)}-git-write-{int(allow_protected_write)}"
+            f"network-{int(network)}-git-write-{int(allow_protected_write)}-read-{roots_key}"
         )
         path = self.runtime_dir / f"seatbelt-{suffix}.sbpl"
         if not path.exists():
             path.write_text(
                 self._profile(
                     workspace=self.workspace,
-                    readable_roots=self.readable_roots,
+                    readable_roots=[*self.readable_roots, *readable_roots],
                     writable_roots=self.writable_roots,
                     protected_paths=(
                         [] if allow_protected_write else self.protected_paths
@@ -208,10 +217,11 @@ class MacSeatbeltBackend(ProcessSandboxBackend):
         *,
         cwd: Path,
         permissions: frozenset[str] = frozenset(),
+        readable_roots: tuple[Path, ...] = (),
     ) -> list[str]:
         if not self.state.enabled:
             return list(argv)
-        profile_path = self._profile_path_for_permissions(permissions)
+        profile_path = self._profile_path_for_permissions(permissions, readable_roots)
         return [str(self.EXECUTABLE), "-f", str(profile_path), *argv]
 
 
@@ -310,6 +320,7 @@ class LinuxBubblewrapBackend(ProcessSandboxBackend):
         *,
         cwd: Path,
         permissions: frozenset[str] = frozenset(),
+        readable_roots: tuple[Path, ...] = (),
     ) -> list[str]:
         if not self.state.enabled or self.executable is None:
             return list(argv)
@@ -335,7 +346,7 @@ class LinuxBubblewrapBackend(ProcessSandboxBackend):
         created: set[str] = set()
 
         bound: set[str] = set()
-        for root in self.readable_roots:
+        for root in [*self.readable_roots, *self._unique_existing(list(readable_roots))]:
             if any(root == system or root.is_relative_to(system) for system in system_roots):
                 continue
             key = str(root)
@@ -436,6 +447,7 @@ class WindowsRestrictedTokenBackend(ProcessSandboxBackend):
         *,
         cwd: Path,
         permissions: frozenset[str] = frozenset(),
+        readable_roots: tuple[Path, ...] = (),
     ) -> list[str]:
         if not self.state.enabled:
             return list(argv)

@@ -345,7 +345,7 @@ class CustomMCPServerContractTests(unittest.TestCase):
 
 class RuntimeSafetyTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX fixture uses executable shell scripts")
-    def test_toolchain_discovery_finds_nvm_without_sourcing_shell_rc(self) -> None:
+    def test_toolchain_discovery_queries_sandbox_before_privileged_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             workspace = base / "workspace"
@@ -353,8 +353,6 @@ class RuntimeSafetyTests(unittest.TestCase):
             workspace.mkdir()
             home.mkdir()
             (workspace / ".nvmrc").write_text("25.7.0\n", encoding="utf-8")
-            marker = base / "shell-rc-was-executed"
-            (home / ".zshrc").write_text(f"touch {marker}\n", encoding="utf-8")
             bin_dir = home / ".nvm" / "versions" / "node" / "v25.7.0" / "bin"
             bin_dir.mkdir(parents=True)
             node = bin_dir / "node"
@@ -364,14 +362,41 @@ class RuntimeSafetyTests(unittest.TestCase):
             node.chmod(0o755)
             npm.chmod(0o755)
 
-            resolver = ToolchainResolver(workspace, home=home)
-            result = resolver.discover(["node"])
+            calls: list[tuple[bool, tuple[Path, ...]]] = []
 
+            def probe(
+                argv: list[str],
+                _env: object,
+                _timeout: float,
+                privileged: bool,
+                readable_roots: object,
+            ) -> subprocess.CompletedProcess[str]:
+                roots = tuple(readable_roots)  # type: ignore[arg-type]
+                calls.append((privileged, roots))
+                if argv[0] == str(node.resolve()):
+                    return subprocess.CompletedProcess(argv, 0, "v25.7.0\n", "")
+                if privileged and argv[-1] == "node":
+                    return subprocess.CompletedProcess(argv, 0, f"{node.resolve()}\n", "")
+                return subprocess.CompletedProcess(argv, 1, "", "")
+
+            resolver = ToolchainResolver(
+                workspace,
+                home=home,
+                safe_path=[str(base)],
+                probe_runner=probe,  # type: ignore[arg-type]
+            )
+            sandbox_result = resolver.discover(["node"])
+            result = resolver.discover(["node"], privileged=True)
+
+        self.assertIsNone(sandbox_result["toolchains"]["node"]["selected"])
         selected = result["toolchains"]["node"]["selected"]
         self.assertEqual(selected["version"], "25.7.0")
-        self.assertEqual(selected["source"], "nvm")
+        self.assertEqual(selected["source"], "elevated_path")
         self.assertEqual(selected["executables"]["npm"], str(npm.resolve()))
-        self.assertFalse(marker.exists())
+        self.assertTrue(any(not privileged for privileged, _roots in calls))
+        self.assertTrue(
+            any(privileged and resolver.home in roots for privileged, roots in calls)
+        )
 
     def test_safe_exec_path_does_not_globally_trust_workspace_bin_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -385,7 +410,15 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertNotIn(str(local_bin.resolve()), safe_path)
 
     @unittest.skipIf(os.name == "nt", "POSIX fixture uses executable shell scripts")
-    def test_exec_process_uses_validated_toolchain_path_without_login_shell(self) -> None:
+    def test_exec_process_requests_privileged_lookup_after_sandbox_miss(self) -> None:
+        class ApproveOnceBroker:
+            calls: list[dict[str, object]] = []
+
+            @classmethod
+            def request(cls, **kwargs: object) -> object:
+                cls.calls.append(dict(kwargs))
+                return type("Decision", (), {"status": "approved"})()
+
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             workspace = base / "workspace"
@@ -401,21 +434,40 @@ class RuntimeSafetyTests(unittest.TestCase):
             npm.write_text("#!/bin/sh\necho npm-ok \"$@\"\n", encoding="utf-8")
             node.chmod(0o755)
             npm.chmod(0o755)
+            shell = base / "lookup-shell"
+            shell.write_text(
+                '#!/bin/sh\nname="$4"\nprintf "%s/%s\\n" "$TEST_TOOL_BIN" "$name"\n',
+                encoding="utf-8",
+            )
+            shell.chmod(0o755)
 
             with patch.dict(
                 os.environ,
-                {"HOME": str(home), "PATH": "/usr/bin:/bin"},
+                {
+                    "CODING_TOOLS_MCP_OS_SANDBOX": "off",
+                    "HOME": str(home),
+                    "PATH": "/usr/bin:/bin",
+                    "SHELL": str(shell),
+                    "TEST_TOOL_BIN": str(bin_dir),
+                },
                 clear=False,
             ):
                 runtime = Runtime(workspace, permission_mode="safe")
+                runtime.local_permission_broker = ApproveOnceBroker()  # type: ignore[assignment]
                 try:
-                    result = runtime.call_tool(
-                        "exec_process",
-                        {
+                    result = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            1,
+                            "exec_process",
+                            {
                             "program": "npm",
                             "args": ["run", "build"],
                             "yield_time_ms": 2_000,
-                        },
+                            },
+                            elicitation=False,
+                        ),
+                        principal="principal-a",
                     )
                     environment = runtime.call_tool(
                         "check_exec_environment",
@@ -424,13 +476,80 @@ class RuntimeSafetyTests(unittest.TestCase):
                 finally:
                     runtime.close()
 
-        payload = result["structuredContent"]
-        self.assertFalse(result["isError"])
+        assert result is not None
+        payload = result["result"]["structuredContent"]
+        self.assertFalse(result["result"]["isError"])
         self.assertEqual(payload["exit_code"], 0)
         self.assertIn("npm-ok run build", payload["stdout"])
         self.assertFalse(payload["shell"])
-        self.assertIn(str(bin_dir.resolve()), environment["effective_path"])
+        self.assertNotIn(str(bin_dir.resolve()), environment["effective_path"])
         self.assertIn("process.execute", environment["sandbox"]["capabilities"])
+        self.assertEqual(len(ApproveOnceBroker.calls), 1)
+        self.assertEqual(
+            ApproveOnceBroker.calls[0]["permission"],
+            "privileged_executable",
+        )
+
+    @unittest.skipIf(os.name == "nt", "POSIX fixture uses executable shell scripts")
+    def test_exec_command_uses_the_same_privileged_lookup_flow(self) -> None:
+        class ApproveOnceBroker:
+            calls = 0
+
+            @classmethod
+            def request(cls, **kwargs: object) -> object:
+                cls.calls += 1
+                self.assertEqual(kwargs["permission"], "privileged_executable")
+                return type("Decision", (), {"status": "approved"})()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            tool_bin = root / "user-tools" / "bin"
+            workspace.mkdir()
+            tool_bin.mkdir(parents=True)
+            tool = tool_bin / "custom-build"
+            tool.write_text('#!/bin/sh\necho custom-ok "$@"\n', encoding="utf-8")
+            tool.chmod(0o755)
+            shell = root / "lookup-shell"
+            shell.write_text(
+                '#!/bin/sh\npath="$TEST_TOOL_BIN/$4"\n[ -x "$path" ] || exit 1\nprintf "%s\\n" "$path"\n',
+                encoding="utf-8",
+            )
+            shell.chmod(0o755)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODING_TOOLS_MCP_OS_SANDBOX": "off",
+                    "PATH": "/usr/bin:/bin",
+                    "SHELL": str(shell),
+                    "TEST_TOOL_BIN": str(tool_bin),
+                },
+                clear=False,
+            ):
+                runtime = Runtime(workspace, permission_mode="safe")
+                runtime.local_permission_broker = ApproveOnceBroker()  # type: ignore[assignment]
+                try:
+                    response = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            1,
+                            "exec_command",
+                            {"cmd": "custom-build release", "yield_time_ms": 2_000},
+                            elicitation=False,
+                        ),
+                        principal="principal-a",
+                    )
+                finally:
+                    runtime.close()
+
+        assert response is not None
+        self.assertFalse(response["result"]["isError"])
+        self.assertIn(
+            "custom-ok release",
+            response["result"]["structuredContent"]["stdout"],
+        )
+        self.assertEqual(ApproveOnceBroker.calls, 1)
 
     def test_exec_process_blocks_known_network_package_commands_in_safe_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1104,6 +1223,40 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertIn("(allow network-outbound)", profile)
         self.assertIn("(deny file-write*", profile)
         self.assertIn(str(git_dir.resolve()), profile)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS Seatbelt profile test")
+    def test_privileged_executable_adds_only_a_readable_tool_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            runtime_dir = root / "runtime"
+            tool_root = root / "user-tool"
+            workspace.mkdir()
+            runtime_dir.mkdir()
+            tool_root.mkdir()
+            backend = MacSeatbeltBackend(
+                runtime_dir=runtime_dir,
+                workspace=workspace,
+                readable_roots=[],
+                writable_roots=[runtime_dir],
+                protected_paths=[],
+                network=False,
+                enabled=True,
+            )
+            wrapped = backend.wrap(
+                ["/usr/bin/true"],
+                cwd=workspace,
+                permissions=frozenset({"privileged_executable"}),
+                readable_roots=(tool_root,),
+            )
+            profile = Path(wrapped[2]).read_text(encoding="utf-8")
+
+        quoted = MacSeatbeltBackend._quoted(tool_root)
+        self.assertIn(
+            f"(allow file-read* file-test-existence (subpath {quoted}))",
+            profile,
+        )
+        self.assertNotIn(f"(allow file-write* (subpath {quoted}))", profile)
 
     def test_windows_restricted_backend_reports_partial_isolation(self) -> None:
         with (

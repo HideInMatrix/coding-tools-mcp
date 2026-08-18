@@ -1,4 +1,4 @@
-"""Deterministic, shell-free development toolchain discovery."""
+"""Sandbox-first development toolchain discovery with explicit elevation."""
 
 from .resolver import ToolchainResolver
 

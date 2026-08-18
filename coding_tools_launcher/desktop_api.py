@@ -18,12 +18,17 @@ from .permission_broker import DesktopPermissionBroker
 from .server_manager import MCPServerManager
 from .server_profiles import MCPServerProfile, ServerProfileStore, default_lifecycle
 from .self_update import UpdateManager
-from .updates import fetch_latest_release
+from .updates import (
+    DEFAULT_GITHUB_DOWNLOAD_PROXY,
+    fetch_latest_release,
+    normalize_download_proxy_prefix,
+)
 from .user_settings import load_settings, save_settings
 from .version import current_version
 
 
 SENSITIVE_NETWORK_OPTIONS = {"tunnel_token", "authtoken"}
+UPDATE_DOWNLOAD_PROXY_SETTING = "update_download_proxy_prefix"
 
 
 class DesktopAPI:
@@ -34,7 +39,10 @@ class DesktopAPI:
     and lifecycle constraints stay on the Python side.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, app_version: str | None = None) -> None:
+        # Resolve once during process startup. The native window title, the
+        # frontend and update checks must all report the exact same build.
+        self._app_version = app_version or current_version()
         self.store = ServerProfileStore()
         self.permission_broker = DesktopPermissionBroker()
         self._log_lock = threading.RLock()
@@ -171,6 +179,26 @@ class DesktopAPI:
         settings["selected_server_id"] = server_id
         save_settings(settings)
 
+    def _update_download_proxy_prefix(self) -> str:
+        settings = load_settings()
+        raw = settings.get(
+            UPDATE_DOWNLOAD_PROXY_SETTING,
+            DEFAULT_GITHUB_DOWNLOAD_PROXY,
+        )
+        try:
+            return normalize_download_proxy_prefix(raw)
+        except ValueError:
+            return DEFAULT_GITHUB_DOWNLOAD_PROXY
+
+    def save_update_download_proxy(self, prefix: str) -> str:
+        normalized = normalize_download_proxy_prefix(prefix)
+        settings = load_settings()
+        settings[UPDATE_DOWNLOAD_PROXY_SETTING] = normalized
+        save_settings(settings)
+        # ReleaseInfo contains the effective asset URLs, so force a refresh.
+        self._latest_release = None
+        return normalized
+
     def _migrate_legacy_desktop_settings(self) -> None:
         if self.store.list():
             return
@@ -239,7 +267,8 @@ class DesktopAPI:
             selected = profiles[0].server_id if profiles else ""
         return {
             "app_name": "Coding Tools MCP",
-            "version": current_version(),
+            "version": self._app_version,
+            "update_download_proxy_prefix": self._update_download_proxy_prefix(),
             "selected_server_id": selected,
             "next_default_port": self.store.next_default_port(),
             "servers": [self._profile_payload(profile) for profile in profiles],
@@ -251,6 +280,10 @@ class DesktopAPI:
                 {"key": "external", "label": "自定义公网 URL"},
             ],
         }
+
+    def get_app_version(self) -> str:
+        """Return version metadata without waiting for the full bootstrap."""
+        return self._app_version
 
     def list_servers(self) -> list[dict[str, object]]:
         return [self._profile_payload(profile) for profile in self.store.list()]
@@ -425,14 +458,20 @@ class DesktopAPI:
         return str(result[0]) if result else ""
 
     def check_update(self) -> dict[str, object]:
-        info = fetch_latest_release(current_version())
+        info = fetch_latest_release(
+            self._app_version,
+            download_proxy_prefix=self._update_download_proxy_prefix(),
+        )
         self._latest_release = info
         return self._release_payload(info)
 
     def start_update(self) -> dict[str, object]:
         info = self._latest_release
         if info is None:
-            info = fetch_latest_release(current_version())
+            info = fetch_latest_release(
+                self._app_version,
+                download_proxy_prefix=self._update_download_proxy_prefix(),
+            )
             self._latest_release = info
         return self.update_manager.start(info).to_dict()
 

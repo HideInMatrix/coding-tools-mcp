@@ -8,6 +8,7 @@ import socket
 import ssl
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -19,6 +20,7 @@ LATEST_RELEASE_API = (
 )
 GITHUB_API_VERSION = "2022-11-28"
 UPDATE_CHECK_ATTEMPTS = 3
+DEFAULT_GITHUB_DOWNLOAD_PROXY = "https://cdn.gh-proxy.org/"
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +35,39 @@ class ReleaseInfo:
     update_download_url: str
     checksum_url: str
     update_available: bool
+
+
+def normalize_download_proxy_prefix(value: object) -> str:
+    """Validate and normalize a GitHub release download proxy prefix.
+
+    An empty value explicitly disables acceleration. A proxy is a URL prefix,
+    so query strings, fragments and embedded credentials are rejected before
+    it is persisted.
+    """
+
+    prefix = str(value or "").strip()
+    if not prefix:
+        return ""
+    parsed = urllib.parse.urlsplit(prefix)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("下载加速前缀必须是有效的 http/https URL。")
+    if parsed.username or parsed.password:
+        raise ValueError("下载加速前缀不能包含用户名或密码。")
+    if parsed.query or parsed.fragment:
+        raise ValueError("下载加速前缀不能包含查询参数或锚点。")
+    return prefix.rstrip("/") + "/"
+
+
+def apply_download_proxy(url: str, prefix: str) -> str:
+    """Prefix GitHub release assets while leaving unrelated URLs untouched."""
+
+    normalized = normalize_download_proxy_prefix(prefix)
+    if not normalized or not url:
+        return url
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or parsed.hostname != "github.com":
+        return url
+    return normalized + url
 
 
 def _github_ssl_context() -> ssl.SSLContext:
@@ -196,6 +231,7 @@ def fetch_latest_release(
     current_version: str,
     *,
     timeout: float = 8.0,
+    download_proxy_prefix: str = DEFAULT_GITHUB_DOWNLOAD_PROXY,
 ) -> ReleaseInfo:
     payload = _fetch_release_payload(timeout=timeout)
 
@@ -206,9 +242,16 @@ def fetch_latest_release(
     expected_asset = platform_asset_name()
     expected_update_asset = updater_asset_name()
     release_url = str(payload.get("html_url") or "").strip()
-    download_url = _release_asset(payload, expected_asset)
-    update_download_url = _release_asset(payload, expected_update_asset)
-    checksum_url = _release_asset(payload, expected_update_asset + ".sha256")
+    proxy_prefix = normalize_download_proxy_prefix(download_proxy_prefix)
+    download_url = apply_download_proxy(
+        _release_asset(payload, expected_asset), proxy_prefix
+    )
+    update_download_url = apply_download_proxy(
+        _release_asset(payload, expected_update_asset), proxy_prefix
+    )
+    checksum_url = apply_download_proxy(
+        _release_asset(payload, expected_update_asset + ".sha256"), proxy_prefix
+    )
     return ReleaseInfo(
         current_version=current_version,
         latest_version=latest_version,
