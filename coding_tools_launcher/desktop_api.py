@@ -285,6 +285,21 @@ class DesktopAPI:
         """Return version metadata without waiting for the full bootstrap."""
         return self._app_version
 
+    def get_selected_server_id(self) -> str:
+        """Return the persisted selected Server without requiring bootstrap."""
+
+        profiles = self.store.list()
+        selected = self._selected_server_id()
+        ids = {profile.server_id for profile in profiles}
+        if selected in ids:
+            return selected
+        return profiles[0].server_id if profiles else ""
+
+    def get_update_download_proxy(self) -> str:
+        """Return the effective GitHub download proxy setting."""
+
+        return self._update_download_proxy_prefix()
+
     def list_servers(self) -> list[dict[str, object]]:
         return [self._profile_payload(profile) for profile in self.store.list()]
 

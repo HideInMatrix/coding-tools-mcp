@@ -269,18 +269,27 @@ async function poll() {
 }
 
 onMounted(async () => {
-  // Version retrieval is intentionally independent from the heavier bootstrap:
-  // a broken profile or first-run migration must not leave the UI at `v—`.
+  // Keep version retrieval on the same tiny bridge call used by the app chrome.
+  // Do not route startup through the aggregate `bootstrap` bridge method: some
+  // packaged pywebview builds expose the ordinary API methods but omit that
+  // method, which used to make the whole page fail with "bootstrap is not a
+  // function" even though get_app_version() was already working.
   const versionRequest = desktopApi.appVersion()
     .then(value => { if (value) version.value = value })
     .catch(() => undefined)
 
   try {
-    const data = await desktopApi.bootstrap()
-    if (data.version) version.value = data.version
-    updateProxyPrefix.value = data.update_download_proxy_prefix
-    servers.value = data.servers
-    if (data.selected_server_id) await selectServer(data.selected_server_id)
+    const [serverItems, persistedSelectedId, proxyPrefix] = await Promise.all([
+      desktopApi.listServers(),
+      desktopApi.selectedServerId(),
+      desktopApi.updateDownloadProxy(),
+    ])
+    servers.value = serverItems
+    updateProxyPrefix.value = proxyPrefix
+    if (persistedSelectedId && serverItems.some(item => item.server_id === persistedSelectedId)) {
+      await selectServer(persistedSelectedId)
+    }
+    else if (serverItems.length) await selectServer(serverItems[0].server_id)
     else await createNew()
     await refreshPermissionRequests()
   } catch (error) {

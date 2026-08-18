@@ -113,6 +113,16 @@ class DesktopAPITests(unittest.TestCase):
         self.assertEqual(self.api.get_app_version(), "0.2.7")
         self.assertEqual(self.api.bootstrap()["version"], "0.2.7")
 
+    def test_startup_metadata_is_available_without_bootstrap(self) -> None:
+        first = self.api.create_server(self.payload())
+        self.api.select_server(first["server_id"])
+
+        self.assertEqual(self.api.get_selected_server_id(), first["server_id"])
+        self.assertEqual(
+            self.api.get_update_download_proxy(),
+            self.api.bootstrap()["update_download_proxy_prefix"],
+        )
+
     def test_update_download_proxy_defaults_and_persists_custom_value(self) -> None:
         self.assertEqual(
             self.api.bootstrap()["update_download_proxy_prefix"],

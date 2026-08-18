@@ -1,5 +1,4 @@
 import type {
-  BootstrapDto,
   DesktopBridge,
   LogEntryDto,
   OAuthClientDto,
@@ -30,11 +29,14 @@ export const desktopApi = {
   async appVersion(): Promise<string> {
     return (await bridge()).get_app_version()
   },
+  async selectedServerId(): Promise<string> {
+    return (await bridge()).get_selected_server_id()
+  },
+  async updateDownloadProxy(): Promise<string> {
+    return (await bridge()).get_update_download_proxy()
+  },
   async saveUpdateDownloadProxy(prefix: string): Promise<string> {
     return (await bridge()).save_update_download_proxy(prefix)
-  },
-  async bootstrap(): Promise<BootstrapDto> {
-    return (await bridge()).bootstrap()
   },
   async listServers(): Promise<ServerDto[]> {
     return (await bridge()).list_servers()

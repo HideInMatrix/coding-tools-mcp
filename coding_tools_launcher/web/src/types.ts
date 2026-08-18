@@ -96,8 +96,9 @@ export interface PermissionRequestDto {
 }
 
 export interface DesktopBridge {
-  bootstrap(): Promise<BootstrapDto>
   get_app_version(): Promise<string>
+  get_selected_server_id(): Promise<string>
+  get_update_download_proxy(): Promise<string>
   save_update_download_proxy(prefix: string): Promise<string>
   list_servers(): Promise<ServerDto[]>
   get_next_port(): Promise<number>

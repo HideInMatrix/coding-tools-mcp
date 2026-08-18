@@ -154,6 +154,18 @@ class CustomMCPServerContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "public IP"):
                 _public_ip_for_host("internal.example.com", 443)
 
+    def test_cimd_https_connection_loads_certifi_ca_bundle(self) -> None:
+        with (
+            patch("mcp_tools_server.server.ssl.create_default_context") as create_context,
+            patch("mcp_tools_server.server.certifi.where", return_value="/tmp/cacert.pem"),
+        ):
+            context = create_context.return_value
+            from mcp_tools_server.server import _PinnedHTTPSConnection
+
+            _PinnedHTTPSConnection("chatgpt.com", 443, "104.18.32.47", 5.0)
+
+        context.load_verify_locations.assert_called_once_with(cafile="/tmp/cacert.pem")
+
     def test_cimd_rejects_mixed_public_and_private_dns_answers(self) -> None:
         mixed_answers = [
             (2, 1, 6, "", ("104.18.32.47", 443)),

@@ -23,6 +23,11 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
+try:
+    import certifi
+except ImportError:  # pragma: no cover - source-only minimal installs may omit it
+    certifi = None
+
 from .oauth import (
     access_token_client_id,
     OAUTH_MAX_BODY_BYTES,
@@ -148,7 +153,15 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     """HTTPS connection that pins the validated DNS result while keeping SNI."""
 
     def __init__(self, host: str, port: int, connect_ip: str, timeout: float):
-        super().__init__(host, port=port, timeout=timeout, context=ssl.create_default_context())
+        context = ssl.create_default_context()
+        # A frozen PyInstaller application does not reliably inherit the host
+        # Python/OpenSSL CA search paths on macOS. The desktop distribution
+        # already ships certifi, so explicitly add its Mozilla CA bundle while
+        # preserving any system trust roots loaded above. This keeps CIMD HTTPS
+        # verification strict instead of disabling certificate checks.
+        if certifi is not None:
+            context.load_verify_locations(cafile=certifi.where())
+        super().__init__(host, port=port, timeout=timeout, context=context)
         self._connect_ip = connect_ip
 
     def connect(self) -> None:
