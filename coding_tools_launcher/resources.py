@@ -18,6 +18,10 @@ def resource_root() -> Path:
     return Path(bundle_root) if bundle_root else PROJECT_ROOT
 
 
+def web_ui_entrypoint() -> Path:
+    return resource_root() / "coding_tools_launcher" / "web" / "dist" / "index.html"
+
+
 def platform_tag() -> str:
     system = platform.system().lower()
     machine = platform.machine().lower()

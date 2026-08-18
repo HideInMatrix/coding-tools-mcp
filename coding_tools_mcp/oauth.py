@@ -78,6 +78,25 @@ class OAuthClientRegistry:
         with self._lock:
             return self._clients.get(client_id)
 
+    def list_clients(self) -> tuple[OAuthClient, ...]:
+        with self._lock:
+            return tuple(
+                sorted(
+                    self._clients.values(),
+                    key=lambda client: (client.issued_at, client.client_id),
+                )
+            )
+
+    def remove(self, client_id: str) -> bool:
+        with self._lock:
+            return self._clients.pop(client_id, None) is not None
+
+    def clear(self) -> int:
+        with self._lock:
+            count = len(self._clients)
+            self._clients.clear()
+            return count
+
     def add_preregistered(
         self,
         client_id: str,

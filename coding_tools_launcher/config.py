@@ -85,6 +85,8 @@ class LaunchConfig:
     network: NetworkConfig = field(default_factory=NetworkConfig)
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    server_id: str = ""
+    lifecycle: str = "persistent"
 
     def validated(self) -> "LaunchConfig":
         workspace = self.workspace.expanduser().resolve()
@@ -100,6 +102,10 @@ class LaunchConfig:
             raise ValueError("缺少 OAuth 登录密码。")
 
         network = self.network.validated()
+        server_id = self.server_id.strip()
+        lifecycle = self.lifecycle.strip().lower() or "persistent"
+        if lifecycle not in {"persistent", "ephemeral"}:
+            raise ValueError(f"不支持的 Server lifecycle: {lifecycle}")
 
         return LaunchConfig(
             workspace=workspace,
@@ -107,6 +113,8 @@ class LaunchConfig:
             network=network,
             host=self.host.strip() or DEFAULT_HOST,
             port=self.port,
+            server_id=server_id,
+            lifecycle=lifecycle,
         )
 
     @classmethod

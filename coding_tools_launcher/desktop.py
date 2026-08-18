@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 
 from .mcp_process import INTERNAL_MCP_FLAG, run_internal_mcp_server
+from .resources import web_ui_entrypoint
 from .version import current_version
 
 
@@ -12,27 +13,34 @@ def main() -> int:
         return run_internal_mcp_server(sys.argv[index + 1 :])
 
     try:
-        from PySide6.QtCore import QCoreApplication
-        from PySide6.QtWidgets import QApplication
+        import webview
     except ImportError as exc:
         raise RuntimeError(
-            "桌面版需要 PySide6。开发环境请执行 pip install -r requirements-desktop.txt"
+            "桌面版需要 pywebview。开发环境请执行 pip install -r requirements-desktop.txt"
         ) from exc
 
-    from .ui.main_window import MainWindow
+    from .desktop_api import DesktopAPI
 
-    QCoreApplication.setOrganizationName("MicroMatrix")
-    QCoreApplication.setOrganizationDomain("micromatrix.org")
-    QCoreApplication.setApplicationName("Coding Tools MCP")
-    QCoreApplication.setApplicationVersion(current_version())
+    entrypoint = web_ui_entrypoint()
+    if not entrypoint.is_file():
+        raise RuntimeError(
+            "找不到桌面 Web UI 构建产物。请先在 coding_tools_launcher/web 下执行 npm install && npm run build。"
+        )
 
-    app = QApplication(sys.argv)
-    app.setApplicationDisplayName("Coding Tools MCP")
-    app.setQuitOnLastWindowClosed(True)
-
-    window = MainWindow()
-    window.show()
-    return app.exec()
+    api = DesktopAPI()
+    window = webview.create_window(
+        f"Coding Tools MCP {current_version()}",
+        str(entrypoint),
+        js_api=api,
+        width=1180,
+        height=780,
+        min_size=(960, 680),
+        background_color="#fdfdfd",
+    )
+    api._bind_window(window)
+    window.events.closing += api._close
+    webview.start(http_server=True, debug=False)
+    return 0
 
 
 if __name__ == "__main__":

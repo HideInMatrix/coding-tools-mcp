@@ -54,7 +54,7 @@ def main() -> int:
     print(f"Platform     : {platform.platform()}")
     print(f"Machine      : {platform.machine()}")
     print(f"Architecture : {actual_arch}")
-    print(f"PySide6      : {package_version('PySide6')}")
+    print(f"pywebview    : {package_version('pywebview')}")
     print(f"PyInstaller  : {package_version('pyinstaller')}")
     print(f"MCP Server   : {mcp_server_version} (in-tree)")
     print(f"MCP Source   : {mcp_server_file}")

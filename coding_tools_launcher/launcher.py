@@ -10,7 +10,10 @@ from .network import NetworkProvider, create_network_provider
 from .oauth_persistence import (
     OAUTH_REGISTRY_FILE_ENV,
     OAUTH_TOKEN_SECRET_ENV,
+    OAuthPersistence,
+    prepare_ephemeral_oauth_persistence,
     prepare_oauth_persistence,
+    prepare_server_oauth_persistence,
 )
 from .process_utils import LogCallback, check_port_available
 
@@ -22,6 +25,7 @@ class MCPLauncher:
         self._provider: NetworkProvider | None = None
         self._mcp = MCPServerProcess(self._log)
         self._info: LaunchInfo | None = None
+        self._oauth_persistence: OAuthPersistence | None = None
         self._stopping = False
         self._exit_reason = ""
 
@@ -35,6 +39,16 @@ class MCPLauncher:
     @property
     def exit_reason(self) -> str:
         return self._exit_reason
+
+    @property
+    def oauth_registry_file(self):
+        persistence = self._oauth_persistence
+        return persistence.registry_file if persistence is not None else None
+
+    @property
+    def oauth_is_ephemeral(self) -> bool:
+        persistence = self._oauth_persistence
+        return bool(persistence and persistence.ephemeral)
 
     @property
     def is_running(self) -> bool:
@@ -63,7 +77,18 @@ class MCPLauncher:
                 )
                 network_info = self._provider.start(config.host, config.port, config.network)
                 public_base_url = network_info.public_base_url
-                oauth_persistence = prepare_oauth_persistence(public_base_url)
+                if config.server_id:
+                    if config.lifecycle == "ephemeral":
+                        oauth_persistence = prepare_ephemeral_oauth_persistence(
+                            config.server_id
+                        )
+                    else:
+                        oauth_persistence = prepare_server_oauth_persistence(
+                            config.server_id
+                        )
+                else:
+                    oauth_persistence = prepare_oauth_persistence(public_base_url)
+                self._oauth_persistence = oauth_persistence
                 env = os.environ.copy()
                 env.update(
                     {
@@ -79,9 +104,14 @@ class MCPLauncher:
                 # preregistered client behaviour.
                 env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_ID", None)
                 env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET", None)
-                self._log(
-                    "OAuth 状态持久化已启用：动态 client_id 与 token secret 将跨重启保留。"
-                )
+                if oauth_persistence.ephemeral:
+                    self._log(
+                        "OAuth 临时 Session 已创建：本次 Quick Tunnel 停止后 client_id 将失效。"
+                    )
+                else:
+                    self._log(
+                        "OAuth 状态持久化已启用：动态 client_id 与 token secret 将跨重启保留。"
+                    )
                 self._mcp.start(config, env)
                 self._info = LaunchInfo(
                     workspace=config.workspace,
@@ -132,6 +162,9 @@ class MCPLauncher:
         self._mcp.stop()
         if self._provider is not None:
             self._provider.stop()
+        if self._oauth_persistence is not None:
+            self._oauth_persistence.cleanup()
+        self._oauth_persistence = None
         self._provider = None
         self._info = None
 

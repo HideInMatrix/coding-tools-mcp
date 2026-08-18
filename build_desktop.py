@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,39 @@ from coding_tools_launcher.version import (
 
 
 ROOT = Path(__file__).resolve().parent
+
+
+def build_web_frontend() -> None:
+    web_dir = ROOT / "coding_tools_launcher" / "web"
+    pnpm_lock = web_dir / "pnpm-lock.yaml"
+    if pnpm_lock.is_file():
+        pnpm = shutil.which("pnpm")
+        if not pnpm:
+            raise SystemExit(
+                "检测到 coding_tools_launcher/web/pnpm-lock.yaml，但当前环境没有 pnpm。"
+                "请安装 pnpm 后重新执行 build_desktop.py。"
+            )
+        subprocess.check_call([pnpm, "install", "--frozen-lockfile"], cwd=web_dir)
+        subprocess.check_call([pnpm, "run", "build"], cwd=web_dir)
+        return
+
+    npm = shutil.which("npm")
+    if not npm:
+        raise SystemExit(
+            "构建桌面版需要 Node.js/npm。请安装 Node.js 后重新执行 build_desktop.py。"
+        )
+    if (web_dir / "package-lock.json").is_file():
+        install_command = [npm, "ci", "--no-audit", "--no-fund"]
+    else:
+        install_command = [
+            npm,
+            "install",
+            "--no-package-lock",
+            "--no-audit",
+            "--no-fund",
+        ]
+    subprocess.check_call(install_command, cwd=web_dir)
+    subprocess.check_call([npm, "run", "build"], cwd=web_dir)
 
 
 def resolve_build_version() -> str:
@@ -52,6 +86,7 @@ def write_build_version(version: str) -> Path:
 
 
 def main() -> int:
+    build_web_frontend()
     cloudflared = bundled_cloudflared_path()
     if not cloudflared.exists():
         raise SystemExit(
@@ -76,10 +111,14 @@ def main() -> int:
         str(ROOT),
         "--collect-submodules",
         "coding_tools_mcp",
+        "--collect-all",
+        "webview",
         "--add-binary",
         f"{cloudflared}{separator}vendor/cloudflared/{cloudflared.parent.name}",
         "--add-data",
         f"{version_file}{separator}coding_tools_launcher",
+        "--add-data",
+        f"{ROOT / 'coding_tools_launcher' / 'web' / 'dist'}{separator}coding_tools_launcher/web/dist",
         "desktop.py",
     ]
     print(f"Desktop build version: {build_version}")

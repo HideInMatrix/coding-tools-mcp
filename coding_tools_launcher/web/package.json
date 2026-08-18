@@ -1,0 +1,32 @@
+{
+  "name": "coding-tools-mcp-desktop-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "typecheck:vue": "vue-tsc --noEmit",
+    "build": "tsc --noEmit && vue-tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@lucide/vue": "1.28.0",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "reka-ui": "2.10.1",
+    "tailwind-merge": "3.6.0",
+    "vue": "3.5.40"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.2",
+    "@typescript/native": "npm:typescript@7.0.2",
+    "@unocss/preset-wind4": "66.7.5",
+    "@vitejs/plugin-vue": "6.0.8",
+    "shadcn-vue": "2.8.1",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "unocss": "66.7.5",
+    "vite": "8.0.14",
+    "vue-tsc": "3.3.8"
+  }
+}

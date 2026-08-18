@@ -5,15 +5,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PySide6.QtWidgets import QApplication
-
 from coding_tools_launcher.executables.models import (
     ExecutableCandidate,
     ExecutableSpec,
 )
 from coding_tools_launcher.executables.resolver import ExecutableResolver
 from coding_tools_launcher.executables.verification import verify_executable
-from coding_tools_launcher.ui.executable_selector import ExecutableSelector
 
 
 TEST_SPEC = ExecutableSpec(
@@ -146,23 +143,6 @@ class ExecutableVerificationTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "退出码: 127"):
                 verify_executable(spec, Path("/broken/client"), source="path")
-
-
-class ExecutableSelectorTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.app = QApplication.instance() or QApplication([])
-
-    def test_auto_detected_bundle_path_is_not_saved_as_override(self) -> None:
-        selector = ExecutableSelector("frpc")
-        selector.set_candidate(candidate("/temporary/bundle/frpc", "bundled"))
-        self.assertEqual(selector.configured_path(), "")
-        self.assertIn("/temporary/bundle/frpc", selector.status_label.text())
-
-    def test_manual_candidate_is_kept_as_override(self) -> None:
-        selector = ExecutableSelector("frpc")
-        selector.set_candidate(candidate("/manual/frpc", "manual"))
-        self.assertEqual(selector.configured_path(), "/manual/frpc")
 
 
 if __name__ == "__main__":

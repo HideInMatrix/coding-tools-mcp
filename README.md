@@ -33,7 +33,7 @@ Coding Tools MCP 主要面向以下用户：
 
 ### 4. OAuth、MCP、网络工具配置分散且容易混淆
 
-桌面端把 Workspace、OAuth 授权和网络方案集中在一个界面中管理。普通用户默认不需要手工配置 OAuth Client ID 和 Client Secret。
+桌面端把 Workspace、OAuth 授权和网络方案集中在一个界面中管理。OAuth Client 统一通过 `/oauth/register` 使用 Dynamic Client Registration 创建，桌面端不提供手工 Client ID / Client Secret 配置。
 
 ### 5. 不同网络工具的安装路径和运行方式不统一
 
@@ -52,7 +52,8 @@ Coding Tools MCP 主要面向以下用户：
 - 支持 Tailscale Funnel
 - 支持自定义公网 URL
 - 支持 FRP、ngrok、Tailscale 客户端自动检测和手动选择
-- 提供 PySide6 桌面界面
+- 提供 pywebview + Vue 3.5 + TypeScript 7 桌面界面
+- 前端使用 UnoCSS Tailwind v4 preset、shadcn-vue 和 Lucide Vue 图标
 - 提供 CLI 启动方式
 - 支持 macOS、Windows 和 Linux
 
@@ -101,6 +102,39 @@ Coding Tools MCP 主要面向以下用户：
 不同网络方案的具体安装和配置步骤不在 README 展开，请查看：
 
 [网络提供商安装与部署教程（新手版）](docs/NETWORK_PROVIDER_BEGINNER_GUIDE.md)
+
+## 桌面端开发
+
+桌面展示层使用 `pywebview + Vue 3.5 + TypeScript 7 + Vite + UnoCSS + shadcn-vue`。
+
+开发/构建桌面端需要：
+
+```text
+Python >= 3.10
+Node.js + npm
+```
+
+首次构建前端：
+
+```bash
+cd coding_tools_launcher/web
+npm install
+npm run build
+```
+
+之后可以从项目根目录启动桌面端：
+
+```bash
+python desktop.py
+```
+
+正式打包使用：
+
+```bash
+python build_desktop.py
+```
+
+`build_desktop.py` 会先构建 Vue 静态资源，再执行 PyInstaller。Node.js 只用于开发和打包，最终用户运行安装包时不需要 Node.js。
 
 ## 安全说明
 

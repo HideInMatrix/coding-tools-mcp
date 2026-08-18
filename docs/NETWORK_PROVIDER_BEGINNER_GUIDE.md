@@ -7,12 +7,14 @@
 ```text
 Coding Tools MCP 在你的电脑上运行
         ↓
-本地地址通常是 http://127.0.0.1:8234/mcp
+第一个 Server 默认是 http://127.0.0.1:8234/mcp
         ↓
 网络方案负责把这个本地地址安全地提供成公网 HTTPS 地址
         ↓
 ChatGPT / AI 客户端访问公网 MCP 地址
 ```
+
+`8234` 现在只是默认端口。桌面端可以创建多个 MCP Server，例如使用 `8234`、`8235`、`8236`。下面教程中的 `8234` 示例都应替换为当前 Server Profile 实际配置的端口。
 
 > 建议第一次使用时优先选择 **Cloudflare Quick Tunnel**。它配置最少，适合先验证 Workspace、OAuth 和 MCP 是否能正常工作。
 
@@ -26,14 +28,7 @@ ChatGPT / AI 客户端访问公网 MCP 地址
 2. 一个 OAuth 登录密码，也就是桌面端的 `Password`。
 3. 选择一种网络方案。
 
-普通用户不需要填写：
-
-```text
-Client ID
-Client Secret
-```
-
-支持 Dynamic Client Registration 的 AI 客户端会自动完成 Client 注册。
+桌面端不提供 Client ID / Client Secret 手动配置。AI / MCP 客户端通过 `/oauth/register` 使用 Dynamic Client Registration 自动创建 OAuth Client，并使用服务端返回的 `client_id` 继续授权流程。
 
 ---
 

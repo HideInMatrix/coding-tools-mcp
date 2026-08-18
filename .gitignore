@@ -19,6 +19,10 @@ dist/
 *.egg-info/
 .eggs/
 
+# Desktop web frontend
+node_modules/
+coding_tools_launcher/web/dist/
+
 # Test / coverage
 .pytest_cache/
 .coverage

@@ -269,7 +269,6 @@ http://127.0.0.1:8234
 以下字段属于敏感凭据：
 
 ```text
-OAuth Client Secret
 OAuth Password
 Cloudflare Tunnel Token
 ngrok Auth Token

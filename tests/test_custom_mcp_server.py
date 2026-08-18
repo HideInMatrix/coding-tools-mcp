@@ -928,6 +928,24 @@ class OAuthTokenTests(unittest.TestCase):
         self.assertTrue(validate_access_token(config, token))
         self.assertFalse(validate_access_token(config, token + "tampered"))
 
+    def test_revoked_dynamic_client_invalidates_existing_access_token(self) -> None:
+        config = OAuthConfig(
+            password="password",
+            server_url="https://mcp.example.com",
+            token_secret=b"x" * 32,
+        )
+        registered = config.registry.register(
+            {
+                "redirect_uris": ["https://chat.example.com/oauth/callback"],
+                "token_endpoint_auth_method": "none",
+            }
+        )
+        client_id = registered["client_id"]
+        token = create_access_token(config, client_id)
+        self.assertTrue(validate_access_token(config, token))
+        self.assertTrue(config.registry.remove(client_id))
+        self.assertFalse(validate_access_token(config, token))
+
     def test_access_token_is_bound_to_server_resource(self) -> None:
         config = OAuthConfig(
             password="password",

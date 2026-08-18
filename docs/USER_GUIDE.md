@@ -30,6 +30,9 @@
 打开 Coding Tools MCP 桌面程序后，主要会看到：
 
 ```text
+当前服务
+服务名称
+本地端口
 Workspace
 Password
 网络方案
@@ -42,10 +45,24 @@ Public MCP URL
 普通用户主要只需要关注：
 
 ```text
+服务名称
+本地端口
 Workspace
 Password
 网络方案
 ```
+
+桌面程序现在可以保存并同时运行多个 MCP Server Profile。第一个服务默认使用 `8234`，后续新建服务会自动建议 `8235`、`8236` 等未被 Profile 占用的端口，也可以手工修改。
+
+例如：
+
+```text
+公司项目  -> 127.0.0.1:8234
+个人项目  -> 127.0.0.1:8235
+临时测试  -> 127.0.0.1:8236
+```
+
+每个服务拥有独立的 `server_id`、Workspace、网络配置和 OAuth Client Registry。
 
 ## 3. 选择 Workspace
 
@@ -85,6 +102,14 @@ POST /oauth/register
 ```
 
 服务端返回新的 `client_id`，之后客户端再使用该 ID 进入 `/oauth/authorize` 完成授权。
+
+关于 `client_id` 的生成、桌面端持久化、程序重启恢复，以及删除旧 MCP 后重新创建连接时的完整流程，参见：
+
+```text
+docs/OAUTH_CLIENT_ID_FLOW.md
+```
+
+桌面左侧的“授权”页面可以按 MCP Server 查看动态注册的 Client。Persistent Server 停止后可以撤销单个 Client 或全部 Client；Quick Tunnel 的 Client 只属于当前临时 Session，停止服务后自动销毁。
 
 ## 6. 选择网络方案
 
@@ -271,11 +296,14 @@ cp .env.example .env
 桌面程序左侧提供：
 
 ```text
-首页
+服务
+授权
 关于
 ```
 
-“首页”就是 MCP 启动、网络方案、Workspace 和日志所在的主页面。
+“服务”用于创建、保存、切换、启动和停止多个 MCP Server Profile。
+
+“授权”用于查看当前 Server 已通过 `/oauth/register` 创建的 OAuth Client；Persistent Server 停止后可以执行撤销操作。
 
 进入“关于”页面后，可以查看：
 
@@ -321,7 +349,15 @@ Coding-Tools-MCP-linux-arm64.tar.gz
 
 ### AI 无法读取 Workspace 以外的文件
 
-这是预期行为。如果确实需要操作另一个项目，请停止当前服务并重新选择正确的 Workspace。
+这是预期行为。每个 MCP Server 都以自己的 Workspace 为访问边界。如果需要同时操作另一个项目，建议新建另一个 Server Profile，并为它分配独立端口和公网入口，而不是扩大当前 Workspace 的范围。
+
+### 多个 MCP Server 应该怎么分配端口
+
+第一个服务默认使用 `8234`。新建服务时可以点击“自动”选择下一个未被 Profile 使用的端口，也可以手工填写。固定 Cloudflare hostname 的 Published Application 必须指向对应服务实际配置的 `127.0.0.1:<port>`。
+
+### Quick Tunnel 为什么重启后 OAuth Client 不见了
+
+这是预期行为。Cloudflare Quick Tunnel 每次启动可能分配新的随机公网 URL，因此它使用临时 OAuth Session。停止服务时随机 URL、临时 Registry 和其中的 client_id 一起失效；重新启动后由 AI/MCP Client 再次调用 `/oauth/register`。
 
 ### Client ID 应该填什么
 
