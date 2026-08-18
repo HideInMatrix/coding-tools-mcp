@@ -170,13 +170,14 @@ class CommandManager:
 
     def start(
         self,
-        command: str,
+        command: str | list[str],
         *,
         cwd: Path,
         env: dict[str, str],
         stdin_text: str,
         timeout_ms: int,
         tty: bool = False,
+        shell: bool = True,
     ) -> ManagedCommand:
         with self._lock:
             active = sum(1 for item in self._commands.values() if item.process.poll() is None)
@@ -186,13 +187,14 @@ class CommandManager:
             popen_kwargs: dict[str, object] = {
                 "cwd": str(cwd),
                 "env": env,
-                "shell": True,
+                "shell": shell,
             }
             if os.name == "nt":
                 popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             else:
                 popen_kwargs["start_new_session"] = True
-                popen_kwargs["executable"] = os.environ.get("SHELL") or "/bin/sh"
+                if shell:
+                    popen_kwargs["executable"] = os.environ.get("SHELL") or "/bin/sh"
 
             master_fd: int | None = None
             slave_fd: int | None = None
@@ -246,7 +248,7 @@ class CommandManager:
 
             managed = ManagedCommand(
                 uuid.uuid4().hex,
-                command,
+                command if isinstance(command, str) else subprocess.list2cmdline(command),
                 process,
                 time.monotonic(),
                 timeout_ms,

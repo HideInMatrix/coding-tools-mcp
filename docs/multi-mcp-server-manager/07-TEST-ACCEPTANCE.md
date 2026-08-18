@@ -50,7 +50,8 @@
 
 必须保证：
 
-- MCP 工具数量仍为 18。
+- MCP 工具数量为 20，新增 `discover_toolchains` 与 `exec_process`。
+- Windows Restricted Token + Job Object backend 至少通过 launcher smoke；诊断必须区分 process/filesystem/network isolation，不能把 Restricted Token 宣称为完整 AppContainer。
 - 单 Server CLI 仍能启动。
 - 所有 Network Provider 原有测试继续通过。
 - Desktop About/Update 功能不受影响。

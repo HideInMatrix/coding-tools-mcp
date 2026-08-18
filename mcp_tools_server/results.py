@@ -181,7 +181,7 @@ def _render(name: str, payload: dict[str, Any]) -> str:
             f"(+{payload.get('additions', 0)} -{payload.get('removals', 0)})."
         )
         return text + (f"\n{summary}" if summary else "")
-    if name in {"exec_command", "write_stdin", "kill_command"}:
+    if name in {"exec_process", "exec_command", "write_stdin", "kill_command"}:
         if name == "kill_command":
             signal_sent = payload.get("signal_sent")
             suffix = f" (signal {signal_sent})" if signal_sent else ""
@@ -257,6 +257,15 @@ def _render(name: str, payload: dict[str, Any]) -> str:
         warnings = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
         suffix = "\n" + "\n".join(str(item) for item in warnings) if warnings else ""
         return f"Execution environment checked.{suffix}"
+    if name == "discover_toolchains":
+        toolchains = payload.get("toolchains") if isinstance(payload.get("toolchains"), dict) else {}
+        selected: list[str] = []
+        for kind, value in toolchains.items():
+            if not isinstance(value, dict) or not isinstance(value.get("selected"), dict):
+                continue
+            current = value["selected"]
+            selected.append(f"{kind}: {current.get('version', '?')} ({current.get('source', '?')})")
+        return "Toolchains discovered." + ("\n" + "\n".join(selected) if selected else "")
     if name == "request_permissions":
         return f"Permission request: {payload.get('status', 'completed')}."
     if name == "view_image":

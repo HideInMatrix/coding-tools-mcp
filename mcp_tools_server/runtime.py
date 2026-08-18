@@ -1,4 +1,4 @@
-"""Business runtime for the 18 Coding Tools MCP tools."""
+"""Business runtime for the project-owned Coding Tools MCP tools."""
 
 from __future__ import annotations
 
@@ -28,7 +28,9 @@ from .processes import (
 from .project_context import ProjectContext, load_project_context
 from .protocol import KNOWN_PROTOCOL_VERSIONS, RequestContext
 from .results import make_tool_result
+from .sandbox import build_sandbox_profile, create_process_sandbox
 from .schemas import TOOL_SPECS, exposed_specs, validate_value
+from .toolchains import ToolchainResolver
 from .workspace import Workspace, matches_any
 
 
@@ -41,8 +43,39 @@ ENDPOINT_PATH = "/mcp"
 PERMISSION_MODES = ("safe", "trusted", "dangerous")
 
 SENSITIVE_ENV_RE = re.compile(r"(token|secret|credential|api[_-]?key|password|passwd|private)", re.I)
+SANDBOX_PROTECTED_ENV = {
+    "HOME",
+    "PATH",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "GOPROXY",
+    "GOTOOLCHAIN",
+    "PIP_NO_INDEX",
+    "npm_config_offline",
+    "YARN_ENABLE_NETWORK",
+    "CARGO_NET_OFFLINE",
+}
 NETWORK_RE = re.compile(r"(https?://|\bcurl\b|\bwget\b|\bssh\b|\bscp\b|\bftp\b|\bnc\b|\bnetcat\b|socket\.|requests\.|urllib\.|httpx\b|aiohttp\b)", re.I)
-SHELL_EXPANSION_RE = re.compile(r"(`|\$\(|\$\{)")
+NETWORK_COMMAND_RE = re.compile(
+    r"(?:\b(?:npm|pnpm|yarn)\s+(?:install|i|ci|add|update|upgrade|publish|audit|outdated)\b|"
+    r"\b(?:pip|pip3)\s+install\b|\bpython(?:3)?\s+-m\s+pip\s+install\b|"
+    r"\bgo\s+(?:get|install)\b|\bgo\s+mod\s+download\b|"
+    r"\bgit\s+(?:clone|fetch|pull|push|ls-remote)\b|"
+    r"\bcargo\s+(?:fetch|install|update|publish|search)\b)",
+    re.I,
+)
+GIT_METADATA_WRITE_RE = re.compile(
+    r"\bgit\s+(?:add|commit|merge|rebase|cherry-pick|revert|checkout|switch|stash|tag|update-index|write-tree)\b",
+    re.I,
+)
+WINDOWS_BATCH_META_RE = re.compile(r"[&|<>^()%!\r\n\"]")
+SHELL_EXPANSION_RE = re.compile(r"(`|\$\(|\$\{|\$[A-Za-z_][A-Za-z0-9_]*)")
 INLINE_SCRIPT_RE = re.compile(r"\b(python(?:3)?\s+-c|node\s+-e|ruby\s+-e|perl\s+-e|(?:ba|z|)sh\s+-c)\b", re.I)
 DESTRUCTIVE_RE = re.compile(r"(^|\s)(sudo\b|su\b|mkfs\b|mount\b|umount\b|chmod\s+-R\b|chown\s+-R\b|rm\s+-[^\s]*r[^\s]*f\b|rm\s+-[^\s]*f[^\s]*r\b|git\b[^;&|]*\breset\s+--hard\b|git\b[^;&|]*\bclean\s+-[^\s]*[fx])", re.I)
 REDIRECT_ESCAPE_RE = re.compile(r"(?:^|\s)(?:>|>>|<)\s*(/[^\s]+|\.\./[^\s]+)")
@@ -124,11 +157,87 @@ class Runtime:
         self.fake_readonly_annotations = fake_readonly_annotations
         self.project_context = project_context or load_project_context(self.workspace.root)
         self.commands = CommandManager(self.workspace.root)
+        self.toolchains = ToolchainResolver(self.workspace.root)
+        self._toolchain_snapshot = self.toolchains.discover()
+        self.safe_exec_path = [str(item) for item in self._toolchain_snapshot.get("safe_path", [])]
+        self.toolchain_read_roots = self._selected_toolchain_roots()
+        sandbox_readable_roots = [*self.toolchain_read_roots, *self._platform_read_roots()]
+        sandbox_writable_roots = [
+            self.commands.runtime_dir,
+            self.commands.home_dir,
+            self.commands.tmp_dir,
+            self.commands.cache_dir,
+        ]
+        sandbox_protected_paths = [
+            path
+            for path in (self.workspace.root / ".git",)
+            if path.exists()
+        ]
+        self.process_sandbox = create_process_sandbox(
+            mode=self.permission_mode,
+            workspace=self.workspace.root,
+            runtime_dir=self.commands.runtime_dir,
+            readable_roots=sandbox_readable_roots,
+            writable_roots=sandbox_writable_roots,
+            protected_paths=sandbox_protected_paths,
+            network=self.allow_network,
+        )
+        self.sandbox_profile = build_sandbox_profile(
+            mode=self.permission_mode,
+            workspace=self.workspace.root,
+            runtime_paths=sandbox_writable_roots,
+            toolchain_paths=[str(path) for path in self.toolchain_read_roots],
+            protected_paths=sandbox_protected_paths,
+            network=self.allow_network,
+            backend=self.process_sandbox.state,
+        )
         self._specs = exposed_specs(enable_view_image=enable_view_image)
         self._spec_map = {spec.name: spec for spec in self._specs}
 
     def close(self) -> None:
         self.commands.close()
+
+    def _selected_toolchain_roots(self) -> list[Path]:
+        roots: list[Path] = []
+        toolchains = self._toolchain_snapshot.get("toolchains")
+        if not isinstance(toolchains, dict):
+            return roots
+        seen: set[str] = set()
+        for value in toolchains.values():
+            if not isinstance(value, dict):
+                continue
+            selected = value.get("selected")
+            if not isinstance(selected, dict):
+                continue
+            raw = str(selected.get("root") or "").strip()
+            if not raw:
+                continue
+            try:
+                root = Path(raw).resolve()
+            except OSError:
+                continue
+            key = os.path.normcase(str(root))
+            if key in seen or not root.exists():
+                continue
+            seen.add(key)
+            roots.append(root)
+        return roots
+
+    @staticmethod
+    def _platform_read_roots() -> list[Path]:
+        if sys.platform == "darwin":
+            return [
+                Path("/System"),
+                Path("/Library"),
+                Path("/usr"),
+                Path("/bin"),
+                Path("/sbin"),
+                Path("/private/etc"),
+                Path("/private/var/db"),
+                Path("/opt/homebrew"),
+                Path("/usr/local"),
+            ]
+        return []
 
     def server_identity(self) -> dict[str, str]:
         return {"name": SERVER_NAME, "title": SERVER_TITLE, "version": __version__}
@@ -213,18 +322,27 @@ class Runtime:
                 "available": False,
                 "enabled": False,
                 "abi_version": None,
-                "reason": "Landlock is not implemented by the project-owned 0.1.x runtime.",
+                "reason": "Landlock compatibility field; process isolation is reported in sandbox.",
                 "details": {},
             },
+            "sandbox": self.sandbox_profile.to_dict(),
             "exec_policy": {
-                "shell_expansion": "allowed" if self.permission_mode != "safe" else "blocked",
+                "shell_expansion": (
+                    "allowed"
+                    if self.permission_mode == "dangerous"
+                    else "restricted"
+                    if self.permission_mode == "trusted"
+                    else "blocked"
+                ),
                 "inline_script": "allowed" if self.permission_mode != "safe" else "blocked",
                 "secret_env_filter": self.permission_mode != "dangerous",
                 "global_tmp_write": "allowed" if self.permission_mode == "dangerous" else "blocked",
             },
-            "shell_env_inherit": "core",
-            "shell_env_include_only": [],
+            "shell_env_inherit": "sanitized" if self.permission_mode != "dangerous" else "full",
+            "shell_env_include_only": ["PATH", "LANG", "LC_ALL", "TERM", "PATHEXT", "COMSPEC", "SYSTEMROOT", "WINDIR", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432"] if self.permission_mode != "dangerous" else [],
             "shell_env_exclude": [],
+            "safe_exec_path": list(self.safe_exec_path),
+            "toolchains": self._toolchain_snapshot.get("toolchains", {}),
             "output_retention": {
                 "buffer_bytes_per_stream": STREAM_LIMIT_BYTES,
                 "head_bytes_per_stream": STREAM_HEAD_BYTES,
@@ -239,9 +357,22 @@ class Runtime:
         }
 
     def check_exec_environment(self, _args: dict[str, Any]) -> dict[str, Any]:
-        warnings = [
-            "OS-kernel filesystem confinement is unavailable; command safety relies on application policy."
-        ]
+        warnings = []
+        if not self.sandbox_profile.os_kernel_sandbox:
+            warnings.append(
+                "OS-kernel process confinement is not enforced yet; capability policy, workspace guards, sanitized environment, and offline hints provide defense in depth."
+            )
+            if self.sandbox_profile.backend_reason:
+                warnings.append(self.sandbox_profile.backend_reason)
+        else:
+            if not self.sandbox_profile.filesystem_isolation:
+                warnings.append(
+                    "OS process isolation is enabled, but filesystem confinement is not enforced by the active backend."
+                )
+            if not self.sandbox_profile.network_isolation:
+                warnings.append(
+                    "OS process isolation is enabled, but network confinement is not enforced by the active backend."
+                )
         if self.permission_mode == "dangerous":
             warnings.append("permission_mode=dangerous disables MCP safety gates")
         return {
@@ -255,12 +386,19 @@ class Runtime:
             "landlock_enabled": False,
             "landlock_abi": None,
             "global_tmp_write": "allowed" if self.permission_mode == "dangerous" else "blocked",
+            "effective_path": list(self.safe_exec_path) if self.permission_mode != "dangerous" else os.environ.get("PATH", "").split(os.pathsep),
+            "toolchains": self._toolchain_snapshot.get("toolchains", {}),
             "warnings": warnings,
-            "sandbox": {
-                "type": "application-policy",
-                "os_kernel_sandbox": False,
-                "note": "Filesystem tools are workspace-confined; exec_command is guarded by command policy but is not a kernel sandbox.",
-            },
+            "sandbox": self.sandbox_profile.to_dict(),
+        }
+
+    def discover_toolchains(self, args: dict[str, Any]) -> dict[str, Any]:
+        kinds = [str(item) for item in list(args.get("kinds") or ["node", "python", "go"])]
+        discovered = self.toolchains.discover(kinds)
+        return {
+            **discovered,
+            "shell_startup_files_evaluated": False,
+            "home_scanned_recursively": False,
         }
 
     # ------------------------------------------------------------------
@@ -518,15 +656,71 @@ class Runtime:
         if self.permission_mode == "dangerous":
             env = os.environ.copy()
         else:
-            allowed = {"PATH", "LANG", "LC_ALL", "TERM", "PATHEXT", "COMSPEC", "SYSTEMROOT", "WINDIR"}
-            env = {key: value for key, value in os.environ.items() if key in allowed and not SENSITIVE_ENV_RE.search(key)}
+            allowed = {
+                "PATH",
+                "LANG",
+                "LC_ALL",
+                "TERM",
+                "PATHEXT",
+                "COMSPEC",
+                "SYSTEMROOT",
+                "WINDIR",
+                "PROGRAMDATA",
+                "PROGRAMFILES",
+                "PROGRAMFILES(X86)",
+                "PROGRAMW6432",
+            }
+            env = {
+                key: value
+                for key, value in os.environ.items()
+                if key.upper() in allowed and not SENSITIVE_ENV_RE.search(key)
+            }
+            env["PATH"] = os.pathsep.join(self.safe_exec_path)
             env.update({"HOME": str(self.commands.home_dir), "TMPDIR": str(self.commands.tmp_dir), "TEMP": str(self.commands.tmp_dir), "TMP": str(self.commands.tmp_dir)})
+            if os.name == "nt":
+                roaming = self.commands.home_dir / "AppData" / "Roaming"
+                local = self.commands.home_dir / "AppData" / "Local"
+                roaming.mkdir(parents=True, exist_ok=True)
+                local.mkdir(parents=True, exist_ok=True)
+                home_drive, home_tail = os.path.splitdrive(str(self.commands.home_dir))
+                env.update(
+                    {
+                        "USERPROFILE": str(self.commands.home_dir),
+                        "HOMEDRIVE": home_drive,
+                        "HOMEPATH": home_tail or "\\",
+                        "APPDATA": str(roaming),
+                        "LOCALAPPDATA": str(local),
+                    }
+                )
         env.update(overrides)
+        if self.permission_mode == "safe" and not self.allow_network:
+            # Best-effort offline defaults until an OS network sandbox backend
+            # is applied to every child process.
+            env.update(
+                {
+                    "GOPROXY": "off",
+                    "GOTOOLCHAIN": "local",
+                    "PIP_NO_INDEX": "1",
+                    "npm_config_offline": "true",
+                    "YARN_ENABLE_NETWORK": "0",
+                    "CARGO_NET_OFFLINE": "true",
+                }
+            )
         return env
 
     def _validate_command(self, cmd: str, env: dict[str, str], timeout_ms: int) -> None:
         if self.permission_mode == "dangerous":
             return
+        protected_names = {name.upper() for name in SANDBOX_PROTECTED_ENV}
+        protected = [name for name in env if name.upper() in protected_names]
+        if protected:
+            raise ToolError(
+                "PERMISSION_REQUIRED",
+                "sandbox-controlled environment variables cannot be overridden outside dangerous mode",
+                "permission",
+                False,
+                {"permission": "sandbox_env_override", "variables": protected},
+            )
         sensitive = [name for name in env if SENSITIVE_ENV_RE.search(name)]
         if sensitive:
             raise ToolError("PERMISSION_REQUIRED", "sensitive environment variables require dangerous mode", "permission", False, {"permission": "sensitive_env", "variables": sensitive})
@@ -534,6 +728,11 @@ class Runtime:
             raise ToolError("PERMISSION_REQUIRED", "timeouts above 60 seconds require trusted mode", "permission", False, {"permission": "long_timeout"})
         checks = [
             (DESTRUCTIVE_RE, "destructive_command", "destructive command is blocked"),
+            (
+                GIT_METADATA_WRITE_RE,
+                "destructive_command",
+                "Git metadata-changing commands are blocked outside dangerous mode",
+            ),
         ]
         if self.permission_mode == "safe":
             checks.extend([
@@ -542,6 +741,7 @@ class Runtime:
             ])
             if not self.allow_network:
                 checks.append((NETWORK_RE, "network", "network-looking commands are blocked in safe mode"))
+                checks.append((NETWORK_COMMAND_RE, "network", "network-capable package or VCS command is blocked in safe mode"))
         for expression, permission, message in checks:
             if expression.search(cmd):
                 raise ToolError("PERMISSION_REQUIRED", message, "permission", False, {"permission": permission})
@@ -562,6 +762,14 @@ class Runtime:
         for index, token in enumerate(tokens):
             if index == 0 or token.startswith("-") or "://" in token:
                 continue
+            if token.startswith("~"):
+                raise ToolError(
+                    "PERMISSION_REQUIRED",
+                    "home-directory shell expansion is blocked outside dangerous mode",
+                    "permission",
+                    False,
+                    {"permission": "shell_expansion", "path": token},
+                )
             if token.startswith("/") or token.startswith("../") or token.startswith("..\\"):
                 if token in {"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"}:
                     continue
@@ -569,6 +777,74 @@ class Runtime:
                     self.workspace.writable(token)
                 except ToolError as exc:
                     raise ToolError("PERMISSION_REQUIRED", "command path argument escapes the workspace", "permission", False, {"path": token}) from exc
+
+    def _validate_process(
+        self,
+        program: str,
+        argv: list[str],
+        env: dict[str, str],
+        timeout_ms: int,
+    ) -> str:
+        display = subprocess.list2cmdline([program, *argv])
+        self._validate_command(display, env, timeout_ms)
+        resolved = self.toolchains.resolve_program(program)
+        if resolved is None:
+            raise ToolError(
+                "EXECUTABLE_NOT_FOUND",
+                f"program is not available in the validated execution PATH: {program}",
+                "process",
+                False,
+                {"program": program, "safe_path": list(self.safe_exec_path)},
+            )
+        return resolved
+
+    def exec_process(self, args: dict[str, Any]) -> dict[str, Any]:
+        program = str(args["program"])
+        argv = [str(item) for item in list(args.get("args") or [])]
+        timeout_ms = int(args.get("timeout_ms", 30_000))
+        env_overrides = {str(key): str(value) for key, value in dict(args.get("env") or {}).items()}
+        resolved_program = self._validate_process(program, argv, env_overrides, timeout_ms)
+        cwd = self.workspace.existing(str(args.get("cwd") or args.get("workdir", "."))).absolute
+        if not cwd.is_dir():
+            raise ToolError("NOT_DIRECTORY", "process workdir is not a directory", "filesystem")
+
+        command: list[str]
+        if os.name == "nt" and Path(resolved_program).suffix.lower() in {".cmd", ".bat"}:
+            unsafe = [item for item in argv if WINDOWS_BATCH_META_RE.search(item)]
+            if unsafe:
+                raise ToolError(
+                    "PERMISSION_REQUIRED",
+                    "Windows batch arguments containing cmd.exe metacharacters are blocked",
+                    "permission",
+                    False,
+                    {
+                        "permission": "shell_expansion",
+                        "arguments": unsafe,
+                    },
+                )
+            comspec = os.environ.get("COMSPEC", "cmd.exe")
+            quoted_program = f'"{resolved_program}"'
+            quoted_args = " ".join(f'"{item}"' for item in argv)
+            command_line = f'{quoted_program}{(" " + quoted_args) if quoted_args else ""}'
+            command = [comspec, "/d", "/v:off", "/s", "/c", command_line]
+        else:
+            command = [resolved_program, *argv]
+        command = self.process_sandbox.wrap(command, cwd=cwd)
+        managed = self.commands.start(
+            command,
+            cwd=cwd,
+            env=self._command_env(env_overrides),
+            stdin_text=str(args.get("stdin", "")),
+            timeout_ms=timeout_ms,
+            tty=bool(args.get("tty", False)),
+            shell=False,
+        )
+        self.commands.wait(managed, int(args.get("yield_time_ms", 10_000)))
+        payload = command_payload(managed, int(args.get("max_output_bytes", 65_536)))
+        payload["program"] = resolved_program
+        payload["argv"] = argv
+        payload["shell"] = False
+        return self._format_command_payload(payload, args)
 
     def exec_command(self, args: dict[str, Any]) -> dict[str, Any]:
         cmd = str(args["cmd"])
@@ -578,13 +854,26 @@ class Runtime:
         cwd = self.workspace.existing(str(args.get("cwd") or args.get("workdir", "."))).absolute
         if not cwd.is_dir():
             raise ToolError("NOT_DIRECTORY", "command workdir is not a directory", "filesystem")
+        if self.permission_mode == "dangerous":
+            launch_command: str | list[str] = cmd
+            launch_shell = True
+        elif os.name == "nt":
+            comspec = os.environ.get("COMSPEC", "cmd.exe")
+            launch_command = [comspec, "/d", "/s", "/c", cmd]
+            launch_shell = False
+        else:
+            launch_command = ["/bin/sh", "-c", cmd]
+            launch_shell = False
+        if isinstance(launch_command, list):
+            launch_command = self.process_sandbox.wrap(launch_command, cwd=cwd)
         managed = self.commands.start(
-            cmd,
+            launch_command,
             cwd=cwd,
             env=self._command_env(env_overrides),
             stdin_text=str(args.get("stdin", "")),
             timeout_ms=timeout_ms,
             tty=bool(args.get("tty", False)),
+            shell=launch_shell,
         )
         self.commands.wait(managed, int(args.get("yield_time_ms", 10_000)))
         return self._format_command_payload(

@@ -30,9 +30,11 @@ from mcp_tools_server.protocol import (
     dispatch,
 )
 from mcp_tools_server.runtime import Runtime
+from mcp_tools_server.sandbox.backend import WindowsRestrictedTokenBackend
 from mcp_tools_server.server import MCPHTTPServer
 from mcp_tools_server.server import _normalize_public_server_url
 from mcp_tools_server.server import _resolve_oauth_client
+from mcp_tools_server.toolchains import ToolchainResolver
 
 
 class CustomMCPServerContractTests(unittest.TestCase):
@@ -140,7 +142,7 @@ class CustomMCPServerContractTests(unittest.TestCase):
             finally:
                 runtime.close()
 
-        self.assertEqual(len(tools), 18)
+        self.assertEqual(len(tools), 20)
         for tool in tools:
             with self.subTest(tool=tool["name"]):
                 self.assertIsInstance(tool.get("inputSchema"), dict)
@@ -207,7 +209,7 @@ class CustomMCPServerContractTests(unittest.TestCase):
                 runtime.close()
 
         self.assertEqual(initialized["result"]["protocolVersion"], "2025-11-25")
-        self.assertEqual(len(listed["result"]["tools"]), 18)
+        self.assertEqual(len(listed["result"]["tools"]), 20)
 
     def test_legacy_null_params_are_treated_as_empty_object(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -220,7 +222,7 @@ class CustomMCPServerContractTests(unittest.TestCase):
             finally:
                 runtime.close()
 
-        self.assertEqual(len(response["result"]["tools"]), 18)
+        self.assertEqual(len(response["result"]["tools"]), 20)
 
     def test_invalid_json_rpc_id_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -332,6 +334,245 @@ class CustomMCPServerContractTests(unittest.TestCase):
 
 
 class RuntimeSafetyTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX fixture uses executable shell scripts")
+    def test_toolchain_discovery_finds_nvm_without_sourcing_shell_rc(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            workspace = base / "workspace"
+            home = base / "home"
+            workspace.mkdir()
+            home.mkdir()
+            (workspace / ".nvmrc").write_text("25.7.0\n", encoding="utf-8")
+            marker = base / "shell-rc-was-executed"
+            (home / ".zshrc").write_text(f"touch {marker}\n", encoding="utf-8")
+            bin_dir = home / ".nvm" / "versions" / "node" / "v25.7.0" / "bin"
+            bin_dir.mkdir(parents=True)
+            node = bin_dir / "node"
+            npm = bin_dir / "npm"
+            node.write_text("#!/bin/sh\necho v25.7.0\n", encoding="utf-8")
+            npm.write_text("#!/bin/sh\necho 11.5.0\n", encoding="utf-8")
+            node.chmod(0o755)
+            npm.chmod(0o755)
+
+            resolver = ToolchainResolver(workspace, home=home)
+            result = resolver.discover(["node"])
+
+        selected = result["toolchains"]["node"]["selected"]
+        self.assertEqual(selected["version"], "25.7.0")
+        self.assertEqual(selected["source"], "nvm")
+        self.assertEqual(selected["executables"]["npm"], str(npm.resolve()))
+        self.assertFalse(marker.exists())
+
+    def test_safe_exec_path_does_not_globally_trust_workspace_bin_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            local_bin = workspace / "node_modules" / ".bin"
+            local_bin.mkdir(parents=True)
+            resolver = ToolchainResolver(workspace)
+
+            safe_path = resolver.safe_path_entries()
+
+        self.assertNotIn(str(local_bin.resolve()), safe_path)
+
+    @unittest.skipIf(os.name == "nt", "POSIX fixture uses executable shell scripts")
+    def test_exec_process_uses_validated_toolchain_path_without_login_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            workspace = base / "workspace"
+            home = base / "home"
+            workspace.mkdir()
+            home.mkdir()
+            (workspace / ".nvmrc").write_text("25.7.0\n", encoding="utf-8")
+            bin_dir = home / ".nvm" / "versions" / "node" / "v25.7.0" / "bin"
+            bin_dir.mkdir(parents=True)
+            node = bin_dir / "node"
+            npm = bin_dir / "npm"
+            node.write_text("#!/bin/sh\necho v25.7.0\n", encoding="utf-8")
+            npm.write_text("#!/bin/sh\necho npm-ok \"$@\"\n", encoding="utf-8")
+            node.chmod(0o755)
+            npm.chmod(0o755)
+
+            with patch.dict(
+                os.environ,
+                {"HOME": str(home), "PATH": "/usr/bin:/bin"},
+                clear=False,
+            ):
+                runtime = Runtime(workspace, permission_mode="safe")
+                try:
+                    result = runtime.call_tool(
+                        "exec_process",
+                        {
+                            "program": "npm",
+                            "args": ["run", "build"],
+                            "yield_time_ms": 2_000,
+                        },
+                    )
+                    environment = runtime.call_tool(
+                        "check_exec_environment",
+                        {},
+                    )["structuredContent"]
+                finally:
+                    runtime.close()
+
+        payload = result["structuredContent"]
+        self.assertFalse(result["isError"])
+        self.assertEqual(payload["exit_code"], 0)
+        self.assertIn("npm-ok run build", payload["stdout"])
+        self.assertFalse(payload["shell"])
+        self.assertIn(str(bin_dir.resolve()), environment["effective_path"])
+        self.assertIn("process.execute", environment["sandbox"]["capabilities"])
+
+    def test_exec_process_blocks_known_network_package_commands_in_safe_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary), permission_mode="safe")
+            try:
+                result = runtime.call_tool(
+                    "exec_process",
+                    {"program": "npm", "args": ["install"]},
+                )
+            finally:
+                runtime.close()
+
+        self.assertTrue(result["isError"])
+        error = result["structuredContent"]["error"]
+        self.assertEqual(error["code"], "PERMISSION_REQUIRED")
+        self.assertEqual(error["details"]["permission"], "network")
+
+    def test_safe_mode_rejects_overriding_sandbox_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary), permission_mode="safe")
+            try:
+                result = runtime.call_tool(
+                    "exec_command",
+                    {
+                        "cmd": "printf hello",
+                        "env": {"HOME": str(Path.home()), "PATH": "/tmp"},
+                    },
+                )
+            finally:
+                runtime.close()
+
+        self.assertTrue(result["isError"])
+        error = result["structuredContent"]["error"]
+        self.assertEqual(error["details"]["permission"], "sandbox_env_override")
+        self.assertEqual(set(error["details"]["variables"]), {"HOME", "PATH"})
+
+    def test_sandbox_environment_protection_is_case_insensitive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary), permission_mode="safe")
+            try:
+                result = runtime.call_tool(
+                    "exec_command",
+                    {
+                        "cmd": "printf hello",
+                        "env": {"path": "/tmp/attacker-bin"},
+                    },
+                )
+            finally:
+                runtime.close()
+
+        self.assertTrue(result["isError"])
+        error = result["structuredContent"]["error"]
+        self.assertEqual(error["details"]["permission"], "sandbox_env_override")
+        self.assertEqual(error["details"]["variables"], ["path"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows environment layout test")
+    def test_windows_sandbox_redirects_user_profile_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary), permission_mode="safe")
+            try:
+                environment = runtime._command_env({})
+                sandbox_home = str(runtime.commands.home_dir)
+            finally:
+                runtime.close()
+
+        self.assertEqual(environment["USERPROFILE"], sandbox_home)
+        self.assertTrue(environment["APPDATA"].startswith(sandbox_home))
+        self.assertTrue(environment["LOCALAPPDATA"].startswith(sandbox_home))
+
+    def test_safe_mode_blocks_plain_environment_expansion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary), permission_mode="safe")
+            try:
+                result = runtime.call_tool(
+                    "exec_command",
+                    {"cmd": "printf $HOME"},
+                )
+            finally:
+                runtime.close()
+
+        self.assertTrue(result["isError"])
+        error = result["structuredContent"]["error"]
+        self.assertEqual(error["details"]["permission"], "shell_expansion")
+
+    def test_non_dangerous_mode_blocks_home_path_expansion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary), permission_mode="trusted")
+            try:
+                result = runtime.call_tool(
+                    "exec_command",
+                    {"cmd": "cat ~root/.profile"},
+                )
+            finally:
+                runtime.close()
+
+        self.assertTrue(result["isError"])
+        error = result["structuredContent"]["error"]
+        self.assertEqual(error["details"]["permission"], "shell_expansion")
+
+    def test_os_sandbox_can_be_explicitly_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.dict(
+                os.environ,
+                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                clear=False,
+            ):
+                runtime = Runtime(Path(temporary), permission_mode="safe")
+                try:
+                    environment = runtime.call_tool(
+                        "check_exec_environment",
+                        {},
+                    )["structuredContent"]
+                finally:
+                    runtime.close()
+
+        self.assertFalse(environment["sandbox"]["os_kernel_sandbox"])
+        self.assertEqual(environment["sandbox"]["backend"], "application-policy")
+
+    def test_windows_restricted_backend_reports_partial_isolation(self) -> None:
+        with (
+            patch.object(
+                WindowsRestrictedTokenBackend,
+                "_restricted_token_available",
+                return_value=True,
+            ),
+            patch.object(
+                WindowsRestrictedTokenBackend,
+                "_experimental_appcontainer_available",
+                return_value=True,
+            ),
+        ):
+            backend = WindowsRestrictedTokenBackend(enabled=True)
+
+        self.assertTrue(backend.state.enabled)
+        self.assertTrue(backend.state.process_isolation)
+        self.assertFalse(backend.state.filesystem_isolation)
+        self.assertFalse(backend.state.network_isolation)
+        self.assertTrue(backend.state.experimental_appcontainer_available)
+        wrapped = backend.wrap(["cmd.exe", "/c", "echo ok"], cwd=Path.cwd())
+        self.assertIn("--", wrapped)
+        self.assertEqual(wrapped[-4:], ["cmd.exe", "/c", "echo ok"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows restricted-token integration test")
+    def test_windows_restricted_launcher_runs_a_child_process(self) -> None:
+        from mcp_tools_server.sandbox.windows_launcher import _launch_restricted
+
+        comspec = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
+        exit_code = _launch_restricted(
+            [comspec, "/d", "/s", "/c", "exit 0"]
+        )
+        self.assertEqual(exit_code, 0)
+
     def test_file_search_and_command_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -944,7 +1185,7 @@ class HTTPTransportTests(unittest.TestCase):
                 payload = json.loads(response.read())
                 self.assertEqual(response.status, 200)
                 tools = payload["result"]["tools"]
-                self.assertEqual(len(tools), 18)
+                self.assertEqual(len(tools), 20)
                 self.assertTrue(all("outputSchema" in tool for tool in tools))
                 connection.close()
             finally:
@@ -1062,7 +1303,7 @@ class HTTPTransportTests(unittest.TestCase):
                 response = connection.getresponse()
                 payload = json.loads(response.read())
                 self.assertEqual(response.status, 200)
-                self.assertEqual(len(payload["result"]["tools"]), 18)
+                self.assertEqual(len(payload["result"]["tools"]), 20)
                 connection.close()
             finally:
                 server.shutdown()

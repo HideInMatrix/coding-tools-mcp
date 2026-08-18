@@ -25,7 +25,7 @@ coding-tools-mcp 0.3.0
 这里的“兼容”指 **客户端可观察行为兼容**，不是复制第三方源码。开发时需要
 优先对齐以下行为：
 
-- 18 个工具的名称、输入 Schema、公共 outputSchema 与 annotations；
+- 20 个工具的名称、输入 Schema、公共 outputSchema 与 annotations；
 - legacy `initialize`、modern MCP 请求和 JSON-RPC 错误语义；
 - HTTP transport 的状态码、Content-Type、协议 Header 与 modern mirror headers；
 - OAuth Authorization Code + PKCE、Dynamic Client Registration、Protected Resource Metadata；
@@ -84,7 +84,7 @@ Protected Resource Metadata 同时兼容：
 兼容目标包括：
 
 ```text
-18 个 Coding Tools
+20 个 Coding Tools
 MCP legacy initialize
 MCP 2026-07-28 modern request
 tools/list
@@ -253,18 +253,20 @@ mcp_tools_server/results.py
 }
 ```
 
-## 6. 18 个工具
+## 6. 20 个工具
 
 当前暴露：
 
 ```text
 server_info
 check_exec_environment
+discover_toolchains
 read_file
 list_dir
 list_files
 search_text
 apply_patch
+exec_process
 exec_command
 write_stdin
 kill_command
@@ -403,7 +405,51 @@ mcp_tools_server/patching.py
 
 这避免修改到一半才发现后一个 hunk 无法匹配。
 
-## 10. exec_command
+## 10. 受控进程执行与工具链发现
+
+`discover_toolchains` 在不执行用户 shell 启动文件的前提下发现 Node.js、Python 和 Go。
+
+当前会读取 Workspace 内的版本提示：
+
+```text
+.nvmrc
+.node-version
+.python-version
+.go-version
+package.json engines.node（仅精确版本）
+go.mod 的 go 版本
+```
+
+并检查有限、可预测的版本管理器目录，例如：
+
+```text
+nvm / fnm / volta / mise / asdf / nodenv / n / nodebrew
+pyenv
+goenv
+```
+
+不会执行：
+
+```text
+~/.zshrc
+~/.zprofile
+~/.bashrc
+~/.profile
+eval "$(...)"
+```
+
+也不会递归扫描整个 Home 目录。
+
+`exec_process` 接收结构化 `program + args`，最终使用 `shell=False` 启动。对于不需要 shell 管道、重定向或条件表达式的构建命令，应优先使用它：
+
+```json
+{
+  "program": "npm",
+  "args": ["run", "build"]
+}
+```
+
+`exec_command` 继续用于确实需要 shell 语义的命令，但 safe/trusted 模式会固定 shell 入口并应用更严格的 command policy。
 
 进程生命周期由：
 
@@ -434,7 +480,7 @@ timeout
 
 超出缓存的数据会通过 `evicted_gap_bytes` 告知客户端。
 
-## 11. Permission Mode
+## 11. Permission Mode 与沙箱
 
 当前支持：
 
@@ -461,16 +507,60 @@ inline script
 Workspace 外的重定向
 Workspace 外的明显路径参数
 过长 timeout
+覆盖 HOME/PATH/TMP 等沙箱环境变量
 ```
 
-需要注意：
+safe/trusted 使用 ToolchainResolver 生成的受控 PATH，并把 HOME/TMP 指向 MCP 自己的 runtime 目录。safe 模式还为 npm/pip/go/cargo 设置离线环境提示，同时显式阻止常见联网型包管理和 VCS 命令。
+
+进程执行采用三层边界：
 
 ```text
-exec_command 当前属于应用层 command policy，
-不是 Linux Landlock/seccomp 或虚拟机级内核隔离。
+Application Policy
+  -> Environment Sandbox
+  -> OS Process Sandbox（平台支持时）
 ```
 
-因此不要把不可信用户直接连接到高权限桌面账号。
+当前 OS backend：
+
+```text
+macOS    Seatbelt (/usr/bin/sandbox-exec)
+Linux    bubblewrap (bwrap，可用时自动启用)
+Windows  Restricted Token + Job Object（进程权限降级/进程树约束）
+```
+
+各 OS backend 在 Runtime 初始化时会先执行最小自检。默认 `auto` 模式下，自检失败会明确回退到 application-policy；如果要求 fail-closed，可设置：
+
+```text
+CODING_TOOLS_MCP_OS_SANDBOX=require
+```
+
+可选值：
+
+```text
+auto     自动启用；不可用或自检失败时明确回退
+off      禁用 OS sandbox
+require  必须成功启用，否则 Runtime 启动失败
+```
+
+safe/trusted 的 Workspace 本身可写，但 Workspace 根 `.git` 会在支持文件系统隔离的 OS sandbox backend 中叠加只读保护，避免普通构建进程直接改写 Git 元数据。
+
+`dangerous` 模式属于显式逃生口：继承完整用户环境并绕过 OS process sandbox，不应作为“让 npm 可见”的常规解决方案。
+
+Windows 当前的 Restricted Token backend 会通过 `CreateRestrictedToken` 删除特权、把 Administrators SID 变为 deny-only，并把子进程放入 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object。Job 同时启用 UI restrictions，阻止跨 Job USER handles、剪贴板读写、桌面切换、显示设置、系统参数、全局 atom 和退出 Windows。为避免子进程在加入 Job 前抢跑，launcher 使用 `CREATE_SUSPENDED`，完成 Job 绑定后才恢复主线程。
+
+launcher 优先使用 `CreateProcessAsUserW`；如果仅因 `ERROR_PRIVILEGE_NOT_HELD (1314)` 失败，再尝试 `CreateProcessWithTokenW`。两条路径都显式传入 MCP sanitized Unicode environment，不允许回退路径重新继承真实 `%USERPROFILE%/%APPDATA%`。
+
+这属于真实的 Windows 内核级**进程权限/生命周期隔离**，但不是完整 AppContainer。因此 `check_exec_environment` 会分别返回：
+
+```text
+process_isolation=true
+filesystem_isolation=false
+network_isolation=false
+```
+
+文件系统与网络仍由 Workspace policy、sanitized environment 和 safe-mode 网络规则提供防御纵深。不能把 Restricted Token 宣称为与 Seatbelt/bubblewrap 等价的完整文件系统沙箱。
+
+Windows 11 新的 `Experimental_CreateProcessInSandbox` 会被运行时探测，但当前仍为实验 API、无公开头文件并要求 FlatBuffer `SBOX` specification，因此暂不作为生产默认 backend。`check_exec_environment.sandbox.experimental_appcontainer_available` 会报告当前系统是否存在该导出，后续 API 稳定后再切换为 AppContainer/BFS 的完整文件系统与网络隔离。
 
 ## 12. Git 工具
 
@@ -641,7 +731,7 @@ python -m unittest discover -s tests -v
 
 ```text
 自研版本号
-18 个工具
+20 个工具
 inputSchema/outputSchema
 structuredContent/isError
 legacy initialize

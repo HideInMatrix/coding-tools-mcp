@@ -5,9 +5,17 @@ import sys
 from .mcp_process import INTERNAL_MCP_FLAG, run_internal_mcp_server
 from .resources import web_ui_entrypoint
 from .version import current_version
+from mcp_tools_server.sandbox.windows_launcher import (
+    INTERNAL_WINDOWS_SANDBOX_FLAG,
+    run_internal_windows_sandbox_process,
+)
 
 
 def main() -> int:
+    if INTERNAL_WINDOWS_SANDBOX_FLAG in sys.argv:
+        index = sys.argv.index(INTERNAL_WINDOWS_SANDBOX_FLAG)
+        return run_internal_windows_sandbox_process(sys.argv[index + 1 :])
+
     if INTERNAL_MCP_FLAG in sys.argv:
         index = sys.argv.index(INTERNAL_MCP_FLAG)
         return run_internal_mcp_server(sys.argv[index + 1 :])
