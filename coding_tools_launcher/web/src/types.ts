@@ -48,6 +48,7 @@ export interface OAuthClientDto {
 export interface BootstrapDto {
   app_name: string
   version: string
+  update_download_proxy_prefix: string
   selected_server_id: string
   next_default_port: number
   servers: ServerDto[]
@@ -96,6 +97,8 @@ export interface PermissionRequestDto {
 
 export interface DesktopBridge {
   bootstrap(): Promise<BootstrapDto>
+  get_app_version(): Promise<string>
+  save_update_download_proxy(prefix: string): Promise<string>
   list_servers(): Promise<ServerDto[]>
   get_next_port(): Promise<number>
   select_server(serverId: string): Promise<boolean>

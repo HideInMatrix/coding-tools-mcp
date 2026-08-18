@@ -27,6 +27,12 @@ function bridge(): Promise<DesktopBridge> {
 }
 
 export const desktopApi = {
+  async appVersion(): Promise<string> {
+    return (await bridge()).get_app_version()
+  },
+  async saveUpdateDownloadProxy(prefix: string): Promise<string> {
+    return (await bridge()).save_update_download_proxy(prefix)
+  },
   async bootstrap(): Promise<BootstrapDto> {
     return (await bridge()).bootstrap()
   },

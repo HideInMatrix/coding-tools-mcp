@@ -23,6 +23,8 @@ const busy = ref(false)
 const errorMessage = ref('')
 const release = ref<ReleaseDto | null>(null)
 const checkingUpdate = ref(false)
+const updateProxyPrefix = ref('')
+const savingUpdateProxy = ref(false)
 const startingServerId = ref('')
 const permissionRequests = ref<PermissionRequestDto[]>([])
 const permissionResponding = ref(false)
@@ -215,6 +217,19 @@ async function checkUpdate() {
   try { release.value = await desktopApi.checkUpdate() } catch (error) { errorMessage.value = error instanceof Error ? error.message : String(error) } finally { checkingUpdate.value = false }
 }
 
+async function saveUpdateProxy(prefix: string) {
+  savingUpdateProxy.value = true
+  errorMessage.value = ''
+  try {
+    updateProxyPrefix.value = await desktopApi.saveUpdateDownloadProxy(prefix)
+    release.value = null
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    savingUpdateProxy.value = false
+  }
+}
+
 async function startUpdate() {
   errorMessage.value = ''
   installRequested = false
@@ -254,12 +269,24 @@ async function poll() {
 }
 
 onMounted(async () => {
-  const data = await desktopApi.bootstrap()
-  version.value = data.version
-  servers.value = data.servers
-  if (data.selected_server_id) await selectServer(data.selected_server_id)
-  else await createNew()
-  await refreshPermissionRequests()
+  // Version retrieval is intentionally independent from the heavier bootstrap:
+  // a broken profile or first-run migration must not leave the UI at `v—`.
+  const versionRequest = desktopApi.appVersion()
+    .then(value => { if (value) version.value = value })
+    .catch(() => undefined)
+
+  try {
+    const data = await desktopApi.bootstrap()
+    if (data.version) version.value = data.version
+    updateProxyPrefix.value = data.update_download_proxy_prefix
+    servers.value = data.servers
+    if (data.selected_server_id) await selectServer(data.selected_server_id)
+    else await createNew()
+    await refreshPermissionRequests()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : String(error)
+  }
+  await versionRequest
   pollTimer = window.setInterval(poll, 900)
 })
 
@@ -342,8 +369,11 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
           :release="release"
           :checking="checkingUpdate"
           :update-status="updateStatus"
+          :update-proxy-prefix="updateProxyPrefix"
+          :saving-proxy="savingUpdateProxy"
           @check="checkUpdate"
           @update="startUpdate"
+          @save-proxy="saveUpdateProxy"
           @open="desktopApi.openExternal"
         />
       </div>

@@ -239,6 +239,13 @@ tbody tr:hover { background: color-mix(in oklab, var(--secondary) 38%, transpare
 .about-card h2 { margin: 0 0 10px; font-size: 14px; font-weight: 500; }
 .about-row { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
 .about-card small { display: block; margin-top: 16px; color: var(--muted-foreground); font-size: 10px; }
+.update-proxy-setting { padding: 12px 0 2px; }
+.update-proxy-setting label { display: block; margin-bottom: 7px; font-size: 11px; font-weight: 500; }
+.update-proxy-control { display: flex; gap: 7px; }
+.update-proxy-control input { min-width: 0; flex: 1; height: 32px; padding: 0 9px; border: 1px solid var(--input); border-radius: 6px; background: var(--background); color: var(--foreground); font-size: 11px; outline: none; }
+.update-proxy-control input:focus { border-color: var(--ring); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 18%, transparent); }
+.update-proxy-control .secondary-button { width: auto; margin: 0; padding: 0 11px; white-space: nowrap; }
+.update-proxy-setting > small { margin-top: 6px; }
 .update-note { margin: 12px 0 0; padding: 8px 10px; border-radius: 6px; background: var(--secondary); color: var(--foreground); font-size: 11px; }
 .update-progress-card { margin-top: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--secondary); }
 .update-progress-heading, .update-progress-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 11px; }

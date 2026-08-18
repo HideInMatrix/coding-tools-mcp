@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { ReleaseDto, UpdateStatusDto } from '../types'
 
 const props = defineProps<{
@@ -7,8 +7,13 @@ const props = defineProps<{
   release: ReleaseDto | null
   checking: boolean
   updateStatus: UpdateStatusDto
+  updateProxyPrefix: string
+  savingProxy: boolean
 }>()
-const emit = defineEmits<{ check: []; update: []; open: [url: string] }>()
+const emit = defineEmits<{ check: []; update: []; open: [url: string]; saveProxy: [prefix: string] }>()
+const proxyDraft = ref(props.updateProxyPrefix)
+
+watch(() => props.updateProxyPrefix, value => { proxyDraft.value = value })
 
 const updating = computed(() => ['downloading', 'verifying', 'ready', 'installing'].includes(props.updateStatus.state))
 const canAutoUpdate = computed(() => Boolean(props.release?.update_download_url && props.release?.checksum_url))
@@ -32,8 +37,27 @@ function formatBytes(value: number): string {
     <div class="about-card">
       <div class="about-logo">CT</div>
       <h2>Coding Tools MCP</h2>
-      <div class="about-row"><span>当前版本</span><strong>{{ version }}</strong></div>
+      <div class="about-row"><span>当前版本</span><strong>{{ version || '—' }}</strong></div>
       <div class="about-row"><span>GitHub 最新版本</span><strong>{{ release?.latest_version || '未检查' }}</strong></div>
+      <div class="update-proxy-setting">
+        <label for="update-proxy-prefix">GitHub 下载加速前缀</label>
+        <div class="update-proxy-control">
+          <input
+            id="update-proxy-prefix"
+            v-model="proxyDraft"
+            type="url"
+            spellcheck="false"
+            placeholder="留空则直连 GitHub"
+            @keydown.enter="emit('saveProxy', proxyDraft)"
+          />
+          <button
+            class="secondary-button"
+            :disabled="savingProxy || proxyDraft === updateProxyPrefix"
+            @click="emit('saveProxy', proxyDraft)"
+          >{{ savingProxy ? '保存中…' : '保存' }}</button>
+        </div>
+        <small>默认使用 https://cdn.gh-proxy.org/；留空可关闭加速。</small>
+      </div>
       <p v-if="release?.update_available" class="update-note">发现新版本 {{ release.latest_version }}。</p>
       <p v-else-if="release" class="muted">当前已经是最新版本。</p>
 
