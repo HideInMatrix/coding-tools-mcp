@@ -3,7 +3,10 @@ from __future__ import annotations
 import io
 import http.client
 import json
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from build_desktop import MACOS_BUNDLE_IDENTIFIER, resolve_build_version
@@ -18,10 +21,41 @@ from coding_tools_launcher.updates import (
     platform_asset_name,
     updater_asset_name,
 )
-from scripts.package_release import platform_label, release_base_name
+from scripts.package_release import _create_macos_dmg, platform_label, release_base_name
 
 
 class UpdateNamingTests(unittest.TestCase):
+    def test_macos_dmg_creation_retries_resource_busy_at_fresh_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = root / "staging"
+            staging.mkdir()
+            image = root / "release" / "Coding-Tools-MCP-macos-arm64.dmg"
+            commands: list[list[str]] = []
+
+            def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                if len(commands) == 1:
+                    raise subprocess.CalledProcessError(
+                        1,
+                        command,
+                        stderr="hdiutil: create failed - Resource busy",
+                    )
+                Path(command[-1]).write_bytes(b"valid-dmg")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with (
+                patch("scripts.package_release.subprocess.run", side_effect=run),
+                patch("scripts.package_release.time.sleep") as sleep,
+                patch("scripts.package_release.os.sync", create=True),
+            ):
+                _create_macos_dmg(staging, image, attempts=3)
+
+            self.assertEqual(image.read_bytes(), b"valid-dmg")
+            self.assertEqual(len(commands), 2)
+            self.assertNotEqual(commands[0][-1], commands[1][-1])
+            sleep.assert_called_once_with(2.0)
+
     def test_download_proxy_prefix_is_normalized_and_can_be_disabled(self) -> None:
         self.assertEqual(
             normalize_download_proxy_prefix("https://mirror.example.com/base"),

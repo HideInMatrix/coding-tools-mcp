@@ -10,12 +10,15 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST_DIR = ROOT / "dist"
 APP_NAME = "Coding Tools MCP"
+HDIUTIL_CREATE_ATTEMPTS = 4
+HDIUTIL_RETRY_BASE_SECONDS = 2.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,6 +106,84 @@ def package_linux(output_base: Path) -> Path:
     return archive
 
 
+def _create_macos_dmg(
+    staging: Path,
+    image: Path,
+    *,
+    attempts: int = HDIUTIL_CREATE_ATTEMPTS,
+) -> None:
+    """Create a compressed DMG without reusing hdiutil's transient state.
+
+    Hosted macOS runners occasionally return ``Resource busy`` while Disk
+    Images.framework is releasing a previous temporary device. Build every
+    attempt at a fresh path/TMPDIR, remove failed partial images and retry with
+    bounded backoff. The release artifact is replaced only after a successful
+    create, so a partial DMG can never be uploaded.
+    """
+
+    image.parent.mkdir(parents=True, exist_ok=True)
+    retry_count = max(1, attempts)
+    last_error: subprocess.CalledProcessError | None = None
+    if hasattr(os, "sync"):
+        os.sync()
+
+    with tempfile.TemporaryDirectory(prefix="coding-tools-mcp-hdiutil-") as raw_temp:
+        temp_root = Path(raw_temp)
+        for attempt in range(1, retry_count + 1):
+            attempt_dir = temp_root / f"attempt-{attempt}"
+            attempt_dir.mkdir()
+            candidate = attempt_dir / image.name
+            environment = os.environ.copy()
+            environment["TMPDIR"] = str(attempt_dir)
+            try:
+                subprocess.run(
+                    [
+                        "/usr/bin/hdiutil",
+                        "create",
+                        "-volname",
+                        APP_NAME,
+                        "-srcfolder",
+                        str(staging),
+                        "-ov",
+                        "-format",
+                        "UDZO",
+                        str(candidate),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                )
+            except subprocess.CalledProcessError as exc:
+                last_error = exc
+                candidate.unlink(missing_ok=True)
+                detail = (exc.stderr or exc.stdout or str(exc)).strip()
+                if attempt >= retry_count:
+                    break
+                delay = HDIUTIL_RETRY_BASE_SECONDS * attempt
+                print(
+                    f"hdiutil create attempt {attempt}/{retry_count} failed: "
+                    f"{detail or 'unknown error'}; retrying in {delay:g}s",
+                    flush=True,
+                )
+                time.sleep(delay)
+                continue
+
+            if not candidate.is_file() or candidate.stat().st_size <= 0:
+                raise RuntimeError("hdiutil reported success but produced no DMG")
+            image.unlink(missing_ok=True)
+            shutil.move(str(candidate), str(image))
+            return
+
+    detail = ""
+    if last_error is not None:
+        detail = (last_error.stderr or last_error.stdout or str(last_error)).strip()
+    raise RuntimeError(
+        f"hdiutil could not create {image.name} after {retry_count} attempts: "
+        f"{detail or 'unknown error'}"
+    ) from last_error
+
+
 def package_macos(output_base: Path) -> list[Path]:
     source = DIST_DIR / f"{APP_NAME}.app"
     if not source.is_dir():
@@ -115,21 +196,7 @@ def package_macos(output_base: Path) -> list[Path]:
         shutil.copytree(source, staging / source.name, symlinks=True)
         os.symlink("/Applications", staging / "Applications")
 
-        subprocess.run(
-            [
-                "hdiutil",
-                "create",
-                "-volname",
-                APP_NAME,
-                "-srcfolder",
-                str(staging),
-                "-ov",
-                "-format",
-                "UDZO",
-                str(image),
-            ],
-            check=True,
-        )
+        _create_macos_dmg(staging, image)
 
     # The DMG remains the human-friendly first-install artifact.  The ZIP is
     # consumed by the in-app updater because macOS can extract it without

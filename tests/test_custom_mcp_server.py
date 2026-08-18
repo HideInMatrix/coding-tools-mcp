@@ -43,6 +43,7 @@ from mcp_tools_server.sandbox.backend import (
 )
 from mcp_tools_server.server import MCPHTTPServer
 from mcp_tools_server.server import _normalize_public_server_url
+from mcp_tools_server.server import _public_ip_for_host
 from mcp_tools_server.server import _resolve_oauth_client
 from mcp_tools_server.toolchains import ToolchainResolver
 
@@ -106,6 +107,61 @@ class CustomMCPServerContractTests(unittest.TestCase):
                     "redirect_uris": ["https://client.example.com/oauth/callback"],
                 },
             )
+
+    def test_chatgpt_cimd_negotiates_supported_none_auth(self) -> None:
+        client_id = "https://chatgpt.com/oauth/example/client.json"
+        client = client_from_metadata_document(
+            client_id,
+            {
+                "client_id": client_id,
+                "client_name": "ChatGPT",
+                "redirect_uris": ["https://chatgpt.com/connector/oauth/example"],
+                "token_endpoint_auth_method": "private_key_jwt",
+                "token_endpoint_auth_methods_supported": [
+                    "none",
+                    "private_key_jwt",
+                ],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+            },
+        )
+        self.assertEqual(client.token_endpoint_auth_method, "none")
+
+    def test_cimd_rejects_unsupported_private_key_jwt_only_client(self) -> None:
+        client_id = "https://client.example.com/oauth/client.json"
+        with self.assertRaisesRegex(ValueError, "no supported token endpoint"):
+            client_from_metadata_document(
+                client_id,
+                {
+                    "client_id": client_id,
+                    "client_name": "Private Client",
+                    "redirect_uris": ["https://client.example.com/oauth/callback"],
+                    "token_endpoint_auth_method": "private_key_jwt",
+                    "token_endpoint_auth_methods_supported": ["private_key_jwt"],
+                },
+            )
+
+    def test_cimd_accepts_tun_fake_ip_but_still_rejects_private_dns(self) -> None:
+        fake_answers = [
+            (2, 1, 6, "", ("198.18.0.14", 443)),
+            (30, 1, 6, "", ("::ffff:0:c612:e", 443, 0, 0)),
+        ]
+        with patch("mcp_tools_server.server.socket.getaddrinfo", return_value=fake_answers):
+            self.assertEqual(_public_ip_for_host("chatgpt.com", 443), "198.18.0.14")
+
+        private_answers = [(2, 1, 6, "", ("192.168.1.10", 443))]
+        with patch("mcp_tools_server.server.socket.getaddrinfo", return_value=private_answers):
+            with self.assertRaisesRegex(ValueError, "public IP"):
+                _public_ip_for_host("internal.example.com", 443)
+
+    def test_cimd_rejects_mixed_public_and_private_dns_answers(self) -> None:
+        mixed_answers = [
+            (2, 1, 6, "", ("104.18.32.47", 443)),
+            (2, 1, 6, "", ("10.0.0.8", 443)),
+        ]
+        with patch("mcp_tools_server.server.socket.getaddrinfo", return_value=mixed_answers):
+            with self.assertRaisesRegex(ValueError, "public IP"):
+                _public_ip_for_host("mixed.example.com", 443)
 
     def test_cimd_client_is_resolved_on_demand_and_cached(self) -> None:
         client_id = "https://client.example.com/oauth/metadata.json"

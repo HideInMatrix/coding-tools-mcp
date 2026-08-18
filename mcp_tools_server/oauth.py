@@ -101,17 +101,27 @@ def client_from_metadata_document(
     if not isinstance(response_types, list) or "code" not in response_types:
         raise ValueError("CIMD code response type is required")
     method = metadata.get("token_endpoint_auth_method", "none")
-    # This project currently supports CIMD public clients. private_key_jwt can
-    # be added independently once asymmetric client authentication is needed.
+    supported_methods = metadata.get("token_endpoint_auth_methods_supported", [])
+    if not isinstance(supported_methods, list) or not all(
+        isinstance(item, str) for item in supported_methods
+    ):
+        raise ValueError("CIMD token_endpoint_auth_methods_supported must be an array")
+    # ChatGPT prefers private_key_jwt but publishes `none` as a supported
+    # fallback. This authorization server advertises `none` (not
+    # private_key_jwt), so negotiate the mutually supported public-client
+    # method. PKCE remains mandatory for the authorization-code exchange.
     if method != "none":
-        raise ValueError("CIMD currently requires token_endpoint_auth_method=none")
+        if "none" in supported_methods:
+            method = "none"
+        else:
+            raise ValueError("CIMD client has no supported token endpoint auth method")
     application_type = metadata.get("application_type", "web")
     if application_type not in {"web", "native"}:
         raise ValueError("CIMD application_type must be web or native")
     return OAuthClient(
         client_id=client_id,
         redirect_uris=tuple(raw_redirects),
-        token_endpoint_auth_method="none",
+        token_endpoint_auth_method=method,
         client_name=client_name.strip(),
         secret_digest=None,
         issued_at=int(time.time()),

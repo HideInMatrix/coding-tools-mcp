@@ -58,6 +58,11 @@ CIMD_TIMEOUT_SECONDS = 5.0
 CIMD_DEFAULT_CACHE_SECONDS = 300
 CIMD_MAX_CACHE_SECONDS = 3600
 CIMD_MAX_REDIRECTS = 3
+_TUN_FAKE_IPV4_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+_TUN_FAKE_IPV6_NETWORKS = (
+    ipaddress.ip_network("::ffff:0:0/96"),
+    ipaddress.ip_network("::ffff:0:0:0/96"),
+)
 
 
 def _truthy(value: str | None) -> bool:
@@ -78,8 +83,39 @@ def _loopback(host: str) -> bool:
     return host in {"", "localhost", "127.0.0.1", "::1"}
 
 
+def _is_tun_fake_ip(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Recognize RFC 2544 addresses used by Clash/sing-box fake-IP DNS."""
+
+    if isinstance(address, ipaddress.IPv4Address):
+        return address in _TUN_FAKE_IPV4_NETWORK
+    for network in _TUN_FAKE_IPV6_NETWORKS:
+        if address in network:
+            embedded = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+            return embedded in _TUN_FAKE_IPV4_NETWORK
+    return False
+
+
+def _safe_cimd_destination(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    if _is_tun_fake_ip(address):
+        return True
+    return bool(
+        address.is_global
+        and not address.is_multicast
+        and not address.is_reserved
+        and not address.is_unspecified
+    )
+
+
 def _public_ip_for_host(host: str, port: int) -> str:
-    """Resolve a CIMD host and reject private/local/reserved destinations."""
+    """Resolve CIMD safely, including transparent-proxy fake-IP answers.
+
+    Clash/sing-box style TUN DNS uses RFC 2544 ``198.18.0.0/15`` placeholders
+    for public hostnames. They remain safe here because the request is HTTPS,
+    the original hostname is retained for SNI/certificate verification, and
+    all ordinary private, loopback, link-local and reserved ranges stay denied.
+    """
 
     try:
         parsed_ip = ipaddress.ip_address(host)
@@ -100,9 +136,10 @@ def _public_ip_for_host(host: str, port: int) -> str:
                 addresses.append(address)
     if not addresses:
         raise ValueError("CIMD hostname resolved to no usable address")
-    # Reject the entire hostname if any answer points at a non-public network.
-    # This is intentionally stricter than selecting only one public answer.
-    if not all(address.is_global for address in addresses):
+    # Reject the entire hostname if any answer points at an unsafe destination.
+    # This prevents a hostname with mixed public/private answers from being
+    # used for SSRF while accepting a TUN's paired v4/v6 fake-IP records.
+    if not all(_safe_cimd_destination(address) for address in addresses):
         raise ValueError("CIMD metadata URL must resolve only to public IP addresses")
     return str(addresses[0])
 
