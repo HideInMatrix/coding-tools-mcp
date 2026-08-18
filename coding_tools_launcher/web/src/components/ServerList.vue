@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { Play, Plus, Square } from '@lucide/vue'
+import { LoaderCircle, Play, Plus, Square } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import type { ServerDto } from '../types'
 
-defineProps<{ servers: ServerDto[]; selectedId: string }>()
+defineProps<{ servers: ServerDto[]; selectedId: string; startingId: string }>()
 const emit = defineEmits<{
   select: [serverId: string]
   toggle: [server: ServerDto]
@@ -46,7 +46,7 @@ function providerName(server: ServerDto) {
         @keydown.enter="emit('select', server.server_id)"
         @keydown.space.prevent="emit('select', server.server_id)"
       >
-        <span :class="['server-status-dot', server.running ? 'running' : server.exit_reason ? 'error' : 'idle']" />
+        <span :class="['server-status-dot', server.server_id === startingId ? 'starting' : server.running ? 'running' : server.exit_reason ? 'error' : 'idle']" />
         <span class="server-row-main">
           <span class="server-row-title">
             <strong>{{ server.name }}</strong>
@@ -60,13 +60,18 @@ function providerName(server: ServerDto) {
           </span>
         </span>
         <Button
-          variant="ghost"
           size="icon"
-          class="server-toggle"
-          :title="server.running ? '停止服务' : '启动服务'"
+          :class="[
+            'server-toggle',
+            server.running ? 'server-toggle-running' : 'server-toggle-idle',
+            { 'server-toggle-starting': server.server_id === startingId },
+          ]"
+          :disabled="server.server_id === startingId"
+          :title="server.server_id === startingId ? '正在启动服务' : server.running ? '停止服务' : '启动服务'"
           @click.stop="emit('toggle', server)"
         >
-          <Square v-if="server.running" :size="14" />
+          <LoaderCircle v-if="server.server_id === startingId" class="server-toggle-spinner" :size="14" />
+          <Square v-else-if="server.running" :size="14" />
           <Play v-else :size="14" />
         </Button>
       </article>

@@ -22,6 +22,7 @@ const busy = ref(false)
 const errorMessage = ref('')
 const release = ref<ReleaseDto | null>(null)
 const checkingUpdate = ref(false)
+const startingServerId = ref('')
 const updateStatus = ref<UpdateStatusDto>({
   state: 'idle', version: '', progress: 0, downloaded_bytes: 0, total_bytes: 0, message: '',
 })
@@ -112,14 +113,20 @@ async function deleteServer() {
 
 async function toggleServer(server: ServerDto) {
   await run(async () => {
-    if (server.running) await desktopApi.stopServer(server.server_id)
-    else if (server.server_id === selectedId.value) {
-      await desktopApi.updateServer(server.server_id, draft.value)
-      await desktopApi.startServer(server.server_id, draft.value)
-    } else {
-      await desktopApi.startServer(server.server_id)
+    const starting = !server.running
+    if (starting) startingServerId.value = server.server_id
+    try {
+      if (server.running) await desktopApi.stopServer(server.server_id)
+      else if (server.server_id === selectedId.value) {
+        await desktopApi.updateServer(server.server_id, draft.value)
+        await desktopApi.startServer(server.server_id, draft.value)
+      } else {
+        await desktopApi.startServer(server.server_id)
+      }
+      await refreshServers(true)
+    } finally {
+      if (startingServerId.value === server.server_id) startingServerId.value = ''
     }
-    await refreshServers(true)
   })
 }
 
@@ -253,8 +260,25 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
             </div>
 
             <div class="server-workspace">
-              <ServerList :servers="servers" :selected-id="selectedId" @select="selectServer" @toggle="toggleServer" @create="createNew" />
-              <ServerEditor v-model="draft" :is-new="isNew" :running="selected?.running || false" @save="saveServer" @delete="deleteServer" @start="startSelected" @stop="stopSelected" />
+              <ServerList
+                :servers="servers"
+                :selected-id="selectedId"
+                :starting-id="startingServerId"
+                @select="selectServer"
+                @toggle="toggleServer"
+                @create="createNew"
+              />
+              <ServerEditor
+                v-model="draft"
+                :is-new="isNew"
+                :running="selected?.running || false"
+                :starting="startingServerId === selectedId"
+                :public-mcp-url="selected?.public_mcp_url || ''"
+                @save="saveServer"
+                @delete="deleteServer"
+                @start="startSelected"
+                @stop="stopSelected"
+              />
             </div>
           </section>
         </template>
