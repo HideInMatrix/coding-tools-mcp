@@ -27,7 +27,13 @@ class ProcessSandboxBackend:
     def __init__(self, state: SandboxBackendState) -> None:
         self.state = state
 
-    def wrap(self, argv: list[str], *, cwd: Path) -> list[str]:
+    def wrap(
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        permissions: frozenset[str] = frozenset(),
+    ) -> list[str]:
         return list(argv)
 
 
@@ -60,6 +66,12 @@ class MacSeatbeltBackend(ProcessSandboxBackend):
             network_isolation=bool(enabled and available),
         )
         super().__init__(state)
+        self.runtime_dir = runtime_dir.resolve()
+        self.workspace = workspace.resolve()
+        self.readable_roots = list(readable_roots)
+        self.writable_roots = list(writable_roots)
+        self.protected_paths = list(protected_paths)
+        self.network = network
         self.profile_path = runtime_dir / "seatbelt.sbpl"
         if self.state.enabled:
             self.profile_path.write_text(
@@ -166,10 +178,41 @@ class MacSeatbeltBackend(ProcessSandboxBackend):
             )
         return "\n".join(components) + "\n"
 
-    def wrap(self, argv: list[str], *, cwd: Path) -> list[str]:
+    def _profile_path_for_permissions(self, permissions: frozenset[str]) -> Path:
+        network = self.network or "network" in permissions
+        allow_protected_write = "git_metadata_write" in permissions
+        if network == self.network and not allow_protected_write:
+            return self.profile_path
+        suffix = (
+            f"network-{int(network)}-git-write-{int(allow_protected_write)}"
+        )
+        path = self.runtime_dir / f"seatbelt-{suffix}.sbpl"
+        if not path.exists():
+            path.write_text(
+                self._profile(
+                    workspace=self.workspace,
+                    readable_roots=self.readable_roots,
+                    writable_roots=self.writable_roots,
+                    protected_paths=(
+                        [] if allow_protected_write else self.protected_paths
+                    ),
+                    network=network,
+                ),
+                encoding="utf-8",
+            )
+        return path
+
+    def wrap(
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        permissions: frozenset[str] = frozenset(),
+    ) -> list[str]:
         if not self.state.enabled:
             return list(argv)
-        return [str(self.EXECUTABLE), "-f", str(self.profile_path), *argv]
+        profile_path = self._profile_path_for_permissions(permissions)
+        return [str(self.EXECUTABLE), "-f", str(profile_path), *argv]
 
 
 class LinuxBubblewrapBackend(ProcessSandboxBackend):
@@ -261,7 +304,13 @@ class LinuxBubblewrapBackend(ProcessSandboxBackend):
             args.extend(["--dir", str(item)])
         return args
 
-    def wrap(self, argv: list[str], *, cwd: Path) -> list[str]:
+    def wrap(
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        permissions: frozenset[str] = frozenset(),
+    ) -> list[str]:
         if not self.state.enabled or self.executable is None:
             return list(argv)
         args = [
@@ -272,7 +321,7 @@ class LinuxBubblewrapBackend(ProcessSandboxBackend):
             "--unshare-uts",
             "--unshare-ipc",
         ]
-        if not self.network:
+        if not (self.network or "network" in permissions):
             args.append("--unshare-net")
 
         system_roots: list[Path] = []
@@ -300,10 +349,11 @@ class LinuxBubblewrapBackend(ProcessSandboxBackend):
             args.extend(self._mkdir_args(root, covered_roots, created))
             args.extend(["--bind", key, key])
             bound.add(key)
-        for protected in self.protected_paths:
-            key = str(protected)
-            args.extend(self._mkdir_args(protected, covered_roots, created))
-            args.extend(["--ro-bind", key, key])
+        if "git_metadata_write" not in permissions:
+            for protected in self.protected_paths:
+                key = str(protected)
+                args.extend(self._mkdir_args(protected, covered_roots, created))
+                args.extend(["--ro-bind", key, key])
         args.extend(["--chdir", str(cwd.resolve()), "--", *argv])
         return args
 
@@ -380,7 +430,13 @@ class WindowsRestrictedTokenBackend(ProcessSandboxBackend):
         launcher = Path(__file__).with_name("windows_launcher.py").resolve()
         return [sys.executable, str(launcher)]
 
-    def wrap(self, argv: list[str], *, cwd: Path) -> list[str]:
+    def wrap(
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        permissions: frozenset[str] = frozenset(),
+    ) -> list[str]:
         if not self.state.enabled:
             return list(argv)
         return [*self._launcher_prefix(), "--", *argv]

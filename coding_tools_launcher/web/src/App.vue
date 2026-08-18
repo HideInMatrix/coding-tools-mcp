@@ -7,7 +7,7 @@ import LogPanel from './components/LogPanel.vue'
 import OAuthClientView from './components/OAuthClientView.vue'
 import ServerEditor from './components/ServerEditor.vue'
 import ServerList from './components/ServerList.vue'
-import type { LogEntryDto, OAuthClientDto, PageKey, ReleaseDto, ServerDraft, ServerDto, UpdateStatusDto } from './types'
+import type { LogEntryDto, OAuthClientDto, PageKey, PermissionRequestDto, ReleaseDto, ServerDraft, ServerDto, UpdateStatusDto } from './types'
 
 const page = ref<PageKey>('servers')
 const version = ref('')
@@ -23,6 +23,8 @@ const errorMessage = ref('')
 const release = ref<ReleaseDto | null>(null)
 const checkingUpdate = ref(false)
 const startingServerId = ref('')
+const permissionRequests = ref<PermissionRequestDto[]>([])
+const permissionResponding = ref(false)
 const updateStatus = ref<UpdateStatusDto>({
   state: 'idle', version: '', progress: 0, downloaded_bytes: 0, total_bytes: 0, message: '',
 })
@@ -30,6 +32,12 @@ let installRequested = false
 let pollTimer = 0
 
 const selected = computed(() => servers.value.find(item => item.server_id === selectedId.value) || null)
+const activePermissionRequest = computed(() => permissionRequests.value[0] || null)
+const permissionArguments = computed(() => {
+  const request = activePermissionRequest.value
+  if (!request) return ''
+  try { return JSON.stringify(request.arguments, null, 2) } catch { return String(request.arguments) }
+})
 const serverStats = computed(() => ({
   total: servers.value.length,
   running: servers.value.filter(item => item.running).length,
@@ -41,6 +49,7 @@ function emptyDraft(port: number): ServerDraft {
   return {
     name: '', workspace: '', oauth_password: '', host: '127.0.0.1', port,
     remember_secrets: true,
+    permission_mode: 'safe',
     network: { provider: 'cloudflare', public_url: '', options: {} },
   }
 }
@@ -53,6 +62,7 @@ function draftFromServer(server: ServerDto): ServerDraft {
     host: server.host,
     port: server.port,
     remember_secrets: server.has_saved_password || Object.keys(server.network.options).some(key => ['tunnel_token', 'authtoken'].includes(key)),
+    permission_mode: server.permission_mode,
     network: {
       provider: server.network.provider,
       public_url: server.network.public_url,
@@ -144,6 +154,37 @@ async function refreshClients() {
   clients.value = selectedId.value ? await desktopApi.listOAuthClients(selectedId.value) : []
 }
 
+async function refreshPermissionRequests() {
+  permissionRequests.value = await desktopApi.listPermissionRequests()
+}
+
+function permissionLabel(permission: string) {
+  return ({
+    network: '访问网络',
+    destructive_command: '执行破坏性命令',
+    git_metadata_write: '写入 Git 元数据',
+    long_timeout: '延长执行时间',
+    sensitive_env: '传入敏感环境变量',
+    shell_expansion: '使用 Shell 展开',
+    inline_script: '执行内联脚本',
+  } as Record<string, string>)[permission] || permission
+}
+
+async function respondPermission(approved: boolean) {
+  const request = activePermissionRequest.value
+  if (!request || permissionResponding.value) return
+  permissionResponding.value = true
+  try {
+    const accepted = await desktopApi.respondPermissionRequest(request.request_id, approved)
+    if (!accepted) errorMessage.value = '授权请求已过期或不再有效。'
+    await refreshPermissionRequests()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    permissionResponding.value = false
+  }
+}
+
 async function openClients(serverId: string) {
   if (serverId) await selectServer(serverId)
   page.value = 'clients'
@@ -204,6 +245,7 @@ async function poll() {
     logs.value.push(...response.entries)
     if (logs.value.length > 600) logs.value.splice(0, logs.value.length - 600)
     if (page.value === 'clients') await refreshClients()
+    await refreshPermissionRequests()
     await refreshUpdateStatus()
   } catch { /* transient polling failures are surfaced by explicit actions */ }
 }
@@ -214,6 +256,7 @@ onMounted(async () => {
   servers.value = data.servers
   if (data.selected_server_id) await selectServer(data.selected_server_id)
   else await createNew()
+  await refreshPermissionRequests()
   pollTimer = window.setInterval(poll, 900)
 })
 
@@ -302,5 +345,31 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
         />
       </div>
     </main>
+  </div>
+
+  <div v-if="activePermissionRequest" class="permission-overlay">
+    <section class="permission-dialog" role="dialog" aria-modal="true" aria-labelledby="permission-dialog-title">
+      <header class="permission-dialog-header">
+        <div>
+          <span class="permission-dialog-kicker">需要授权</span>
+          <h2 id="permission-dialog-title">{{ permissionLabel(activePermissionRequest.permission) }}</h2>
+        </div>
+        <span class="permission-server-badge">{{ activePermissionRequest.server_name }}</span>
+      </header>
+      <p class="permission-dialog-reason">{{ activePermissionRequest.reason }}</p>
+      <dl class="permission-dialog-meta">
+        <div><dt>工具</dt><dd>{{ activePermissionRequest.tool_name }}</dd></div>
+        <div><dt>权限</dt><dd>{{ activePermissionRequest.permission }}</dd></div>
+      </dl>
+      <div class="permission-arguments">
+        <span>本次调用参数（敏感字段已脱敏）</span>
+        <pre>{{ permissionArguments }}</pre>
+      </div>
+      <p class="permission-dialog-note">批准只放行这一次完全相同的调用，其他 Safe 沙箱限制继续生效。</p>
+      <footer class="permission-dialog-actions">
+        <button class="secondary-button" :disabled="permissionResponding" @click="respondPermission(false)">拒绝</button>
+        <button class="primary-button" :disabled="permissionResponding" @click="respondPermission(true)">仅允许本次</button>
+      </footer>
+    </section>
   </div>
 </template>

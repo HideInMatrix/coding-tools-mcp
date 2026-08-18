@@ -14,6 +14,7 @@ NETWORK_PROVIDER_CHOICES = (
     "tailscale",
     "external",
 )
+PERMISSION_MODE_CHOICES = ("safe", "trusted", "dangerous")
 
 
 def load_env_file(path: Path) -> dict[str, str]:
@@ -87,6 +88,7 @@ class LaunchConfig:
     port: int = DEFAULT_PORT
     server_id: str = ""
     lifecycle: str = "persistent"
+    permission_mode: str = "safe"
 
     def validated(self) -> "LaunchConfig":
         workspace = self.workspace.expanduser().resolve()
@@ -106,6 +108,9 @@ class LaunchConfig:
         lifecycle = self.lifecycle.strip().lower() or "persistent"
         if lifecycle not in {"persistent", "ephemeral"}:
             raise ValueError(f"不支持的 Server lifecycle: {lifecycle}")
+        permission_mode = self.permission_mode.strip().lower() or "safe"
+        if permission_mode not in PERMISSION_MODE_CHOICES:
+            raise ValueError(f"不支持的权限模式: {permission_mode}")
 
         return LaunchConfig(
             workspace=workspace,
@@ -115,6 +120,7 @@ class LaunchConfig:
             port=self.port,
             server_id=server_id,
             lifecycle=lifecycle,
+            permission_mode=permission_mode,
         )
 
     @classmethod
@@ -163,6 +169,7 @@ class LaunchConfig:
             ),
             host=host,
             port=port,
+            permission_mode=env.get("CODING_TOOLS_MCP_PERMISSION_MODE", "safe"),
         ).validated()
 
 

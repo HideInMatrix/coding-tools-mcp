@@ -49,6 +49,7 @@ class DesktopAPITests(unittest.TestCase):
             "host": "127.0.0.1",
             "port": port,
             "remember_secrets": True,
+            "permission_mode": "safe",
             "network": {
                 "provider": "external",
                 "public_url": f"https://{name.lower().replace(' ', '-')}.example.com",
@@ -61,12 +62,23 @@ class DesktopAPITests(unittest.TestCase):
         self.assertEqual(created["name"], "Server A")
         self.assertEqual(created["port"], 8234)
         self.assertEqual(created["lifecycle"], "persistent")
+        self.assertEqual(created["permission_mode"], "safe")
         self.assertFalse(created["running"])
         self.assertTrue(created["server_id"])
 
     def test_next_port_advances_after_profile_creation(self) -> None:
         self.api.create_server(self.payload())
         self.assertEqual(self.api.get_next_port(), 8235)
+
+    def test_permission_mode_can_be_saved_and_updated(self) -> None:
+        payload = self.payload()
+        payload["permission_mode"] = "trusted"
+        created = self.api.create_server(payload)
+        self.assertEqual(created["permission_mode"], "trusted")
+
+        payload["permission_mode"] = "dangerous"
+        updated = self.api.update_server(str(created["server_id"]), payload)
+        self.assertEqual(updated["permission_mode"], "dangerous")
 
     def test_duplicate_port_is_rejected(self) -> None:
         self.api.create_server(self.payload())

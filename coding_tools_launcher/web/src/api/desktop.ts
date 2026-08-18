@@ -3,6 +3,7 @@ import type {
   DesktopBridge,
   LogEntryDto,
   OAuthClientDto,
+  PermissionRequestDto,
   ReleaseDto,
   UpdateStatusDto,
   ServerDraft,
@@ -61,6 +62,12 @@ export const desktopApi = {
   },
   async revokeAllOAuthClients(serverId: string): Promise<number> {
     return (await bridge()).revoke_all_oauth_clients(serverId)
+  },
+  async listPermissionRequests(): Promise<PermissionRequestDto[]> {
+    return (await bridge()).list_permission_requests()
+  },
+  async respondPermissionRequest(requestId: string, approved: boolean): Promise<boolean> {
+    return (await bridge()).respond_permission_request(requestId, approved)
   },
   async logs(after = 0): Promise<{ cursor: number; entries: LogEntryDto[] }> {
     return (await bridge()).get_logs(after)

@@ -27,6 +27,8 @@ def _mcp_arguments(config: LaunchConfig) -> list[str]:
         "--port",
         str(config.port),
         "--oauth-mode",
+        "--permission-mode",
+        config.permission_mode,
     ]
 
 

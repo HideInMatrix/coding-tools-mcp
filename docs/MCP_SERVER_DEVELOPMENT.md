@@ -496,6 +496,16 @@ dangerous
 safe
 ```
 
+每个 Server Profile 都可以在桌面“服务设置 -> 权限模式”单独选择：
+
+```text
+安全 Safe（推荐）
+信任 Trusted
+危险 Dangerous
+```
+
+配置会持久化到 Server Profile，并在启动 MCP Server 时显式传递 `--permission-mode`。旧版 `servers.json` 没有该字段时按 `safe` 读取，不需要迁移整个 Profile schema。
+
 safe 会拦截明显的：
 
 ```text
@@ -543,6 +553,71 @@ require  必须成功启用，否则 Runtime 启动失败
 ```
 
 safe/trusted 的 Workspace 本身可写，但 Workspace 根 `.git` 会在支持文件系统隔离的 OS sandbox backend 中叠加只读保护，避免普通构建进程直接改写 Git 元数据。
+
+### 11.1 临时权限授权
+
+现代 `2026-07-28` MCP 客户端如果在 `clientCapabilities` 中声明可用的 `elicitation` form capability，Safe/Trusted 模式下受限制的操作可以进入多轮工具结果流程：
+
+```text
+tools/call
+  -> PERMISSION_REQUIRED
+  -> resultType=input_required
+  -> inputRequests.permission.method=elicitation/create
+  -> 客户端展示确认 UI
+  -> 客户端使用同一 tools/call + requestState + inputResponses 重试
+  -> 校验通过后仅对该调用临时放行
+```
+
+服务器本身不能强制远端 MCP 客户端显示协议级弹窗。桌面版因此提供本地 Permission Broker fallback：客户端未声明 elicitation capability 时，MCP Server 会把签名授权请求投递给 Coding Tools MCP 桌面主进程，由桌面 UI 显示“拒绝 / 仅允许本次”。用户批准后，原调用通过精确一次性 grant 自动重试；拒绝则返回 `PERMISSION_DENIED`。
+
+如果以 headless/CLI 方式运行、没有桌面 Permission Broker，则仍然 fail-closed：原操作保持阻止，显式 `request_permissions` 返回 `ELICITATION_UNSUPPORTED`，不会伪造 grant。
+
+本地 Broker 不开放网络端口。桌面主进程创建仅当前 App Session 使用的临时目录和 256-bit 随机密钥，请求/响应使用 HMAC-SHA256 签名。Broker 目录、密钥和 Server ID 只传给 MCP Server 进程，并会在所有 `exec_command` / `exec_process` 子进程环境中强制剥离，即使 Server 处于 Dangerous 模式也不会下放内部 Broker secret。授权 UI 中的敏感字段按 key 脱敏后显示。
+
+`requestState` 使用 HMAC 签名，并绑定：
+
+```text
+tool name
+完整 arguments 哈希
+Workspace
+当前认证 principal
+permission
+已完成的多轮 permissions
+过期时间
+随机 nonce
+```
+
+状态默认 5 分钟过期，并有进程内 replay 防护。用户拒绝或取消授权时返回 `PERMISSION_DENIED`，不会执行原操作。
+
+当前允许通过临时交互提升的 capability：
+
+```text
+network
+destructive_command
+git_metadata_write
+long_timeout
+sensitive_env
+shell_expansion
+inline_script
+```
+
+不会通过弹窗提升破坏沙箱根边界的能力，例如覆盖 `HOME/PATH/TMP`、任意 Workspace 外写入等。
+
+临时授权同时作用于 OS sandbox，而不只是跳过 Python 正则。例如：
+
+```text
+git_metadata_write
+  macOS -> 本次子进程使用不含 .git write deny 的 Seatbelt variant
+  Linux -> 本次子进程不把 .git 重新 ro-bind
+
+network
+  macOS -> 本次 Seatbelt variant 增加 network allow
+  Linux -> 本次不使用 --unshare-net
+```
+
+其他 SandboxProfile 限制继续保留；授权不会把整个 Server 临时切成 `dangerous`。
+
+`request_permissions` 也可以主动请求一次或 Session TTL 内授权，但 grant 仍绑定目标 tool + 完整 arguments + principal，不能作为通用“关闭沙箱”开关。
 
 `dangerous` 模式属于显式逃生口：继承完整用户环境并绕过 OS process sandbox，不应作为“让 npm 可见”的常规解决方案。
 

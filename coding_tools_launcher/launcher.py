@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from typing import TYPE_CHECKING
 
 from .config import LaunchConfig, LaunchInfo
 from .mcp_process import MCPServerProcess
@@ -19,9 +20,16 @@ from .oauth_persistence import (
 )
 from .process_utils import LogCallback, check_port_available
 
+if TYPE_CHECKING:
+    from .permission_broker import DesktopPermissionBroker
+
 
 class MCPLauncher:
-    def __init__(self, log: LogCallback | None = None):
+    def __init__(
+        self,
+        log: LogCallback | None = None,
+        permission_broker: "DesktopPermissionBroker | None" = None,
+    ):
         self._log_callback = log or (lambda _message: None)
         self._lock = threading.RLock()
         self._provider: NetworkProvider | None = None
@@ -30,6 +38,7 @@ class MCPLauncher:
         self._oauth_persistence: OAuthPersistence | None = None
         self._stopping = False
         self._exit_reason = ""
+        self._permission_broker = permission_broker
 
     def _log(self, message: str) -> None:
         self._log_callback(message)
@@ -106,6 +115,10 @@ class MCPLauncher:
                         OAUTH_REGISTRY_FILE_ENV: str(oauth_persistence.registry_file),
                     }
                 )
+                if self._permission_broker is not None:
+                    env.update(
+                        self._permission_broker.child_environment(config.server_id)
+                    )
                 # OAuth clients are always created through RFC 7591 Dynamic
                 # Client Registration. Explicitly discard legacy environment
                 # variables so old shells/settings cannot silently re-enable

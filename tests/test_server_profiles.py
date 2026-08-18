@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from coding_tools_launcher.config import NetworkConfig
+from coding_tools_launcher.mcp_process import _mcp_arguments
 from coding_tools_launcher.server_profiles import (
     MCPServerProfile,
     ServerProfileStore,
@@ -43,6 +44,28 @@ class ServerProfileTests(unittest.TestCase):
         self.assertEqual(restored.server_id, profile.server_id)
         self.assertEqual(restored.port, 8234)
         self.assertEqual(restored.lifecycle, "persistent")
+        self.assertEqual(restored.permission_mode, "safe")
+
+    def test_profile_round_trip_preserves_permission_mode(self) -> None:
+        profile = MCPServerProfile.create(
+            name="Dangerous terminal",
+            workspace=Path("/tmp/company"),
+            oauth_password="password",
+            permission_mode="dangerous",
+        )
+        restored = MCPServerProfile.from_dict(profile.to_dict())
+        self.assertEqual(restored.permission_mode, "dangerous")
+
+    def test_legacy_profile_without_permission_mode_defaults_to_safe(self) -> None:
+        profile = MCPServerProfile.create(
+            name="Legacy",
+            workspace=Path("/tmp/company"),
+            oauth_password="password",
+        )
+        payload = profile.to_dict()
+        payload.pop("permission_mode")
+        restored = MCPServerProfile.from_dict(payload)
+        self.assertEqual(restored.permission_mode, "safe")
 
     def test_launch_config_carries_server_identity_and_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -56,6 +79,20 @@ class ServerProfileTests(unittest.TestCase):
             config = profile.to_launch_config()
             self.assertEqual(config.server_id, profile.server_id)
             self.assertEqual(config.lifecycle, "ephemeral")
+            self.assertEqual(config.permission_mode, "safe")
+
+    def test_mcp_launch_arguments_include_permission_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = MCPServerProfile.create(
+                name="Trusted",
+                workspace=Path(temporary),
+                oauth_password="password",
+                permission_mode="trusted",
+            )
+            arguments = _mcp_arguments(profile.to_launch_config())
+
+        index = arguments.index("--permission-mode")
+        self.assertEqual(arguments[index + 1], "trusted")
 
 
 class ServerProfileStoreTests(unittest.TestCase):

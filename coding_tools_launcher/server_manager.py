@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .config import LaunchConfig, LaunchInfo
 from .launcher import MCPLauncher
@@ -13,6 +14,9 @@ from .oauth_persistence import (
 )
 from .process_utils import LogCallback
 from .server_profiles import MCPServerProfile, ServerProfileStore
+
+if TYPE_CHECKING:
+    from .permission_broker import DesktopPermissionBroker
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,11 +35,13 @@ class MCPServerManager:
         self,
         store: ServerProfileStore | None = None,
         log: LogCallback | None = None,
+        permission_broker: "DesktopPermissionBroker | None" = None,
     ) -> None:
         self.store = store or ServerProfileStore()
         self._log_callback = log or (lambda _message: None)
         self._lock = threading.RLock()
         self._launchers: dict[str, MCPLauncher] = {}
+        self._permission_broker = permission_broker
 
     def _profile_log(self, profile: MCPServerProfile) -> LogCallback:
         def emit(message: str) -> None:
@@ -46,7 +52,12 @@ class MCPServerManager:
     def _launcher_for(self, profile: MCPServerProfile) -> MCPLauncher:
         launcher = self._launchers.get(profile.server_id)
         if launcher is None:
-            launcher = MCPLauncher(self._profile_log(profile))
+            log = self._profile_log(profile)
+            launcher = (
+                MCPLauncher(log, permission_broker=self._permission_broker)
+                if self._permission_broker is not None
+                else MCPLauncher(log)
+            )
             self._launchers[profile.server_id] = launcher
         return launcher
 

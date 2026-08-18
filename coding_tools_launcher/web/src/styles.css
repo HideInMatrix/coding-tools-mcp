@@ -125,13 +125,34 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .server-row-title > span { flex: 0 0 auto; color: var(--muted-foreground); font-size: 10px; }
 .server-row-path { color: var(--muted-foreground); font-size: 10px; line-height: 15px; }
 .server-row-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--muted-foreground); font-size: 10px; line-height: 15px; }
-.server-toggle { width: 28px !important; height: 28px !important; border: 0 !important; color: white !important; box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
+.server-toggle {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex: 0 0 28px;
+  width: 28px !important;
+  height: 28px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  color: white !important;
+  line-height: 0 !important;
+  box-shadow: 0 1px 2px rgb(0 0 0 / .08);
+}
+.server-toggle > svg { display: block; flex: 0 0 auto; margin: 0 !important; }
 .server-toggle-idle { background: #78716c !important; }
 .server-toggle-idle:hover { background: #57534e !important; }
 .server-toggle-running { background: #22c55e !important; }
 .server-toggle-running:hover { background: #16a34a !important; }
 .server-toggle-starting { background: #78716c !important; opacity: 1 !important; }
-.server-toggle-spinner, .status-spinner { animation: server-spin .8s linear infinite; }
+.server-toggle-spinner,
+.status-spinner {
+  display: block;
+  flex: 0 0 auto;
+  margin: 0;
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: server-spin .8s linear infinite;
+}
 
 .editor-panel { padding: 16px; }
 .section-heading { margin-bottom: 16px; }
@@ -152,6 +173,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .field [data-slot="input-group-addon"] { height: 30px; }
 .field [data-slot="input-group-button"] { width: 31px; height: 30px; }
 .field-help { margin-top: -1px; color: var(--muted-foreground); font-size: 10px; line-height: 15px; font-weight: 400; }
+.permission-warning { margin-top: -1px; color: #dc2626; font-size: 10px; line-height: 15px; font-weight: 500; }
 .input-action { display: flex; gap: 6px; }
 .input-action input { flex: 1; min-width: 0; }
 .input-action button { min-width: 56px; height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); color: var(--foreground); font-size: 11px; }
@@ -234,6 +256,43 @@ tbody tr:hover { background: color-mix(in oklab, var(--secondary) 38%, transpare
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .small { font-size: 10px; white-space: pre-line; }
 .truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.permission-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgb(0 0 0 / .38);
+  backdrop-filter: blur(2px);
+}
+.permission-dialog {
+  width: min(560px, 100%);
+  max-height: min(680px, calc(100vh - 48px));
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--background);
+  box-shadow: 0 18px 50px rgb(0 0 0 / .2);
+}
+.permission-dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.permission-dialog-header h2 { margin: 3px 0 0; font-size: 17px; line-height: 24px; }
+.permission-dialog-kicker { color: #dc2626; font-size: 10px; line-height: 14px; font-weight: 600; }
+.permission-server-badge { flex: 0 0 auto; max-width: 180px; padding: 3px 7px; border-radius: 999px; background: var(--secondary); color: var(--muted-foreground); font-size: 10px; line-height: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.permission-dialog-reason { margin: 14px 0 0; color: var(--foreground); font-size: 12px; line-height: 18px; }
+.permission-dialog-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 14px 0 0; }
+.permission-dialog-meta > div { min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--secondary); }
+.permission-dialog-meta dt { color: var(--muted-foreground); font-size: 9px; line-height: 13px; }
+.permission-dialog-meta dd { margin: 2px 0 0; color: var(--foreground); font-size: 11px; line-height: 16px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; overflow-wrap: anywhere; }
+.permission-arguments { margin-top: 14px; }
+.permission-arguments > span { color: var(--muted-foreground); font-size: 10px; line-height: 15px; }
+.permission-arguments pre { max-height: 220px; margin: 6px 0 0; overflow: auto; padding: 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--secondary); color: var(--foreground); font-size: 10px; line-height: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.permission-dialog-note { margin: 12px 0 0; color: var(--muted-foreground); font-size: 10px; line-height: 15px; }
+.permission-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.permission-dialog-actions button { min-width: 88px; }
 
 @media (max-width: 1050px) {
   .sidebar { width: 248px; flex-basis: 248px; }

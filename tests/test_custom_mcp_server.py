@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -16,9 +17,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mcp_tools_server import __compatibility_baseline__, __version__
+from mcp_tools_server.local_permission_broker import (
+    BROKER_DIR_ENV,
+    BROKER_SECRET_ENV,
+    BROKER_SERVER_ID_ENV,
+)
 from mcp_tools_server.oauth import (
     OAUTH_TOKEN_TTL_SECONDS,
     OAuthConfig,
+    access_token_client_id,
     client_from_metadata_document,
     create_access_token,
     valid_pkce_challenge,
@@ -30,7 +37,10 @@ from mcp_tools_server.protocol import (
     dispatch,
 )
 from mcp_tools_server.runtime import Runtime
-from mcp_tools_server.sandbox.backend import WindowsRestrictedTokenBackend
+from mcp_tools_server.sandbox.backend import (
+    MacSeatbeltBackend,
+    WindowsRestrictedTokenBackend,
+)
 from mcp_tools_server.server import MCPHTTPServer
 from mcp_tools_server.server import _normalize_public_server_url
 from mcp_tools_server.server import _resolve_oauth_client
@@ -457,6 +467,27 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertEqual(error["details"]["permission"], "sandbox_env_override")
         self.assertEqual(set(error["details"]["variables"]), {"HOME", "PATH"})
 
+    def test_internal_permission_broker_environment_is_never_forwarded_to_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.dict(
+                os.environ,
+                {
+                    BROKER_DIR_ENV: "/tmp/broker",
+                    BROKER_SECRET_ENV: "11" * 32,
+                    BROKER_SERVER_ID_ENV: "server-a",
+                },
+                clear=False,
+            ):
+                runtime = Runtime(Path(temporary), permission_mode="dangerous")
+                try:
+                    environment = runtime._command_env({})
+                finally:
+                    runtime.close()
+
+        self.assertNotIn(BROKER_DIR_ENV, environment)
+        self.assertNotIn(BROKER_SECRET_ENV, environment)
+        self.assertNotIn(BROKER_SERVER_ID_ENV, environment)
+
     def test_sandbox_environment_protection_is_case_insensitive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary), permission_mode="safe")
@@ -539,6 +570,541 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertFalse(environment["sandbox"]["os_kernel_sandbox"])
         self.assertEqual(environment["sandbox"]["backend"], "application-policy")
 
+    @staticmethod
+    def _modern_tool_request(
+        request_id: int,
+        name: str,
+        arguments: dict[str, object],
+        *,
+        elicitation: bool = True,
+        request_state: str | None = None,
+        input_responses: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        params: dict[str, object] = {
+            "name": name,
+            "arguments": arguments,
+            "_meta": {
+                META_PROTOCOL_VERSION: "2026-07-28",
+                META_CLIENT_CAPABILITIES: (
+                    {"elicitation": {"form": {}}} if elicitation else {}
+                ),
+            },
+        }
+        if request_state is not None:
+            params["requestState"] = request_state
+        if input_responses is not None:
+            params["inputResponses"] = input_responses
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "tools/call",
+            "params": params,
+        }
+
+    @unittest.skipIf(os.name == "nt", "POSIX destructive command fixture")
+    def test_modern_permission_elicitation_accept_executes_original_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "remove-me"
+            target.mkdir()
+            (target / "file.txt").write_text("hello\n", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                clear=False,
+            ):
+                runtime = Runtime(root, permission_mode="safe")
+                try:
+                    arguments: dict[str, object] = {
+                        "cmd": "rm -rf remove-me",
+                        "yield_time_ms": 2_000,
+                    }
+                    first = dispatch(
+                        runtime,
+                        self._modern_tool_request(1, "exec_command", arguments),
+                        principal="principal-a",
+                    )
+                    assert first is not None
+                    pending = first["result"]
+                    self.assertEqual(pending["resultType"], "input_required")
+                    self.assertEqual(
+                        pending["inputRequests"]["permission"]["method"],
+                        "elicitation/create",
+                    )
+                    second = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            2,
+                            "exec_command",
+                            arguments,
+                            request_state=pending["requestState"],
+                            input_responses={
+                                "permission": {
+                                    "action": "accept",
+                                    "content": {"confirm": True},
+                                }
+                            },
+                        ),
+                        principal="principal-a",
+                    )
+                finally:
+                    runtime.close()
+
+            assert second is not None
+            self.assertEqual(second["result"]["resultType"], "complete")
+            self.assertFalse(second["result"]["isError"])
+            self.assertEqual(second["result"]["structuredContent"]["exit_code"], 0)
+            self.assertFalse(target.exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX destructive command fixture")
+    def test_modern_permission_elicitation_decline_does_not_execute(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "keep-me"
+            target.mkdir()
+            (target / "file.txt").write_text("hello\n", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                clear=False,
+            ):
+                runtime = Runtime(root, permission_mode="safe")
+                try:
+                    arguments: dict[str, object] = {"cmd": "rm -rf keep-me"}
+                    first = dispatch(
+                        runtime,
+                        self._modern_tool_request(1, "exec_command", arguments),
+                        principal="principal-a",
+                    )
+                    assert first is not None
+                    pending = first["result"]
+                    second = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            2,
+                            "exec_command",
+                            arguments,
+                            request_state=pending["requestState"],
+                            input_responses={
+                                "permission": {"action": "decline"}
+                            },
+                        ),
+                        principal="principal-a",
+                    )
+                finally:
+                    runtime.close()
+            assert second is not None
+            self.assertTrue(second["result"]["isError"])
+            self.assertEqual(
+                second["result"]["structuredContent"]["error"]["code"],
+                "PERMISSION_DENIED",
+            )
+            self.assertTrue(target.exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX destructive command fixture")
+    def test_permission_request_without_elicitation_capability_stays_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = Runtime(root, permission_mode="safe")
+            try:
+                result = dispatch(
+                    runtime,
+                    self._modern_tool_request(
+                        1,
+                        "exec_command",
+                        {"cmd": "rm -rf missing-dir"},
+                        elicitation=False,
+                    ),
+                    principal="principal-a",
+                )
+            finally:
+                runtime.close()
+        assert result is not None
+        self.assertEqual(result["result"]["resultType"], "complete")
+        self.assertTrue(result["result"]["isError"])
+        self.assertEqual(
+            result["result"]["structuredContent"]["error"]["details"]["permission"],
+            "destructive_command",
+        )
+
+    @unittest.skipIf(os.name == "nt", "POSIX destructive command fixture")
+    def test_local_desktop_permission_fallback_executes_when_client_has_no_elicitation(self) -> None:
+        class ApprovedBroker:
+            @staticmethod
+            def request(**_kwargs: object) -> object:
+                return type("Decision", (), {"status": "approved"})()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "desktop-approved"
+            target.mkdir()
+            with patch.dict(
+                os.environ,
+                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                clear=False,
+            ):
+                runtime = Runtime(root, permission_mode="safe")
+                runtime.local_permission_broker = ApprovedBroker()  # type: ignore[assignment]
+                try:
+                    result = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            1,
+                            "exec_command",
+                            {"cmd": "rm -rf desktop-approved", "yield_time_ms": 2_000},
+                            elicitation=False,
+                        ),
+                        principal="principal-a",
+                    )
+                    removed = not target.exists()
+                finally:
+                    runtime.close()
+
+        assert result is not None
+        self.assertEqual(result["result"]["resultType"], "complete")
+        self.assertFalse(result["result"]["isError"])
+        self.assertTrue(removed)
+
+    @unittest.skipIf(os.name == "nt", "POSIX destructive command fixture")
+    def test_explicit_request_permissions_uses_desktop_fallback_and_grants_exact_call(self) -> None:
+        class ApproveOnceBroker:
+            calls = 0
+
+            @classmethod
+            def request(cls, **_kwargs: object) -> object:
+                cls.calls += 1
+                if cls.calls != 1:
+                    raise AssertionError("stored grant should avoid a second prompt")
+                return type("Decision", (), {"status": "approved"})()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "explicit-desktop"
+            target.mkdir()
+            with patch.dict(
+                os.environ,
+                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                clear=False,
+            ):
+                runtime = Runtime(root, permission_mode="safe")
+                runtime.local_permission_broker = ApproveOnceBroker()  # type: ignore[assignment]
+                try:
+                    target_arguments: dict[str, object] = {
+                        "cmd": "rm -rf explicit-desktop",
+                        "yield_time_ms": 2_000,
+                    }
+                    permission_arguments: dict[str, object] = {
+                        "tool_name": "exec_command",
+                        "permission": "destructive_command",
+                        "reason": "Remove the requested directory",
+                        "arguments": target_arguments,
+                        "scope": "once",
+                        "ttl_seconds": 300,
+                    }
+                    granted = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            1,
+                            "request_permissions",
+                            permission_arguments,
+                            elicitation=False,
+                        ),
+                        principal="principal-a",
+                    )
+                    executed = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            2,
+                            "exec_command",
+                            target_arguments,
+                            elicitation=False,
+                        ),
+                        principal="principal-a",
+                    )
+                    removed = not target.exists()
+                finally:
+                    runtime.close()
+
+        assert granted is not None and executed is not None
+        self.assertEqual(
+            granted["result"]["structuredContent"]["status"],
+            "granted",
+        )
+        self.assertFalse(executed["result"]["isError"])
+        self.assertTrue(removed)
+        self.assertEqual(ApproveOnceBroker.calls, 1)
+
+    def test_git_mutations_require_git_metadata_write_permission(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary), permission_mode="safe")
+            try:
+                result = runtime.call_tool(
+                    "exec_command",
+                    {"cmd": "git commit -m test"},
+                )
+            finally:
+                runtime.close()
+
+        self.assertTrue(result["isError"])
+        self.assertEqual(
+            result["structuredContent"]["error"]["details"]["permission"],
+            "git_metadata_write",
+        )
+
+    @unittest.skipIf(os.name == "nt", "POSIX destructive command fixture")
+    def test_explicit_permission_grant_once_applies_to_exact_next_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "explicit-remove"
+            target.mkdir()
+            (target / "file.txt").write_text("hello\n", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                clear=False,
+            ):
+                runtime = Runtime(root, permission_mode="safe")
+                try:
+                    target_arguments: dict[str, object] = {
+                        "cmd": "rm -rf explicit-remove",
+                        "yield_time_ms": 2_000,
+                    }
+                    permission_arguments: dict[str, object] = {
+                        "tool_name": "exec_command",
+                        "permission": "destructive_command",
+                        "reason": "Remove the requested generated directory",
+                        "arguments": target_arguments,
+                        "scope": "once",
+                        "ttl_seconds": 300,
+                    }
+                    first = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            1,
+                            "request_permissions",
+                            permission_arguments,
+                        ),
+                        principal="principal-a",
+                    )
+                    assert first is not None
+                    pending = first["result"]
+                    approved = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            2,
+                            "request_permissions",
+                            permission_arguments,
+                            request_state=pending["requestState"],
+                            input_responses={
+                                "permission": {
+                                    "action": "accept",
+                                    "content": {"confirm": True},
+                                }
+                            },
+                        ),
+                        principal="principal-a",
+                    )
+                    executed = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            3,
+                            "exec_command",
+                            target_arguments,
+                        ),
+                        principal="principal-a",
+                    )
+                    repeated = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            4,
+                            "exec_command",
+                            target_arguments,
+                        ),
+                        principal="principal-a",
+                    )
+                finally:
+                    runtime.close()
+            assert approved is not None and executed is not None and repeated is not None
+            self.assertEqual(
+                approved["result"]["structuredContent"]["status"],
+                "granted",
+            )
+            self.assertFalse(executed["result"]["isError"])
+            self.assertFalse(target.exists())
+            self.assertEqual(repeated["result"]["resultType"], "input_required")
+
+    @unittest.skipIf(os.name == "nt", "POSIX destructive command fixture")
+    def test_permission_state_is_bound_to_authenticated_principal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "principal-bound"
+            target.mkdir()
+            with patch.dict(
+                os.environ,
+                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                clear=False,
+            ):
+                runtime = Runtime(root, permission_mode="safe")
+                try:
+                    arguments: dict[str, object] = {"cmd": "rm -rf principal-bound"}
+                    first = dispatch(
+                        runtime,
+                        self._modern_tool_request(1, "exec_command", arguments),
+                        principal="principal-a",
+                    )
+                    assert first is not None
+                    pending = first["result"]
+                    second = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            2,
+                            "exec_command",
+                            arguments,
+                            request_state=pending["requestState"],
+                            input_responses={
+                                "permission": {
+                                    "action": "accept",
+                                    "content": {"confirm": True},
+                                }
+                            },
+                        ),
+                        principal="principal-b",
+                    )
+                    target_exists = target.exists()
+                finally:
+                    runtime.close()
+
+        assert second is not None
+        self.assertEqual(second["error"]["code"], -32602)
+        self.assertEqual(
+            second["error"]["data"]["reason"],
+            "permission_state_principal",
+        )
+        self.assertTrue(target_exists)
+
+    @unittest.skipIf(os.name == "nt", "POSIX destructive command fixture")
+    def test_permission_state_cannot_be_replayed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "consume-once"
+            target.mkdir()
+            with patch.dict(
+                os.environ,
+                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                clear=False,
+            ):
+                runtime = Runtime(root, permission_mode="safe")
+                try:
+                    arguments: dict[str, object] = {"cmd": "rm -rf consume-once"}
+                    first = dispatch(
+                        runtime,
+                        self._modern_tool_request(1, "exec_command", arguments),
+                        principal="principal-a",
+                    )
+                    assert first is not None
+                    pending = first["result"]
+                    response = {
+                        "permission": {
+                            "action": "accept",
+                            "content": {"confirm": True},
+                        }
+                    }
+                    accepted = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            2,
+                            "exec_command",
+                            arguments,
+                            request_state=pending["requestState"],
+                            input_responses=response,
+                        ),
+                        principal="principal-a",
+                    )
+                    replayed = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            3,
+                            "exec_command",
+                            arguments,
+                            request_state=pending["requestState"],
+                            input_responses=response,
+                        ),
+                        principal="principal-a",
+                    )
+                finally:
+                    runtime.close()
+
+        assert accepted is not None and replayed is not None
+        self.assertFalse(accepted["result"]["isError"])
+        self.assertEqual(replayed["error"]["code"], -32602)
+        self.assertEqual(
+            replayed["error"]["data"]["reason"],
+            "permission_state_replay",
+        )
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS Seatbelt profile test")
+    def test_git_metadata_grant_relaxes_only_protected_git_write_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            runtime_dir = root / "runtime"
+            workspace.mkdir()
+            runtime_dir.mkdir()
+            git_dir = workspace / ".git"
+            git_dir.mkdir()
+            backend = MacSeatbeltBackend(
+                runtime_dir=runtime_dir,
+                workspace=workspace,
+                readable_roots=[],
+                writable_roots=[runtime_dir],
+                protected_paths=[git_dir],
+                network=False,
+                enabled=True,
+            )
+            strict = backend.wrap(["/usr/bin/true"], cwd=workspace)
+            elevated = backend.wrap(
+                ["/usr/bin/true"],
+                cwd=workspace,
+                permissions=frozenset({"git_metadata_write"}),
+            )
+            strict_profile = Path(strict[2]).read_text(encoding="utf-8")
+            elevated_profile = Path(elevated[2]).read_text(encoding="utf-8")
+
+        self.assertIn("(deny file-write*", strict_profile)
+        self.assertIn(str(git_dir.resolve()), strict_profile)
+        self.assertNotIn("(deny file-write*", elevated_profile)
+        self.assertNotIn("(allow network-outbound)", elevated_profile)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS Seatbelt profile test")
+    def test_network_grant_keeps_git_protection_in_seatbelt_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            runtime_dir = root / "runtime"
+            workspace.mkdir()
+            runtime_dir.mkdir()
+            git_dir = workspace / ".git"
+            git_dir.mkdir()
+            backend = MacSeatbeltBackend(
+                runtime_dir=runtime_dir,
+                workspace=workspace,
+                readable_roots=[],
+                writable_roots=[runtime_dir],
+                protected_paths=[git_dir],
+                network=False,
+                enabled=True,
+            )
+            elevated = backend.wrap(
+                ["/usr/bin/true"],
+                cwd=workspace,
+                permissions=frozenset({"network"}),
+            )
+            profile = Path(elevated[2]).read_text(encoding="utf-8")
+
+        self.assertIn("(allow network-outbound)", profile)
+        self.assertIn("(deny file-write*", profile)
+        self.assertIn(str(git_dir.resolve()), profile)
+
     def test_windows_restricted_backend_reports_partial_isolation(self) -> None:
         with (
             patch.object(
@@ -561,7 +1127,7 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertTrue(backend.state.experimental_appcontainer_available)
         wrapped = backend.wrap(["cmd.exe", "/c", "echo ok"], cwd=Path.cwd())
         self.assertIn("--", wrapped)
-        self.assertEqual(wrapped[-4:], ["cmd.exe", "/c", "echo ok"])
+        self.assertEqual(wrapped[-3:], ["cmd.exe", "/c", "echo ok"])
 
     @unittest.skipUnless(os.name == "nt", "Windows restricted-token integration test")
     def test_windows_restricted_launcher_runs_a_child_process(self) -> None:
@@ -1326,6 +1892,7 @@ class OAuthTokenTests(unittest.TestCase):
         )
         token = create_access_token(config, "client-1")
         self.assertTrue(validate_access_token(config, token))
+        self.assertEqual(access_token_client_id(config, token), "client-1")
         self.assertFalse(validate_access_token(config, token + "tampered"))
         encoded = token.split(".", 2)[1]
         payload = json.loads(

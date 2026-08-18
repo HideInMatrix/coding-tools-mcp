@@ -3,21 +3,35 @@
 from __future__ import annotations
 
 import base64
+import contextvars
 import fnmatch
+import hashlib
+import hmac
 import io
+import json
 import logging
 import mimetypes
 import os
 import re
+import secrets
 import shlex
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from . import __compatibility_baseline__, __version__
 from .errors import RpcError, ToolError
+from .local_permission_broker import (
+    BROKER_DIR_ENV,
+    BROKER_SECRET_ENV,
+    BROKER_SERVER_ID_ENV,
+    LocalPermissionBrokerClient,
+    redact_for_display,
+)
 from .patching import apply_patch as apply_patch_envelope
 from .processes import (
     STREAM_HEAD_BYTES,
@@ -71,14 +85,30 @@ NETWORK_COMMAND_RE = re.compile(
     re.I,
 )
 GIT_METADATA_WRITE_RE = re.compile(
-    r"\bgit\s+(?:add|commit|merge|rebase|cherry-pick|revert|checkout|switch|stash|tag|update-index|write-tree)\b",
+    r"\bgit\s+(?:add|commit|merge|rebase|cherry-pick|revert|checkout|switch|stash|tag|update-index|write-tree|reset|clean)\b",
     re.I,
 )
 WINDOWS_BATCH_META_RE = re.compile(r"[&|<>^()%!\r\n\"]")
 SHELL_EXPANSION_RE = re.compile(r"(`|\$\(|\$\{|\$[A-Za-z_][A-Za-z0-9_]*)")
 INLINE_SCRIPT_RE = re.compile(r"\b(python(?:3)?\s+-c|node\s+-e|ruby\s+-e|perl\s+-e|(?:ba|z|)sh\s+-c)\b", re.I)
-DESTRUCTIVE_RE = re.compile(r"(^|\s)(sudo\b|su\b|mkfs\b|mount\b|umount\b|chmod\s+-R\b|chown\s+-R\b|rm\s+-[^\s]*r[^\s]*f\b|rm\s+-[^\s]*f[^\s]*r\b|git\b[^;&|]*\breset\s+--hard\b|git\b[^;&|]*\bclean\s+-[^\s]*[fx])", re.I)
+DESTRUCTIVE_RE = re.compile(r"(^|\s)(sudo\b|su\b|mkfs\b|mount\b|umount\b|chmod\s+-R\b|chown\s+-R\b|rm\s+-[^\s]*r[^\s]*f\b|rm\s+-[^\s]*f[^\s]*r\b)", re.I)
 REDIRECT_ESCAPE_RE = re.compile(r"(?:^|\s)(?:>|>>|<)\s*(/[^\s]+|\.\./[^\s]+)")
+ELICITABLE_PERMISSIONS = frozenset(
+    {
+        "network",
+        "destructive_command",
+        "git_metadata_write",
+        "long_timeout",
+        "sensitive_env",
+        "shell_expansion",
+        "inline_script",
+    }
+)
+PERMISSION_STATE_TTL_SECONDS = 300
+ACTIVE_PERMISSIONS: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+    "coding_tools_mcp_active_permissions",
+    default=frozenset(),
+)
 
 
 def _truncate_text(text: str, max_bytes: int) -> tuple[str, bool]:
@@ -157,6 +187,12 @@ class Runtime:
         self.fake_readonly_annotations = fake_readonly_annotations
         self.project_context = project_context or load_project_context(self.workspace.root)
         self.commands = CommandManager(self.workspace.root)
+        self.local_permission_broker = LocalPermissionBrokerClient.from_env()
+        self._permission_state_secret = secrets.token_bytes(32)
+        self._permission_state_lock = threading.RLock()
+        self._consumed_permission_states: dict[str, float] = {}
+        self._permission_grants_lock = threading.RLock()
+        self._permission_grants: dict[str, dict[str, Any]] = {}
         self.toolchains = ToolchainResolver(self.workspace.root)
         self._toolchain_snapshot = self.toolchains.discover()
         self.safe_exec_path = [str(item) for item in self._toolchain_snapshot.get("safe_path", [])]
@@ -234,6 +270,7 @@ class Runtime:
                 Path("/sbin"),
                 Path("/private/etc"),
                 Path("/private/var/db"),
+                Path("/private/var/select"),
                 Path("/opt/homebrew"),
                 Path("/usr/local"),
             ]
@@ -253,6 +290,374 @@ class Runtime:
             ]
         }
 
+    @staticmethod
+    def _permission_granted(permission: str) -> bool:
+        return permission in ACTIVE_PERMISSIONS.get()
+
+    @staticmethod
+    def _arguments_digest(name: str, arguments: dict[str, Any]) -> str:
+        encoded = json.dumps(
+            {"tool": name, "arguments": arguments},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _b64url_encode(value: bytes) -> str:
+        return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+    @staticmethod
+    def _b64url_decode(value: str) -> bytes:
+        padding = "=" * (-len(value) % 4)
+        return base64.urlsafe_b64decode(value + padding)
+
+    def _mint_permission_state(
+        self,
+        *,
+        name: str,
+        arguments: dict[str, Any],
+        permission: str,
+        principal: str,
+        granted: frozenset[str],
+    ) -> str:
+        payload = {
+            "v": 1,
+            "tool": name,
+            "arguments_hash": self._arguments_digest(name, arguments),
+            "permission": permission,
+            "granted": sorted(granted),
+            "workspace": str(self.workspace.root),
+            "principal": principal or "anonymous",
+            "exp": int(time.time()) + PERMISSION_STATE_TTL_SECONDS,
+            "nonce": secrets.token_urlsafe(12),
+        }
+        encoded = self._b64url_encode(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        signature = self._b64url_encode(
+            hmac.new(
+                self._permission_state_secret,
+                encoded.encode("ascii"),
+                hashlib.sha256,
+            ).digest()
+        )
+        return f"ctpg1.{encoded}.{signature}"
+
+    def _verify_permission_state(
+        self,
+        state: str,
+        *,
+        name: str,
+        arguments: dict[str, Any],
+        principal: str,
+    ) -> dict[str, Any]:
+        try:
+            prefix, encoded, signature = state.split(".", 2)
+            if prefix != "ctpg1":
+                raise ValueError("unknown state prefix")
+            expected = self._b64url_encode(
+                hmac.new(
+                    self._permission_state_secret,
+                    encoded.encode("ascii"),
+                    hashlib.sha256,
+                ).digest()
+            )
+            if not hmac.compare_digest(signature, expected):
+                raise ValueError("invalid state signature")
+            raw = json.loads(self._b64url_decode(encoded).decode("utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("state payload must be an object")
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RpcError(
+                -32602,
+                "Invalid permission requestState",
+                {"reason": "permission_state_invalid"},
+            ) from exc
+
+        now = int(time.time())
+        if int(raw.get("exp", 0)) < now:
+            raise RpcError(
+                -32602,
+                "Permission requestState has expired",
+                {"reason": "permission_state_expired"},
+            )
+        if raw.get("tool") != name or raw.get("arguments_hash") != self._arguments_digest(name, arguments):
+            raise RpcError(
+                -32602,
+                "Permission requestState does not match this tool call",
+                {"reason": "permission_state_binding"},
+            )
+        if raw.get("workspace") != str(self.workspace.root):
+            raise RpcError(
+                -32602,
+                "Permission requestState does not match this workspace",
+                {"reason": "permission_state_workspace"},
+            )
+        if raw.get("principal") != (principal or "anonymous"):
+            raise RpcError(
+                -32602,
+                "Permission requestState does not match the authenticated principal",
+                {"reason": "permission_state_principal"},
+            )
+        permission = raw.get("permission")
+        if not isinstance(permission, str) or permission not in ELICITABLE_PERMISSIONS:
+            raise RpcError(
+                -32602,
+                "Permission requestState contains an unsupported permission",
+                {"reason": "permission_state_permission"},
+            )
+        return raw
+
+    def _consume_permission_state(self, state: str, expires_at: int) -> None:
+        state_id = hashlib.sha256(state.encode("utf-8")).hexdigest()
+        now = time.time()
+        with self._permission_state_lock:
+            expired = [
+                key
+                for key, expiry in self._consumed_permission_states.items()
+                if expiry <= now
+            ]
+            for key in expired:
+                self._consumed_permission_states.pop(key, None)
+            if state_id in self._consumed_permission_states:
+                raise RpcError(
+                    -32602,
+                    "Permission requestState has already been consumed",
+                    {"reason": "permission_state_replay"},
+                )
+            self._consumed_permission_states[state_id] = float(expires_at)
+
+    def _store_permission_grant(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        permission: str,
+        principal: str,
+        scope: str,
+        ttl_seconds: int,
+    ) -> tuple[str, int]:
+        now = int(time.time())
+        expires_at = now + max(1, min(int(ttl_seconds), 3_600))
+        grant_id = f"ctg_{secrets.token_urlsafe(18)}"
+        record = {
+            "tool_name": tool_name,
+            "arguments_hash": self._arguments_digest(tool_name, arguments),
+            "permission": permission,
+            "principal": principal or "anonymous",
+            "scope": "session" if scope == "session" else "once",
+            "expires_at": expires_at,
+        }
+        with self._permission_grants_lock:
+            self._permission_grants[grant_id] = record
+        return grant_id, expires_at
+
+    def _stored_permissions_for_call(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: RequestContext | None,
+    ) -> frozenset[str]:
+        if context is None:
+            return frozenset()
+        now = int(time.time())
+        principal = context.principal or "anonymous"
+        arguments_hash = self._arguments_digest(name, arguments)
+        granted: set[str] = set()
+        consume: list[str] = []
+        with self._permission_grants_lock:
+            for grant_id, record in list(self._permission_grants.items()):
+                if int(record.get("expires_at", 0)) < now:
+                    self._permission_grants.pop(grant_id, None)
+                    continue
+                if (
+                    record.get("tool_name") != name
+                    or record.get("arguments_hash") != arguments_hash
+                    or record.get("principal") != principal
+                ):
+                    continue
+                permission = record.get("permission")
+                if isinstance(permission, str) and permission in ELICITABLE_PERMISSIONS:
+                    granted.add(permission)
+                    if record.get("scope") == "once":
+                        consume.append(grant_id)
+            for grant_id in consume:
+                self._permission_grants.pop(grant_id, None)
+        return frozenset(granted)
+
+    def _permission_round(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: RequestContext | None,
+    ) -> tuple[frozenset[str], bool]:
+        if context is None or context.request_state is None:
+            if context and context.input_responses and "permission" in context.input_responses:
+                raise RpcError(
+                    -32602,
+                    "Permission inputResponses require a matching requestState",
+                    {"reason": "permission_response_without_state"},
+                )
+            return frozenset(), False
+
+        state = self._verify_permission_state(
+            context.request_state,
+            name=name,
+            arguments=arguments,
+            principal=context.principal,
+        )
+        responses = context.input_responses or {}
+        response = responses.get("permission")
+        if not isinstance(response, dict):
+            raise RpcError(
+                -32602,
+                "Permission requestState requires inputResponses.permission",
+                {"reason": "permission_response_missing"},
+            )
+        self._consume_permission_state(
+            context.request_state,
+            int(state.get("exp", 0)),
+        )
+        raw_granted = state.get("granted")
+        granted = {
+            str(item)
+            for item in raw_granted
+            if isinstance(raw_granted, list) and isinstance(item, str)
+        } if isinstance(raw_granted, list) else set()
+        action = response.get("action")
+        content = response.get("content")
+        confirmed = isinstance(content, dict) and content.get("confirm") is True
+        if action != "accept" or not confirmed:
+            return frozenset(granted), True
+        granted.add(str(state["permission"]))
+        return frozenset(granted), False
+
+    @staticmethod
+    def _supports_permission_elicitation(context: RequestContext | None) -> bool:
+        if context is None or context.era != "modern":
+            return False
+        capabilities = context.client_capabilities
+        if not isinstance(capabilities, Mapping):
+            return False
+        elicitation = capabilities.get("elicitation")
+        if not isinstance(elicitation, Mapping):
+            return False
+        if not elicitation:
+            return True
+        return isinstance(elicitation.get("form"), Mapping)
+
+    @staticmethod
+    def _permission_message(
+        permission: str,
+        name: str,
+        arguments: dict[str, Any],
+        fallback: str,
+    ) -> str:
+        descriptions = {
+            "network": "该操作需要访问网络。",
+            "destructive_command": "该操作包含潜在破坏性的 Workspace 命令。",
+            "git_metadata_write": "该操作需要写入当前 Workspace 的 .git 元数据。",
+            "long_timeout": "该操作需要超过 Safe 模式默认上限的执行时间。",
+            "sensitive_env": "该操作需要向子进程传入敏感环境变量。",
+            "shell_expansion": "该操作需要启用受限制的 Shell 展开能力。",
+            "inline_script": "该操作需要执行内联脚本。",
+        }
+        try:
+            rendered = json.dumps(
+                redact_for_display(arguments),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        except (TypeError, ValueError):
+            rendered = str(arguments)
+        if len(rendered) > 700:
+            rendered = rendered[:697] + "..."
+        return (
+            f"{descriptions.get(permission, fallback)}\n"
+            f"工具：{name}\n"
+            f"参数：{rendered}\n"
+            "仅授权这一次完全相同的工具调用，是否允许？"
+        )
+
+    def _permission_input_required(
+        self,
+        *,
+        name: str,
+        arguments: dict[str, Any],
+        permission: str,
+        message: str,
+        context: RequestContext | None,
+        granted: frozenset[str],
+    ) -> dict[str, Any] | None:
+        if permission not in ELICITABLE_PERMISSIONS:
+            return None
+        if not self._supports_permission_elicitation(context):
+            return None
+        assert context is not None
+        return {
+            "resultType": "input_required",
+            "inputRequests": {
+                "permission": {
+                    "method": "elicitation/create",
+                    "params": {
+                        "mode": "form",
+                        "message": self._permission_message(
+                            permission,
+                            name,
+                            arguments,
+                            message,
+                        ),
+                        "requestedSchema": {
+                            "type": "object",
+                            "properties": {
+                                "confirm": {
+                                    "type": "boolean",
+                                    "title": "允许本次操作",
+                                    "description": "仅授权当前完全相同的工具调用。",
+                                    "default": False,
+                                }
+                            },
+                            "required": ["confirm"],
+                        },
+                    },
+                }
+            },
+            "requestState": self._mint_permission_state(
+                name=name,
+                arguments=arguments,
+                permission=permission,
+                principal=context.principal,
+                granted=granted,
+            ),
+        }
+
+    def _request_local_permission(
+        self,
+        *,
+        name: str,
+        arguments: dict[str, Any],
+        permission: str,
+        message: str,
+        context: RequestContext | None,
+    ) -> str:
+        broker = self.local_permission_broker
+        if broker is None or permission not in ELICITABLE_PERMISSIONS:
+            return "unavailable"
+        return broker.request(
+            tool_name=name,
+            arguments=arguments,
+            permission=permission,
+            reason=message,
+            principal=context.principal if context else "anonymous",
+        ).status
+
     def call_tool(
         self,
         name: str,
@@ -269,29 +674,182 @@ class Runtime:
             raise RpcError(-32602, str(exc), {"reason": "invalid_arguments"}) from exc
         handler = getattr(self, name)
         image: tuple[str, str] | None = None
-        try:
-            payload = handler(arguments)
-            payload.setdefault("ok", True)
-            image_value = payload.pop("_image", None)
-            if isinstance(image_value, tuple) and len(image_value) == 2:
-                image = (str(image_value[0]), str(image_value[1]))
-        except ToolError as exc:
-            payload = {"ok": False, "error": exc.payload()}
-        except Exception as exc:
-            # Keep unexpected implementation failures inside the tool result
-            # boundary. Otherwise the HTTP transport can be interrupted and
-            # clients only see an opaque ExceptionGroup/TaskGroup failure.
-            LOGGER.exception("Unexpected failure while calling MCP tool %s", name)
-            payload = {
-                "ok": False,
-                "error": {
-                    "code": "INTERNAL_TOOL_ERROR",
-                    "message": "unexpected tool failure",
-                    "category": "runtime",
-                    "retryable": True,
-                    "details": {"exception_type": type(exc).__name__},
+        round_granted, denied = self._permission_round(name, arguments, context)
+        if denied:
+            return make_tool_result(
+                name,
+                {
+                    "ok": False,
+                    "error": {
+                        "code": "PERMISSION_DENIED",
+                        "message": "用户拒绝或取消了本次临时授权。",
+                        "category": "permission",
+                        "retryable": False,
+                        "details": {},
+                    },
                 },
-            }
+            )
+        stored_granted = self._stored_permissions_for_call(name, arguments, context)
+        granted = frozenset({*round_granted, *stored_granted})
+        if name == "request_permissions":
+            requested_permission = str(arguments.get("permission") or "")
+            if requested_permission in round_granted:
+                target_tool = str(arguments.get("tool_name") or "")
+                target_arguments_raw = arguments.get("arguments")
+                target_arguments = (
+                    target_arguments_raw
+                    if isinstance(target_arguments_raw, dict)
+                    else {}
+                )
+                grant_id, expires_at = self._store_permission_grant(
+                    tool_name=target_tool,
+                    arguments=target_arguments,
+                    permission=requested_permission,
+                    principal=context.principal if context else "anonymous",
+                    scope=str(arguments.get("scope") or "once"),
+                    ttl_seconds=int(arguments.get("ttl_seconds", 300)),
+                )
+                return make_tool_result(
+                    name,
+                    {
+                        "ok": True,
+                        "status": "granted",
+                        "grant_id": grant_id,
+                        "expires_at": expires_at,
+                        "constraints": {
+                            "tool_name": target_tool,
+                            "arguments_hash": self._arguments_digest(
+                                target_tool,
+                                target_arguments,
+                            ),
+                            "permission": requested_permission,
+                            "scope": str(arguments.get("scope") or "once"),
+                        },
+                    },
+                )
+        permission_token = ACTIVE_PERMISSIONS.set(granted)
+        try:
+            try:
+                payload = handler(arguments)
+                payload.setdefault("ok", True)
+                image_value = payload.pop("_image", None)
+                if isinstance(image_value, tuple) and len(image_value) == 2:
+                    image = (str(image_value[0]), str(image_value[1]))
+            except ToolError as exc:
+                permission = str(exc.details.get("permission") or "")
+                if (
+                    exc.code == "PERMISSION_REQUIRED"
+                    and permission
+                    and permission not in granted
+                ):
+                    input_required = self._permission_input_required(
+                        name=name,
+                        arguments=arguments,
+                        permission=permission,
+                        message=exc.message,
+                        context=context,
+                        granted=granted,
+                    )
+                    if input_required is not None:
+                        return input_required
+                    local_status = self._request_local_permission(
+                        name=name,
+                        arguments=arguments,
+                        permission=permission,
+                        message=exc.message,
+                        context=context,
+                    )
+                    if local_status == "approved":
+                        if name == "request_permissions":
+                            target_tool = str(arguments.get("tool_name") or "")
+                            target_arguments_raw = arguments.get("arguments")
+                            target_arguments = (
+                                target_arguments_raw
+                                if isinstance(target_arguments_raw, dict)
+                                else {}
+                            )
+                            grant_id, expires_at = self._store_permission_grant(
+                                tool_name=target_tool,
+                                arguments=target_arguments,
+                                permission=permission,
+                                principal=context.principal if context else "anonymous",
+                                scope=str(arguments.get("scope") or "once"),
+                                ttl_seconds=int(arguments.get("ttl_seconds", 300)),
+                            )
+                            return make_tool_result(
+                                name,
+                                {
+                                    "ok": True,
+                                    "status": "granted",
+                                    "grant_id": grant_id,
+                                    "expires_at": expires_at,
+                                    "constraints": {
+                                        "tool_name": target_tool,
+                                        "arguments_hash": self._arguments_digest(
+                                            target_tool,
+                                            target_arguments,
+                                        ),
+                                        "permission": permission,
+                                        "scope": str(arguments.get("scope") or "once"),
+                                        "via": "desktop_permission_broker",
+                                    },
+                                },
+                            )
+                        self._store_permission_grant(
+                            tool_name=name,
+                            arguments=arguments,
+                            permission=permission,
+                            principal=context.principal if context else "anonymous",
+                            scope="once",
+                            ttl_seconds=60,
+                        )
+                        return self.call_tool(name, arguments, context=context)
+                    if local_status == "denied":
+                        payload = {
+                            "ok": False,
+                            "error": {
+                                "code": "PERMISSION_DENIED",
+                                "message": "用户在 Coding Tools MCP 桌面端拒绝了本次授权。",
+                                "category": "permission",
+                                "retryable": False,
+                                "details": {"permission": permission},
+                            },
+                        }
+                    elif name == "request_permissions":
+                        payload = {
+                            "ok": False,
+                            "status": "unsupported",
+                            "grant_id": None,
+                            "expires_at": None,
+                            "error": {
+                                "code": "ELICITATION_UNSUPPORTED",
+                                "message": "当前 MCP 客户端未声明可用的 elicitation form capability。",
+                                "category": "permission",
+                                "retryable": False,
+                                "details": {"requested": arguments},
+                            },
+                        }
+                    else:
+                        payload = {"ok": False, "error": exc.payload()}
+                else:
+                    payload = {"ok": False, "error": exc.payload()}
+            except Exception as exc:
+                # Keep unexpected implementation failures inside the tool result
+                # boundary. Otherwise the HTTP transport can be interrupted and
+                # clients only see an opaque ExceptionGroup/TaskGroup failure.
+                LOGGER.exception("Unexpected failure while calling MCP tool %s", name)
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "code": "INTERNAL_TOOL_ERROR",
+                        "message": "unexpected tool failure",
+                        "category": "runtime",
+                        "retryable": True,
+                        "details": {"exception_type": type(exc).__name__},
+                    },
+                }
+        finally:
+            ACTIVE_PERMISSIONS.reset(permission_token)
         return make_tool_result(name, payload, image=image)
 
     # ------------------------------------------------------------------
@@ -693,7 +1251,17 @@ class Runtime:
                     }
                 )
         env.update(overrides)
-        if self.permission_mode == "safe" and not self.allow_network:
+        for internal_name in (
+            BROKER_DIR_ENV,
+            BROKER_SECRET_ENV,
+            BROKER_SERVER_ID_ENV,
+        ):
+            env.pop(internal_name, None)
+        if (
+            self.permission_mode == "safe"
+            and not self.allow_network
+            and not self._permission_granted("network")
+        ):
             # Best-effort offline defaults until an OS network sandbox backend
             # is applied to every child process.
             env.update(
@@ -722,15 +1290,19 @@ class Runtime:
                 {"permission": "sandbox_env_override", "variables": protected},
             )
         sensitive = [name for name in env if SENSITIVE_ENV_RE.search(name)]
-        if sensitive:
+        if sensitive and not self._permission_granted("sensitive_env"):
             raise ToolError("PERMISSION_REQUIRED", "sensitive environment variables require dangerous mode", "permission", False, {"permission": "sensitive_env", "variables": sensitive})
-        if timeout_ms > 60_000 and self.permission_mode == "safe":
+        if (
+            timeout_ms > 60_000
+            and self.permission_mode == "safe"
+            and not self._permission_granted("long_timeout")
+        ):
             raise ToolError("PERMISSION_REQUIRED", "timeouts above 60 seconds require trusted mode", "permission", False, {"permission": "long_timeout"})
         checks = [
             (DESTRUCTIVE_RE, "destructive_command", "destructive command is blocked"),
             (
                 GIT_METADATA_WRITE_RE,
-                "destructive_command",
+                "git_metadata_write",
                 "Git metadata-changing commands are blocked outside dangerous mode",
             ),
         ]
@@ -743,7 +1315,7 @@ class Runtime:
                 checks.append((NETWORK_RE, "network", "network-looking commands are blocked in safe mode"))
                 checks.append((NETWORK_COMMAND_RE, "network", "network-capable package or VCS command is blocked in safe mode"))
         for expression, permission, message in checks:
-            if expression.search(cmd):
+            if expression.search(cmd) and not self._permission_granted(permission):
                 raise ToolError("PERMISSION_REQUIRED", message, "permission", False, {"permission": permission})
         redirect = REDIRECT_ESCAPE_RE.search(cmd)
         if redirect:
@@ -762,7 +1334,7 @@ class Runtime:
         for index, token in enumerate(tokens):
             if index == 0 or token.startswith("-") or "://" in token:
                 continue
-            if token.startswith("~"):
+            if token.startswith("~") and not self._permission_granted("shell_expansion"):
                 raise ToolError(
                     "PERMISSION_REQUIRED",
                     "home-directory shell expansion is blocked outside dangerous mode",
@@ -829,7 +1401,11 @@ class Runtime:
             command = [comspec, "/d", "/v:off", "/s", "/c", command_line]
         else:
             command = [resolved_program, *argv]
-        command = self.process_sandbox.wrap(command, cwd=cwd)
+        command = self.process_sandbox.wrap(
+            command,
+            cwd=cwd,
+            permissions=ACTIVE_PERMISSIONS.get(),
+        )
         managed = self.commands.start(
             command,
             cwd=cwd,
@@ -865,7 +1441,11 @@ class Runtime:
             launch_command = ["/bin/sh", "-c", cmd]
             launch_shell = False
         if isinstance(launch_command, list):
-            launch_command = self.process_sandbox.wrap(launch_command, cwd=cwd)
+            launch_command = self.process_sandbox.wrap(
+                launch_command,
+                cwd=cwd,
+                permissions=ACTIVE_PERMISSIONS.get(),
+            )
         managed = self.commands.start(
             launch_command,
             cwd=cwd,
@@ -979,19 +1559,28 @@ class Runtime:
                     "permission_mode=dangerous is enabled; permission-gated operations are auto-granted"
                 ],
             }
-        return {
-            "ok": False,
-            "status": "unsupported",
-            "grant_id": None,
-            "expires_at": None,
-            "error": {
-                "code": "ELICITATION_UNSUPPORTED",
-                "message": "Permission elicitation is not available for this client.",
-                "category": "permission",
-                "retryable": False,
-                "details": {"requested": args},
-            },
-        }
+        permission = str(args.get("permission") or "")
+        if permission not in ELICITABLE_PERMISSIONS:
+            return {
+                "ok": False,
+                "status": "unsupported",
+                "grant_id": None,
+                "expires_at": None,
+                "error": {
+                    "code": "PERMISSION_NOT_ELICITABLE",
+                    "message": "该权限不能通过临时用户授权提升，请修改 Server 权限模式或配置。",
+                    "category": "permission",
+                    "retryable": False,
+                    "details": {"permission": permission},
+                },
+            }
+        raise ToolError(
+            "PERMISSION_REQUIRED",
+            str(args.get("reason") or "该操作需要用户临时授权。"),
+            "permission",
+            False,
+            {"permission": permission, "requested": dict(args)},
+        )
 
     # ------------------------------------------------------------------
     # Git

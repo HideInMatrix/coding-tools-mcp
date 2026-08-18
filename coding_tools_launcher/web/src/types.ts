@@ -15,6 +15,7 @@ export interface ServerDto {
   host: string
   port: number
   lifecycle: 'persistent' | 'ephemeral'
+  permission_mode: 'safe' | 'trusted' | 'dangerous'
   created_at: number
   updated_at: number
   network: NetworkConfigDto
@@ -32,6 +33,7 @@ export interface ServerDraft {
   host: string
   port: number
   remember_secrets: boolean
+  permission_mode: 'safe' | 'trusted' | 'dangerous'
   network: NetworkConfigDto
 }
 
@@ -80,6 +82,18 @@ export interface LogEntryDto {
   message: string
 }
 
+export interface PermissionRequestDto {
+  request_id: string
+  server_id: string
+  server_name: string
+  tool_name: string
+  permission: string
+  reason: string
+  arguments: Record<string, unknown> | unknown[]
+  created_at: number
+  expires_at: number
+}
+
 export interface DesktopBridge {
   bootstrap(): Promise<BootstrapDto>
   list_servers(): Promise<ServerDto[]>
@@ -93,6 +107,8 @@ export interface DesktopBridge {
   list_oauth_clients(serverId: string): Promise<OAuthClientDto[]>
   revoke_oauth_client(serverId: string, clientId: string): Promise<boolean>
   revoke_all_oauth_clients(serverId: string): Promise<number>
+  list_permission_requests(): Promise<PermissionRequestDto[]>
+  respond_permission_request(requestId: string, approved: boolean): Promise<boolean>
   get_logs(after?: number): Promise<{ cursor: number; entries: LogEntryDto[] }>
   detect_executable(product: string, configured?: string): Promise<{ path: string; source: string; version: string }>
   choose_workspace(initial?: string): Promise<string>

@@ -83,6 +83,26 @@ Password
 - 不要选择磁盘根目录
 - 启动前确认路径是否是当前真正想让 AI 操作的项目
 
+### 3.1 选择权限模式
+
+每个 Server Profile 都可以独立选择：
+
+```text
+安全 Safe（推荐）
+信任 Trusted
+危险 Dangerous
+```
+
+普通开发建议保持 `Safe`。它会启用 Workspace 边界、净化后的环境变量和当前平台可用的 OS 沙箱。
+
+`Trusted` 适合明确需要网络访问等常用开发能力的项目，但仍保留沙箱边界。
+
+`Dangerous` 会关闭 OS 进程沙箱并继承完整用户环境，只应在你明确需要普通终端级权限时使用。
+
+如果 AI 在 `Safe` 模式请求执行 `git add`、`git commit`、联网命令等受限操作，优先使用 MCP 客户端自己的授权交互。批准后只对对应的工具调用临时放行，不需要把整个 Server 切换成 `Dangerous`。
+
+如果当前客户端不支持 MCP elicitation，桌面版会自动显示 Coding Tools MCP 自己的本地授权框。选择“仅允许本次”后，原工具调用继续执行；选择“拒绝”则不会执行。只有不经过桌面程序启动的 headless/CLI Server 才会在客户端不支持授权时继续保持阻止。
+
 ## 4. 设置 OAuth Password
 
 `Password` 是 MCP OAuth 授权页面使用的登录密码。

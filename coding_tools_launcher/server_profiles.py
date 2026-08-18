@@ -9,7 +9,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .config import DEFAULT_HOST, DEFAULT_PORT, LaunchConfig, NetworkConfig
+from .config import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    PERMISSION_MODE_CHOICES,
+    LaunchConfig,
+    NetworkConfig,
+)
 from .user_settings import settings_dir
 
 
@@ -40,6 +46,7 @@ class MCPServerProfile:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     lifecycle: str = "persistent"
+    permission_mode: str = "safe"
     created_at: int = field(default_factory=_timestamp)
     updated_at: int = field(default_factory=_timestamp)
 
@@ -54,6 +61,7 @@ class MCPServerProfile:
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         lifecycle: str | None = None,
+        permission_mode: str = "safe",
     ) -> "MCPServerProfile":
         resolved_network = (network or NetworkConfig()).validated()
         now = _timestamp()
@@ -66,6 +74,7 @@ class MCPServerProfile:
             host=host,
             port=port,
             lifecycle=lifecycle or default_lifecycle(resolved_network),
+            permission_mode=permission_mode,
             created_at=now,
             updated_at=now,
         ).validated()
@@ -86,6 +95,9 @@ class MCPServerProfile:
         lifecycle = self.lifecycle.strip().lower()
         if lifecycle not in SERVER_LIFECYCLES:
             raise ValueError(f"不支持的 Server lifecycle: {lifecycle}")
+        permission_mode = self.permission_mode.strip().lower() or "safe"
+        if permission_mode not in PERMISSION_MODE_CHOICES:
+            raise ValueError(f"不支持的权限模式: {permission_mode}")
 
         network = self.network.validated()
         workspace = self.workspace.expanduser()
@@ -100,6 +112,7 @@ class MCPServerProfile:
             host=host,
             port=int(self.port),
             lifecycle=lifecycle,
+            permission_mode=permission_mode,
             created_at=int(self.created_at),
             updated_at=int(self.updated_at),
         )
@@ -113,6 +126,7 @@ class MCPServerProfile:
             port=self.port,
             server_id=self.server_id,
             lifecycle=self.lifecycle,
+            permission_mode=self.permission_mode,
         ).validated()
 
     def to_dict(self) -> dict[str, Any]:
@@ -125,6 +139,7 @@ class MCPServerProfile:
             "host": profile.host,
             "port": profile.port,
             "lifecycle": profile.lifecycle,
+            "permission_mode": profile.permission_mode,
             "created_at": profile.created_at,
             "updated_at": profile.updated_at,
             "network": {
@@ -151,6 +166,7 @@ class MCPServerProfile:
                 host=str(raw.get("host", DEFAULT_HOST)),
                 port=int(raw.get("port", DEFAULT_PORT)),
                 lifecycle=str(raw.get("lifecycle", "persistent")),
+                permission_mode=str(raw.get("permission_mode", "safe")),
                 created_at=int(raw.get("created_at", _timestamp())),
                 updated_at=int(raw.get("updated_at", _timestamp())),
                 network=NetworkConfig(
@@ -214,6 +230,7 @@ class ServerProfileStore:
         host: str = DEFAULT_HOST,
         port: int | None = None,
         lifecycle: str | None = None,
+        permission_mode: str = "safe",
     ) -> MCPServerProfile:
         selected_port = self.next_default_port() if port is None else int(port)
         profile = MCPServerProfile.create(
@@ -224,6 +241,7 @@ class ServerProfileStore:
             host=host,
             port=selected_port,
             lifecycle=lifecycle,
+            permission_mode=permission_mode,
         )
         profiles = self.list()
         profiles.append(profile)
@@ -243,6 +261,7 @@ class ServerProfileStore:
             host=validated.host,
             port=validated.port,
             lifecycle=validated.lifecycle,
+            permission_mode=validated.permission_mode,
             created_at=validated.created_at,
             updated_at=now,
         )

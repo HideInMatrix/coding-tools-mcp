@@ -148,6 +148,18 @@ async function autoDetect(product: string, option = 'executable') {
       </label>
 
       <label class="field span-2">
+        <span>权限模式</span>
+        <select v-model="model.permission_mode" :disabled="locked">
+          <option value="safe">安全 Safe（推荐）</option>
+          <option value="trusted">信任 Trusted</option>
+          <option value="dangerous">危险 Dangerous</option>
+        </select>
+        <span v-if="model.permission_mode === 'safe'" class="field-help">启用最严格的 Workspace、环境变量和 OS 沙箱限制；客户端支持授权交互时，可对受限操作申请临时权限。</span>
+        <span v-else-if="model.permission_mode === 'trusted'" class="field-help">允许网络等常用开发能力，但仍保留 Workspace 与 OS 沙箱边界。</span>
+        <span v-else class="permission-warning">危险模式会关闭 OS 进程沙箱并继承完整用户环境，仅在你明确需要完整终端权限时使用。</span>
+      </label>
+
+      <label class="field span-2">
         <span>Public URL</span>
         <InputGroup>
           <InputGroupInput

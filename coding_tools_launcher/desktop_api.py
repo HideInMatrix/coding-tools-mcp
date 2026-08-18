@@ -14,6 +14,7 @@ from .oauth_persistence import (
     canonical_oauth_issuer,
     migrate_oauth_storage_to_issuer,
 )
+from .permission_broker import DesktopPermissionBroker
 from .server_manager import MCPServerManager
 from .server_profiles import MCPServerProfile, ServerProfileStore, default_lifecycle
 from .self_update import UpdateManager
@@ -35,13 +36,19 @@ class DesktopAPI:
 
     def __init__(self) -> None:
         self.store = ServerProfileStore()
+        self.permission_broker = DesktopPermissionBroker()
         self._log_lock = threading.RLock()
         self._log_cursor = 0
         self._logs: deque[dict[str, object]] = deque(maxlen=2000)
-        self.manager = MCPServerManager(store=self.store, log=self._append_log)
+        self.manager = MCPServerManager(
+            store=self.store,
+            log=self._append_log,
+            permission_broker=self.permission_broker,
+        )
         self.update_manager = UpdateManager(log=self._append_log)
         self._latest_release = None
         self._window: Any | None = None
+        self._permission_attention_id = ""
         self._migrate_legacy_desktop_settings()
 
     def _bind_window(self, window: Any) -> None:
@@ -50,6 +57,34 @@ class DesktopAPI:
     def _close(self) -> None:
         self.manager.stop_all()
         self.update_manager.cleanup()
+        self.permission_broker.cleanup()
+
+    def list_permission_requests(self) -> list[dict[str, object]]:
+        requests = self.permission_broker.pending()
+        names = {profile.server_id: profile.name for profile in self.store.list()}
+        payload = [
+            {
+                **item,
+                "server_name": names.get(str(item.get("server_id") or ""), "MCP Server"),
+            }
+            for item in requests
+        ]
+        request_id = str(payload[0].get("request_id") or "") if payload else ""
+        if request_id and request_id != self._permission_attention_id:
+            self._permission_attention_id = request_id
+            window = self._window
+            if window is not None:
+                try:
+                    window.show()
+                    window.restore()
+                except Exception:
+                    pass
+        elif not request_id:
+            self._permission_attention_id = ""
+        return payload
+
+    def respond_permission_request(self, request_id: str, approved: bool) -> bool:
+        return self.permission_broker.respond(str(request_id), bool(approved))
 
     def _append_log(self, message: str) -> None:
         with self._log_lock:
@@ -99,6 +134,7 @@ class DesktopAPI:
             "host": profile.host,
             "port": profile.port,
             "lifecycle": profile.lifecycle,
+            "permission_mode": profile.permission_mode,
             "created_at": profile.created_at,
             "updated_at": profile.updated_at,
             "network": {
@@ -239,6 +275,7 @@ class DesktopAPI:
             host=str(payload.get("host") or "127.0.0.1"),
             port=int(payload.get("port") or self.store.next_default_port()),
             lifecycle=default_lifecycle(network),
+            permission_mode=str(payload.get("permission_mode") or "safe"),
         )
         self._save_selected_server_id(profile.server_id)
         return self._profile_payload(profile)
@@ -264,6 +301,9 @@ class DesktopAPI:
                 host=str(payload.get("host") or current.host),
                 port=int(payload.get("port") or current.port),
                 lifecycle=default_lifecycle(network),
+                permission_mode=str(
+                    payload.get("permission_mode") or current.permission_mode
+                ),
                 created_at=current.created_at,
                 updated_at=current.updated_at,
             )
@@ -272,6 +312,8 @@ class DesktopAPI:
 
     def delete_server(self, server_id: str) -> bool:
         deleted = self.manager.delete_profile(server_id)
+        if deleted:
+            self.permission_broker.clear_server(server_id)
         if deleted and self._selected_server_id() == server_id:
             profiles = self.store.list()
             self._save_selected_server_id(profiles[0].server_id if profiles else "")
@@ -314,6 +356,7 @@ class DesktopAPI:
                 port=profile.port,
                 server_id=profile.server_id,
                 lifecycle=profile.lifecycle,
+                permission_mode=profile.permission_mode,
             ).validated()
             self.manager.start_config(server_id, config)
         else:
@@ -322,6 +365,7 @@ class DesktopAPI:
 
     def stop_server(self, server_id: str) -> dict[str, object]:
         self.manager.stop(server_id)
+        self.permission_broker.clear_server(server_id)
         profile = self.store.get(server_id)
         if profile is None:
             raise KeyError(f"找不到 MCP Server: {server_id}")

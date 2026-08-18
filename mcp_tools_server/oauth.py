@@ -514,3 +514,21 @@ def validate_access_token(config: OAuthConfig, token: str) -> bool:
         return True
     except (ValueError, TypeError, json.JSONDecodeError):
         return False
+
+
+def access_token_client_id(config: OAuthConfig, token: str) -> str | None:
+    """Return the stable client_id for a valid project access token."""
+
+    if not validate_access_token(config, token):
+        return None
+    try:
+        prefix, encoded, _signature = token.split(".", 2)
+        if prefix != "ctm1":
+            return None
+        payload = json.loads(_b64url_decode(encoded))
+        if not isinstance(payload, dict):
+            return None
+        client_id = payload.get("client_id", payload.get("sub"))
+        return client_id if isinstance(client_id, str) and client_id else None
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None

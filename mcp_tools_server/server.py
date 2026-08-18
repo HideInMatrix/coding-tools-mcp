@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import html
 import http.client
 import http.server
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .oauth import (
+    access_token_client_id,
     OAUTH_MAX_BODY_BYTES,
     OAUTH_REFRESH_TOKEN_TTL_SECONDS,
     OAUTH_TOKEN_TTL_SECONDS,
@@ -338,6 +340,17 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             return None
         return "invalid_token"
 
+    def _mcp_principal(self) -> str:
+        token = self._bearer()
+        if not token:
+            return "anonymous"
+        config = self.runtime.oauth_config
+        if config:
+            client_id = access_token_client_id(config, token)
+            if client_id:
+                return f"oauth-client:{client_id}"
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
     def _unauthorized(self, *, invalid_token: bool = False) -> None:
         base = self._base_url()
         metadata = f'{base}/.well-known/oauth-protected-resource'
@@ -644,6 +657,7 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
                 transport_protocol_version=(
                     protocol_version if protocol_version in LEGACY_PROTOCOL_VERSIONS else None
                 ),
+                principal=self._mcp_principal(),
             )
         except Exception as exc:
             # Never tear down the HTTP request because an implementation

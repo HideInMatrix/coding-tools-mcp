@@ -43,6 +43,10 @@ class RequestContext:
     era: str
     protocol_version: str
     client_info: Mapping[str, Any] | None = None
+    client_capabilities: Mapping[str, Any] | None = None
+    input_responses: Mapping[str, Any] | None = None
+    request_state: str | None = None
+    principal: str = ""
 
 
 def _id(request: dict[str, Any]) -> str | int | None:
@@ -75,7 +79,11 @@ def _params(request: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
-def _modern_context(params: dict[str, Any]) -> RequestContext | None:
+def _modern_context(
+    params: dict[str, Any],
+    *,
+    principal: str = "",
+) -> RequestContext | None:
     meta = params.get("_meta")
     if not isinstance(meta, dict) or META_PROTOCOL_VERSION not in meta:
         return None
@@ -109,12 +117,34 @@ def _modern_context(params: dict[str, Any]) -> RequestContext | None:
             value = raw_info.get(key)
             if isinstance(value, str):
                 info[key] = value[:200]
-    return RequestContext("modern", str(version), info)
+    raw_input_responses = params.get("inputResponses")
+    if raw_input_responses is not None and not isinstance(raw_input_responses, dict):
+        raise RpcError(
+            -32602,
+            "inputResponses must be an object when present",
+            {"reason": "input_responses"},
+        )
+    raw_request_state = params.get("requestState")
+    if raw_request_state is not None and not isinstance(raw_request_state, str):
+        raise RpcError(
+            -32602,
+            "requestState must be a string when present",
+            {"reason": "request_state"},
+        )
+    return RequestContext(
+        "modern",
+        str(version),
+        info,
+        capabilities,
+        raw_input_responses,
+        raw_request_state,
+        principal,
+    )
 
 
 def _shape_modern(method: str, result: dict[str, Any], runtime: Any) -> dict[str, Any]:
     shaped = dict(result)
-    shaped["resultType"] = "complete"
+    shaped.setdefault("resultType", "complete")
     raw_meta = shaped.get("_meta")
     meta = dict(raw_meta) if isinstance(raw_meta, dict) else {}
     meta[META_SERVER_INFO] = runtime.server_identity()
@@ -204,6 +234,7 @@ def dispatch(
     request: dict[str, Any],
     *,
     transport_protocol_version: str | None = None,
+    principal: str = "",
 ) -> dict[str, Any] | None:
     request_id = _id(request)
     is_notification = "id" not in request
@@ -211,14 +242,21 @@ def dispatch(
         _validate_rpc_envelope(request)
         method = request["method"]
         params = _params(request)
-        modern = _modern_context(params)
+        modern = _modern_context(params, principal=principal)
         if modern is not None:
             result = _dispatch_modern(runtime, method, params, modern)
             if result is None or is_notification:
                 return None
             result = _shape_modern(method, result, runtime)
         else:
-            result = _dispatch_legacy(runtime, request, method, params, transport_protocol_version)
+            result = _dispatch_legacy(
+                runtime,
+                request,
+                method,
+                params,
+                transport_protocol_version,
+                principal,
+            )
             if result is None or is_notification:
                 return None
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
@@ -268,6 +306,7 @@ def _dispatch_legacy(
     method: str,
     params: dict[str, Any],
     transport_protocol_version: str | None,
+    principal: str,
 ) -> dict[str, Any] | None:
     if method == "initialize":
         if request.get("id") is None:
@@ -289,7 +328,11 @@ def _dispatch_legacy(
         return runtime.list_tools()
     if method == "tools/call":
         version = transport_protocol_version if transport_protocol_version in LEGACY_PROTOCOL_VERSIONS else LATEST_LEGACY_PROTOCOL_VERSION
-        return _tool_call(runtime, params, RequestContext("legacy", version))
+        return _tool_call(
+            runtime,
+            params,
+            RequestContext("legacy", version, principal=principal),
+        )
     raise RpcError(-32601, f"Unknown method: {method}")
 
 
