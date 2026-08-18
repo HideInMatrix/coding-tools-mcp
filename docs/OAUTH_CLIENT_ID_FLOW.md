@@ -1,6 +1,6 @@
 # OAuth client_id 生命周期与多 MCP Server 存储流程
 
-本文说明 Coding Tools MCP 桌面端中 `server_id`、`client_id`、OAuth Registry、固定域名和 Cloudflare Quick Tunnel 之间的关系。
+本文说明 Coding Tools MCP 桌面端中 `server_id`、OAuth `issuer`、MCP `resource`、`client_id`、OAuth Registry、固定域名和临时 Tunnel 之间的关系。
 
 ## 1. 先区分两个 ID
 
@@ -24,9 +24,25 @@ port = 8235
 
 删除 Server Profile 后，这个 `server_id` 废弃，不复用。
 
+### issuer 与 resource
+
+`issuer` 是 OAuth Authorization Server 的身份，也是 DCR Client Credential 的真正归属边界。
+
+例如固定 MCP 地址：
+
+```text
+issuer   = https://mcp-a.example.com
+resource = https://mcp-a.example.com/mcp
+```
+
+`server_id` 只用于桌面管理，不再作为 OAuth Registry 的身份边界。
+
 ### client_id
 
-`client_id` 是外部 AI / MCP Client 通过 OAuth Dynamic Client Registration 创建的身份。
+`client_id` 可以来自两种机制：
+
+- DCR：服务端生成随机 `client_id`，需要按 `issuer` 持久化。
+- CIMD：`client_id` 本身是 HTTPS Metadata Document URL，服务端按需读取，不写入 DCR Registry。
 
 它不是桌面程序的身份，也不是 Cloudflare Tunnel ID。
 
@@ -62,9 +78,11 @@ Desktop
   ↓
 读取 Server Profile SERVER-A
   ↓
-准备 SERVER-A 专属 OAuth 存储
+确定 OAuth issuer = https://mcp-a.example.com
   ↓
 启动 Network Provider
+  ↓
+准备 issuer 专属 OAuth 存储
   ↓
 启动本地 MCP Server :8234
 ```
@@ -73,14 +91,15 @@ Persistent Server 的 OAuth 文件位于：
 
 ```text
 settings_dir/
-└── servers/
-    └── SERVER-A/
-        └── oauth/
+└── oauth/
+    └── issuers/
+        └── <sha256(canonical-issuer)>/
+            ├── issuer.json
             ├── clients.json
             └── token-secret
 ```
 
-Registry 不再以 `public_base_url` 的哈希作为长期身份。
+Server Profile 只保存一个到 issuer 的管理绑定，用于桌面端显示/撤销 DCR Client；OAuth 数据本身不属于 `server_id`。
 
 随后 AI 创建一个新的 MCP 连接：
 
@@ -105,7 +124,7 @@ POST /oauth/register
   ↓
 写入内存 Registry
   ↓
-写入 SERVER-A/oauth/clients.json
+写入 issuer 对应的 clients.json
   ↓
 HTTP 201 返回 client_id
 ```
@@ -136,25 +155,25 @@ Unknown client_id
 
 ## 3. 为什么 Persistent Server 重启后 client_id 仍然存在
 
-停止 Server A 时：
+停止 Server A 时，只要固定域名 `issuer` 不变：
 
 ```text
-SERVER-A/oauth/clients.json
+oauth/issuers/<issuer-hash>/clients.json
 ```
 
 仍然保留。
 
-再次启动同一个 Server Profile：
+再次启动同一 issuer，即使本地 Server Profile 因升级而重建：
 
 ```text
-server_id = SERVER-A
+issuer = https://mcp-a.example.com
   ↓
-重新打开 SERVER-A/oauth/clients.json
+重新打开 issuer 对应 clients.json
   ↓
 恢复 A1、A2、A3
 ```
 
-因此 Persistent Server 的 OAuth Client 生命周期跟 `server_id` 绑定，而不是跟本次进程或端口启动次数绑定。
+因此 Persistent DCR Client 生命周期跟 OAuth Authorization Server `issuer` 绑定，而不是跟本地 `server_id`、端口或某次桌面进程绑定。
 
 ## 4. 删除 MCP-A 后重新创建 MCP-B
 
@@ -217,9 +236,11 @@ Persistent Server 中需要排查：
 1. 新连接是否真正调用了 `/oauth/register`。
 2. `/oauth/register` 返回的 ID 是否就是 authorize 使用的 ID。
 3. register 成功后 `clients.json` 是否成功持久化。
-4. 当前启动实例是否使用正确的 `server_id`。
-5. 是否错误加载了其他 Server 的 Registry。
+4. 当前 Authorization Server `issuer` 是否与注册 client_id 时一致。
+5. 当前是否加载了该 issuer 对应的 Registry，以及旧 server-id/URL 状态是否完成迁移。
 6. 用户是否已经在“授权客户端”页面主动撤销该 Client。
+
+如果 `client_id` 是 HTTPS URL，则它属于 CIMD，不应在 DCR Registry 中查找；服务端会按需拉取并校验 Client Metadata Document。
 
 禁止用下面的方法“修复”：
 
@@ -287,25 +308,25 @@ port = 8235
 https://b.example.com
 ```
 
-磁盘：
+OAuth 状态按 issuer 隔离：
 
 ```text
-servers/
-├── SERVER-A/
-│   └── oauth/
-│       ├── clients.json
-│       └── token-secret
-└── SERVER-B/
-    └── oauth/
-        ├── clients.json
-        └── token-secret
+oauth/issuers/
+├── <hash(https://a.example.com)>/
+│   ├── issuer.json
+│   ├── clients.json
+│   └── token-secret
+└── <hash(https://b.example.com)>/
+    ├── issuer.json
+    ├── clients.json
+    └── token-secret
 ```
 
 因此：
 
 ```text
-A1 只属于 SERVER-A
-B1 只属于 SERVER-B
+A1 只属于 issuer https://a.example.com
+B1 只属于 issuer https://b.example.com
 ```
 
 不能把 A1 拿到 Server B 的 `/oauth/authorize` 使用。
@@ -328,7 +349,7 @@ Server A Public URL = https://mcp-a.example.com
 Server B Public URL = https://mcp-b.example.com
 ```
 
-每个 Server 拥有自己的 `server_id` 和 OAuth Registry。
+每个本地 Server 拥有自己的 `server_id`；DCR OAuth Registry 则由对应固定域名的 `issuer` 决定。
 
 ## 9. Cloudflare Quick Tunnel
 
@@ -377,7 +398,7 @@ AI 必须重新调用 `/oauth/register`，得到新的 Q2。
 
 旧 Q1 不迁移到新的随机 URL。
 
-## 10. 从旧 URL-hash Registry 升级
+## 10. 从旧 Registry 升级
 
 旧桌面版本曾按照 `public_base_url` 的哈希存储：
 
@@ -387,16 +408,18 @@ oauth/
 └── <url-hash>.token-secret
 ```
 
-升级到 Server Profile 架构时，如果旧配置具有固定 Public URL：
+当前版本在每次 Persistent Server 启动时执行幂等迁移，而不是只在第一次创建 Server Profile 时执行：
 
 ```text
-旧单 Server 设置
+确定当前 canonical issuer
   ↓
-创建“默认服务”并生成 server_id
+检查 oauth/issuers/<issuer-hash>/
   ↓
-按旧固定 URL 查找 url-hash OAuth 文件
+如缺失，先检查 servers/<server_id>/oauth/
   ↓
-复制到 servers/<server_id>/oauth/
+再检查旧 URL-hash OAuth 文件
+  ↓
+复制缺失文件到 issuer 目录
 ```
 
 迁移同时复制：
@@ -411,7 +434,7 @@ token-secret
 迁移是非破坏、幂等的：
 
 - 不删除旧 URL-hash 文件。
-- 不覆盖已经存在的新 server_id 文件。
+- 不覆盖已经存在的 issuer 文件。
 - Quick Tunnel 的旧随机 URL OAuth 状态不迁移。
 
 ## 11. 推荐诊断日志
@@ -423,6 +446,8 @@ server_id
 Server 名称
 本地 host:port
 当前 public_base_url
+OAuth issuer
+MCP resource
 当前 OAuth Registry 文件
 启动时恢复 Client 数量
 收到 POST /oauth/register
@@ -451,18 +476,13 @@ Coding Tools MCP Desktop
 │   server_id = SERVER-A
 │   port = 8234
 │   lifecycle = persistent
-│   │
-│   └── OAuth Registry
-│       ├── A1
-│       └── A2
+│   issuer = https://a.example.com
 │
 ├── Server B
 │   server_id = SERVER-B
 │   port = 8235
 │   lifecycle = persistent
-│   │
-│   └── OAuth Registry
-│       └── B1
+│   issuer = https://b.example.com
 │
 └── Server TEMP
     server_id = SERVER-TEMP
@@ -473,8 +493,18 @@ Coding Tools MCP Desktop
         └── Q1
             ↓
         Server stop 后销毁
+
+Persistent OAuth Identity
+│
+├── issuer https://a.example.com
+│   resource https://a.example.com/mcp
+│   └── DCR Registry: A1, A2
+│
+└── issuer https://b.example.com
+    resource https://b.example.com/mcp
+    └── DCR Registry: B1
 ```
 
 核心原则：
 
-> `server_id` 标识本地 MCP Server，`client_id` 标识连接该 Server 的 OAuth Client；Persistent Server 的 Registry 跟 `server_id` 绑定，Quick Tunnel 的 Client 跟当前临时 Session 绑定。
+> `server_id` 只标识本地 MCP Server Profile；Persistent DCR Client Credential 跟 OAuth `issuer` 绑定，MCP token 的 audience 跟具体 `/mcp` `resource` 绑定；CIMD client_id 由 HTTPS Metadata Document 自描述；临时 Tunnel Client 跟当前临时 issuer Session 绑定。

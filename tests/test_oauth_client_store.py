@@ -4,7 +4,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from coding_tools_launcher import oauth_persistence
 from coding_tools_launcher.oauth_client_store import OAuthClientStore
 
 
@@ -61,6 +63,24 @@ class OAuthClientStoreTests(unittest.TestCase):
             store = OAuthClientStore("server-a", path=path)
             self.assertEqual(store.clear(), 2)
             self.assertEqual(store.list(), [])
+
+    def test_default_store_follows_server_binding_to_issuer_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            with patch.object(oauth_persistence, "settings_dir", return_value=base):
+                persistence = oauth_persistence.prepare_issuer_oauth_persistence(
+                    "https://mcp.example.com"
+                )
+                self._write_registry(persistence.registry_file)
+                oauth_persistence.bind_server_oauth_issuer(
+                    "server-a",
+                    "https://mcp.example.com",
+                )
+                items = OAuthClientStore("server-a").list()
+            self.assertEqual(
+                [item.client_id for item in items],
+                ["client-a", "client-b"],
+            )
 
 
 if __name__ == "__main__":

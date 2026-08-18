@@ -9,7 +9,11 @@ from typing import Any
 
 from .config import LaunchConfig, NetworkConfig
 from .executables import resolve_executable
-from .oauth_persistence import migrate_url_keyed_oauth_storage
+from .oauth_persistence import (
+    bind_server_oauth_issuer,
+    canonical_oauth_issuer,
+    migrate_oauth_storage_to_issuer,
+)
 from .server_manager import MCPServerManager
 from .server_profiles import MCPServerProfile, ServerProfileStore, default_lifecycle
 from .updates import fetch_latest_release
@@ -173,7 +177,12 @@ class DesktopAPI:
                 lifecycle=default_lifecycle(network),
             )
             if network.public_url:
-                migrate_url_keyed_oauth_storage(profile.server_id, network.public_url)
+                issuer = canonical_oauth_issuer(network.public_url)
+                migrate_oauth_storage_to_issuer(
+                    issuer,
+                    server_id=profile.server_id,
+                )
+                bind_server_oauth_issuer(profile.server_id, issuer)
             self._save_selected_server_id(profile.server_id)
             self._append_log(f"已将旧版桌面配置迁移为 Server Profile: {profile.name}")
         except Exception as exc:

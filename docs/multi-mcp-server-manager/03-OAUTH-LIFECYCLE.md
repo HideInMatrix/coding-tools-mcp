@@ -5,7 +5,8 @@
 ```text
 启动 Server A
   -> server_id=A
-  -> 加载 A/oauth/clients.json
+  -> issuer=https://mcp.example.com
+  -> 加载 issuer 对应 oauth/issuers/<hash>/clients.json
   -> 启动 OAuth Server
 
 AI 创建连接
@@ -30,12 +31,12 @@ AI 发起授权
 ```text
 停止 Server A
 重新启动 Server A
-  -> server_id 仍然是 A
-  -> 恢复 A/oauth/clients.json
+  -> issuer 仍然是 https://mcp.example.com
+  -> 恢复 issuer 对应 clients.json
   -> A1 继续有效
 ```
 
-因此 Registry 不应再根据 Public URL 切换。
+因此 DCR Registry 应根据 Authorization Server `issuer` 恢复，而不是根据本地 `server_id` 恢复。
 
 ## 3. 删除 AI 中旧 MCP 后创建新 MCP
 
@@ -115,7 +116,7 @@ client_id = Q2
 - Persistent Server 本应恢复 Client，但 Registry 文件丢失。
 - Client 已注册，但持久化失败。
 - AI 使用了不是当前 Server 注册得到的 client_id。
-- Server 错误加载了其他 server_id 的 Registry。
+- Server 错误加载了其他 issuer 的 Registry，或旧 server-id/URL 状态未迁移。
 
 正常场景：
 
@@ -127,6 +128,6 @@ client_id = Q2
 禁止：
 
 - authorize 阶段自动接纳未知 client_id。
-- 用 client_id 代替 server_id。
+- 用本地 server_id 代替 OAuth issuer 作为 DCR Credential 的身份边界。
 - 将 Client Secret 明文写入 UI 日志。
 - 将 access token、refresh token、authorization code 写入普通日志。

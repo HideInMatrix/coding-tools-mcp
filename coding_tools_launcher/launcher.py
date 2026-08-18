@@ -11,9 +11,11 @@ from .oauth_persistence import (
     OAUTH_REGISTRY_FILE_ENV,
     OAUTH_TOKEN_SECRET_ENV,
     OAuthPersistence,
+    bind_server_oauth_issuer,
+    canonical_oauth_issuer,
+    migrate_oauth_storage_to_issuer,
     prepare_ephemeral_oauth_persistence,
-    prepare_oauth_persistence,
-    prepare_server_oauth_persistence,
+    prepare_issuer_oauth_persistence,
 )
 from .process_utils import LogCallback, check_port_available
 
@@ -76,18 +78,24 @@ class MCPLauncher:
                     self._log,
                 )
                 network_info = self._provider.start(config.host, config.port, config.network)
-                public_base_url = network_info.public_base_url
-                if config.server_id:
-                    if config.lifecycle == "ephemeral":
-                        oauth_persistence = prepare_ephemeral_oauth_persistence(
-                            config.server_id
-                        )
-                    else:
-                        oauth_persistence = prepare_server_oauth_persistence(
-                            config.server_id
-                        )
+                public_base_url = canonical_oauth_issuer(network_info.public_base_url)
+                if config.lifecycle == "ephemeral":
+                    oauth_persistence = prepare_ephemeral_oauth_persistence(
+                        config.server_id or "session"
+                    )
                 else:
-                    oauth_persistence = prepare_oauth_persistence(public_base_url)
+                    issuer = public_base_url
+                    migrated = migrate_oauth_storage_to_issuer(
+                        issuer,
+                        server_id=config.server_id,
+                    )
+                    oauth_persistence = prepare_issuer_oauth_persistence(issuer)
+                    if config.server_id:
+                        bind_server_oauth_issuer(config.server_id, issuer)
+                    if migrated:
+                        self._log(
+                            f"OAuth 状态已迁移到 issuer 身份目录: {issuer}"
+                        )
                 self._oauth_persistence = oauth_persistence
                 env = os.environ.copy()
                 env.update(
@@ -110,7 +118,7 @@ class MCPLauncher:
                     )
                 else:
                     self._log(
-                        "OAuth 状态持久化已启用：动态 client_id 与 token secret 将跨重启保留。"
+                        "OAuth 状态持久化已启用：DCR client_id 与 token secret 按 issuer 跨重启保留。"
                     )
                 self._mcp.start(config, env)
                 self._info = LaunchInfo(

@@ -5,14 +5,19 @@ from __future__ import annotations
 import argparse
 import base64
 import html
+import http.client
 import http.server
+import ipaddress
 import json
 import logging
 import os
 import secrets
 import signal
+import socket
+import ssl
 import sys
 import threading
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -21,8 +26,11 @@ from .oauth import (
     OAUTH_MAX_BODY_BYTES,
     OAUTH_REFRESH_TOKEN_TTL_SECONDS,
     OAUTH_TOKEN_TTL_SECONDS,
+    OAuthClient,
     OAuthConfig,
+    client_from_metadata_document,
     create_access_token,
+    is_client_id_metadata_url,
     valid_pkce_challenge,
     validate_access_token,
     verify_pkce,
@@ -43,6 +51,11 @@ from .transport_stdio import serve_stdio
 ENV_PREFIX = "CODING_TOOLS_MCP"
 MAX_HTTP_BODY_BYTES = 1_048_576
 LOGGER = logging.getLogger(__name__)
+CIMD_MAX_BYTES = 64 * 1024
+CIMD_TIMEOUT_SECONDS = 5.0
+CIMD_DEFAULT_CACHE_SECONDS = 300
+CIMD_MAX_CACHE_SECONDS = 3600
+CIMD_MAX_REDIRECTS = 3
 
 
 def _truthy(value: str | None) -> bool:
@@ -61,6 +74,139 @@ def _env_int(name: str, default: int) -> int:
 
 def _loopback(host: str) -> bool:
     return host in {"", "localhost", "127.0.0.1", "::1"}
+
+
+def _public_ip_for_host(host: str, port: int) -> str:
+    """Resolve a CIMD host and reject private/local/reserved destinations."""
+
+    try:
+        parsed_ip = ipaddress.ip_address(host)
+        addresses = [parsed_ip]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise ValueError("CIMD hostname could not be resolved") from exc
+        addresses = []
+        for info in infos:
+            raw = info[4][0]
+            try:
+                address = ipaddress.ip_address(raw)
+            except ValueError:
+                continue
+            if address not in addresses:
+                addresses.append(address)
+    if not addresses:
+        raise ValueError("CIMD hostname resolved to no usable address")
+    # Reject the entire hostname if any answer points at a non-public network.
+    # This is intentionally stricter than selecting only one public answer.
+    if not all(address.is_global for address in addresses):
+        raise ValueError("CIMD metadata URL must resolve only to public IP addresses")
+    return str(addresses[0])
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection that pins the validated DNS result while keeping SNI."""
+
+    def __init__(self, host: str, port: int, connect_ip: str, timeout: float):
+        super().__init__(host, port=port, timeout=timeout, context=ssl.create_default_context())
+        self._connect_ip = connect_ip
+
+    def connect(self) -> None:
+        sock = socket.create_connection(
+            (self._connect_ip, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def _cache_seconds(headers: Any) -> int:
+    cache_control = str(headers.get("Cache-Control", ""))
+    for item in cache_control.split(","):
+        key, separator, value = item.strip().partition("=")
+        if separator and key.lower() == "max-age":
+            try:
+                return max(0, min(int(value.strip().strip('"')), CIMD_MAX_CACHE_SECONDS))
+            except ValueError:
+                break
+    return CIMD_DEFAULT_CACHE_SECONDS
+
+
+def _fetch_cimd_document(client_id: str) -> tuple[dict[str, Any], int]:
+    """Fetch a CIMD document with HTTPS, DNS pinning and bounded redirects."""
+
+    current = client_id
+    for _ in range(CIMD_MAX_REDIRECTS + 1):
+        parsed = urllib.parse.urlsplit(current)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.fragment
+        ):
+            raise ValueError("CIMD metadata URL must be an HTTPS URL without credentials or fragment")
+        port = parsed.port or 443
+        connect_ip = _public_ip_for_host(parsed.hostname, port)
+        connection = _PinnedHTTPSConnection(
+            parsed.hostname,
+            port,
+            connect_ip,
+            CIMD_TIMEOUT_SECONDS,
+        )
+        path = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+        try:
+            connection.request(
+                "GET",
+                path,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "Coding-Tools-MCP-CIMD/1",
+                },
+            )
+            response = connection.getresponse()
+            if response.status in {301, 302, 303, 307, 308}:
+                location = response.getheader("Location", "").strip()
+                response.read()
+                if not location:
+                    raise ValueError("CIMD redirect is missing Location")
+                current = urllib.parse.urljoin(current, location)
+                continue
+            if response.status != 200:
+                response.read()
+                raise ValueError(f"CIMD metadata returned HTTP {response.status}")
+            raw = response.read(CIMD_MAX_BYTES + 1)
+            if len(raw) > CIMD_MAX_BYTES:
+                raise ValueError("CIMD metadata document is too large")
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("CIMD metadata is not valid UTF-8 JSON") from exc
+            if not isinstance(payload, dict):
+                raise ValueError("CIMD metadata must be a JSON object")
+            return payload, _cache_seconds(response.headers)
+        finally:
+            connection.close()
+    raise ValueError("CIMD metadata redirected too many times")
+
+
+def _resolve_oauth_client(config: OAuthConfig, client_id: str) -> OAuthClient | None:
+    registered = config.registry.get(client_id)
+    if registered is not None:
+        return registered
+    if not is_client_id_metadata_url(client_id):
+        return None
+    now = time.monotonic()
+    with config.lock:
+        cached = config.cimd_cache.get(client_id)
+        if cached is not None and cached[1] > now:
+            return cached[0]
+    metadata, ttl = _fetch_cimd_document(client_id)
+    client = client_from_metadata_document(client_id, metadata)
+    with config.lock:
+        config.cimd_cache[client_id] = (client, now + ttl)
+    return client
 
 
 def _normalize_public_server_url(value: str | None) -> str | None:
@@ -253,10 +399,12 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             "authorization_endpoint": f"{base}/oauth/authorize",
             "token_endpoint": f"{base}/oauth/token",
             "registration_endpoint": f"{base}/oauth/register",
+            "client_id_metadata_document_supported": True,
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
+            "scopes_supported": ["mcp", "offline_access"],
         }
         config = self.runtime.oauth_config
         if config and config.resource:
@@ -543,7 +691,10 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         if config is None:
             return None, "OAuth is not enabled"
         client_id = params.get("client_id", "")
-        client = config.registry.get(client_id)
+        try:
+            client = _resolve_oauth_client(config, client_id)
+        except ValueError as exc:
+            return None, f"Invalid client metadata: {exc}"
         if client is None:
             return None, "Unknown client_id"
         redirect_uri = params.get("redirect_uri", "")
@@ -622,6 +773,8 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         query.append(("code", code))
         if params.get("state"):
             query.append(("state", params["state"]))
+        if config.issuer:
+            query.append(("iss", config.issuer))
         location = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
         self.send_response(302)
         self.send_header("Location", location)
@@ -669,12 +822,18 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             auth_method = "client_secret_basic"
         else:
             client_secret = params.get("client_secret")
-            client = config.registry.get(client_id)
+            try:
+                client = _resolve_oauth_client(config, client_id)
+            except ValueError:
+                client = None
             auth_method = client.token_endpoint_auth_method if client else "none"
         if client_id != code.client_id:
             self._json(400, {"error": "invalid_grant"})
             return
-        client = config.registry.get(client_id)
+        try:
+            client = _resolve_oauth_client(config, client_id)
+        except ValueError:
+            client = None
         if client is None:
             self._json(401, {"error": "invalid_client"})
             return
@@ -714,9 +873,15 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             auth_method = "client_secret_basic"
         else:
             client_secret = params.get("client_secret")
-            client = config.registry.get(client_id)
+            try:
+                client = _resolve_oauth_client(config, client_id)
+            except ValueError:
+                client = None
             auth_method = client.token_endpoint_auth_method if client else "none"
-        client = config.registry.get(client_id)
+        try:
+            client = _resolve_oauth_client(config, client_id)
+        except ValueError:
+            client = None
         if client is None:
             self._json(401, {"error": "invalid_client"})
             return

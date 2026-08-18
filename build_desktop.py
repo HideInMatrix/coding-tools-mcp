@@ -51,7 +51,7 @@ def resolve_build_version() -> str:
     Tag builds use GitHub's GITHUB_REF_NAME (for example ``v0.1.4``).
     CODING_TOOLS_RELEASE_VERSION is provided as an explicit local/CI override.
     Local builds use the semantic Git tag attached to HEAD. The version of the
-    coding_tools_mcp package is intentionally unrelated to the desktop release.
+    mcp_tools_server package is intentionally unrelated to the desktop release.
     """
 
     candidates = (
@@ -102,7 +102,7 @@ def main() -> int:
         "--paths",
         str(ROOT),
         "--collect-submodules",
-        "coding_tools_mcp",
+        "mcp_tools_server",
         "--collect-all",
         "webview",
         "--add-binary",

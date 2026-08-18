@@ -158,7 +158,22 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .danger-button { border: 1px solid color-mix(in oklab, var(--destructive) 32%, var(--border)); background: transparent; color: var(--destructive); }
 .danger-solid-button { border: 1px solid var(--destructive); background: var(--destructive); color: white; }
 .text-button, .text-danger-button { border: 0; background: transparent; color: var(--foreground); }
-.text-danger-button { color: var(--destructive); }
+.text-danger-button {
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--destructive) 10%, transparent);
+  color: var(--destructive);
+  white-space: nowrap;
+  line-height: 1;
+  transition: background-color .15s ease, color .15s ease, box-shadow .15s ease;
+}
+.text-danger-button:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--destructive) 15%, transparent);
+  color: var(--destructive);
+}
+.text-danger-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--ring);
+}
 .full { width: 100%; margin-top: 10px; }
 
 .log-panel { margin: 0; }
@@ -173,7 +188,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .toolbar-card select { flex: 1; }
 .table-card { margin-top: 10px; overflow: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 11px; }
-th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
 th { background: color-mix(in oklab, var(--muted) 60%, transparent); color: var(--muted-foreground); font-size: 10px; font-weight: 500; white-space: nowrap; }
 tbody tr:hover { background: color-mix(in oklab, var(--secondary) 38%, transparent); }
 .empty-cell { padding: 44px; text-align: center; color: var(--muted-foreground); }

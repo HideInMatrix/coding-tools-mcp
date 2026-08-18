@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .oauth_persistence import _validated_server_id, server_oauth_directory
+from .oauth_persistence import (
+    _validated_server_id,
+    bound_server_oauth_issuer,
+    issuer_oauth_directory,
+    server_oauth_directory,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +34,15 @@ class OAuthClientStore:
 
     def __init__(self, server_id: str, path: Path | None = None) -> None:
         self.server_id = _validated_server_id(server_id)
-        self.path = path or (server_oauth_directory(self.server_id) / "clients.json")
+        if path is not None:
+            self.path = path
+            return
+        issuer = bound_server_oauth_issuer(self.server_id)
+        if issuer:
+            self.path = issuer_oauth_directory(issuer) / "clients.json"
+        else:
+            # Backward-compatible fallback before the first issuer-aware start.
+            self.path = server_oauth_directory(self.server_id) / "clients.json"
 
     def list(self) -> list[OAuthClientSummary]:
         payload = self._read_payload()

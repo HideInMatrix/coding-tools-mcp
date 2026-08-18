@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from .config import LaunchConfig, LaunchInfo
 from .launcher import MCPLauncher
 from .oauth_client_store import OAuthClientStore, OAuthClientSummary
-from .oauth_persistence import delete_server_oauth_storage
+from .oauth_persistence import (
+    bound_server_oauth_issuer,
+    delete_issuer_oauth_storage,
+    delete_server_oauth_storage,
+)
 from .process_utils import LogCallback
 from .server_profiles import MCPServerProfile, ServerProfileStore
 
@@ -112,10 +116,18 @@ class MCPServerManager:
             launcher = self._launchers.get(server_id)
             if launcher and launcher.is_running:
                 raise RuntimeError("请先停止 MCP Server，再删除配置。")
+            issuer = bound_server_oauth_issuer(server_id)
             deleted = self.store.delete(server_id)
             if deleted:
                 self._launchers.pop(server_id, None)
                 delete_server_oauth_storage(server_id)
+                if issuer:
+                    still_referenced = any(
+                        bound_server_oauth_issuer(profile.server_id) == issuer
+                        for profile in self.store.list()
+                    )
+                    if not still_referenced:
+                        delete_issuer_oauth_storage(issuer)
             return deleted
 
     def oauth_clients(self, server_id: str) -> list[OAuthClientSummary]:

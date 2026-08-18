@@ -10,10 +10,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import coding_tools_mcp
+import mcp_tools_server
 
-mcp_server_version = coding_tools_mcp.__version__
-mcp_server_file = Path(coding_tools_mcp.__file__).resolve()
+mcp_server_version = mcp_tools_server.__version__
+mcp_server_file = Path(mcp_tools_server.__file__).resolve()
 
 
 def parse_args() -> argparse.Namespace:

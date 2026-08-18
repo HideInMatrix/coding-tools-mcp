@@ -39,7 +39,7 @@ def build_mcp_command(config: LaunchConfig) -> list[str]:
 
 def run_internal_mcp_server(arguments: list[str]) -> int:
     install_oauth_registry_persistence()
-    from coding_tools_mcp.server import main as server_main
+    from mcp_tools_server.server import main as server_main
 
     old_argv = sys.argv[:]
     try:

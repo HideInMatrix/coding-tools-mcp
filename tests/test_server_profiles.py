@@ -17,6 +17,9 @@ class ServerProfileTests(unittest.TestCase):
     def test_cloudflare_quick_tunnel_defaults_to_ephemeral(self) -> None:
         self.assertEqual(default_lifecycle(NetworkConfig(provider="cloudflare")), "ephemeral")
 
+    def test_dynamic_ngrok_url_defaults_to_ephemeral(self) -> None:
+        self.assertEqual(default_lifecycle(NetworkConfig(provider="ngrok")), "ephemeral")
+
     def test_fixed_public_url_defaults_to_persistent(self) -> None:
         self.assertEqual(
             default_lifecycle(

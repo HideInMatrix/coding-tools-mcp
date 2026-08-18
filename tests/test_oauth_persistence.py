@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -10,6 +11,14 @@ from coding_tools_launcher import oauth_persistence
 
 
 class OAuthPersistenceTests(unittest.TestCase):
+    def test_canonical_issuer_normalizes_mcp_suffix_host_and_default_port(self) -> None:
+        self.assertEqual(
+            oauth_persistence.canonical_oauth_issuer(
+                "https://MCP.Example.COM:443/mcp/"
+            ),
+            "https://mcp.example.com",
+        )
+
     def test_token_secret_is_stable_for_same_server_url(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -35,6 +44,47 @@ class OAuthPersistenceTests(unittest.TestCase):
             self.assertEqual(first.registry_file, second.registry_file)
             self.assertEqual(first.token_secret_hex, second.token_secret_hex)
             self.assertIn("server-a", str(first.registry_file))
+
+    def test_issuer_storage_is_shared_across_server_profile_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            with patch.object(oauth_persistence, "settings_dir", return_value=base):
+                first = oauth_persistence.prepare_issuer_oauth_persistence(
+                    "https://MCP.EXAMPLE.com/mcp"
+                )
+                oauth_persistence.bind_server_oauth_issuer(
+                    "server-a", "https://mcp.example.com"
+                )
+                oauth_persistence.bind_server_oauth_issuer(
+                    "server-b", "https://mcp.example.com/mcp"
+                )
+                second = oauth_persistence.prepare_issuer_oauth_persistence(
+                    "https://mcp.example.com"
+                )
+
+                self.assertEqual(first.registry_file, second.registry_file)
+                self.assertEqual(first.token_secret_hex, second.token_secret_hex)
+                self.assertEqual(
+                    oauth_persistence.bound_server_oauth_issuer("server-a"),
+                    "https://mcp.example.com",
+                )
+                self.assertEqual(
+                    oauth_persistence.bound_server_oauth_issuer("server-b"),
+                    "https://mcp.example.com",
+                )
+
+    def test_different_issuers_never_share_oauth_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            with patch.object(oauth_persistence, "settings_dir", return_value=base):
+                first = oauth_persistence.prepare_issuer_oauth_persistence(
+                    "https://a.example.com"
+                )
+                second = oauth_persistence.prepare_issuer_oauth_persistence(
+                    "https://b.example.com"
+                )
+            self.assertNotEqual(first.registry_file, second.registry_file)
+            self.assertNotEqual(first.token_secret_hex, second.token_secret_hex)
 
     def test_ephemeral_storage_is_new_for_every_session_and_can_be_cleaned(self) -> None:
         first = oauth_persistence.prepare_ephemeral_oauth_persistence("server-a")
@@ -100,6 +150,47 @@ class OAuthPersistenceTests(unittest.TestCase):
                     )
                 )
 
+    def test_server_id_state_migrates_to_issuer_on_every_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            issuer = "https://mcp.example.com"
+            with patch.object(oauth_persistence, "settings_dir", return_value=base):
+                old = oauth_persistence.prepare_server_oauth_persistence("server-a")
+                old.registry_file.write_text(
+                    json.dumps(
+                        {
+                            "version": 1,
+                            "clients": [
+                                {
+                                    "client_id": "chatgpt-old-client",
+                                    "redirect_uris": ["https://chatgpt.com/connector/oauth/callback"],
+                                    "token_endpoint_auth_method": "none",
+                                    "client_name": "ChatGPT",
+                                    "secret_digest": None,
+                                    "issued_at": 1,
+                                }
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                self.assertTrue(
+                    oauth_persistence.migrate_oauth_storage_to_issuer(
+                        issuer,
+                        server_id="server-a",
+                    )
+                )
+                migrated = oauth_persistence.prepare_issuer_oauth_persistence(issuer)
+                payload = json.loads(migrated.registry_file.read_text(encoding="utf-8"))
+                self.assertEqual(payload["clients"][0]["client_id"], "chatgpt-old-client")
+                self.assertEqual(migrated.token_secret_hex, old.token_secret_hex)
+                self.assertFalse(
+                    oauth_persistence.migrate_oauth_storage_to_issuer(
+                        issuer,
+                        server_id="server-a",
+                    )
+                )
+
     def test_dynamic_client_survives_new_registry_instance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             registry_file = Path(temporary) / "clients.json"
@@ -111,7 +202,7 @@ class OAuthPersistenceTests(unittest.TestCase):
             ):
                 oauth_persistence.install_oauth_registry_persistence()
 
-                from coding_tools_mcp.oauth import OAuthClientRegistry
+                from mcp_tools_server.oauth import OAuthClientRegistry
 
                 first = OAuthClientRegistry()
                 registered = first.register(
@@ -146,7 +237,7 @@ class OAuthPersistenceTests(unittest.TestCase):
             ):
                 oauth_persistence.install_oauth_registry_persistence()
 
-                from coding_tools_mcp.oauth import OAuthClientRegistry
+                from mcp_tools_server.oauth import OAuthClientRegistry
 
                 registry = OAuthClientRegistry()
                 first = registry.register(

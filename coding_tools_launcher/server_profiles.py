@@ -25,7 +25,7 @@ def default_lifecycle(network: NetworkConfig) -> str:
     """Return the default OAuth persistence lifecycle for a network config."""
 
     validated = network.validated()
-    if validated.provider == "cloudflare" and not validated.public_url:
+    if validated.provider in {"cloudflare", "ngrok"} and not validated.public_url:
         return "ephemeral"
     return "persistent"
 

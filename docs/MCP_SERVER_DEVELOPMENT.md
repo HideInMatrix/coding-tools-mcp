@@ -45,20 +45,21 @@ coding-tools-mcp 0.3.0
 3. 在 `tests/test_custom_mcp_server.py` 或对应测试文件增加回归测试；
 4. 保留已经对外使用的兼容字段，除非有明确的版本升级计划。
 
-### OAuth resource 兼容规则
+### OAuth issuer / resource 兼容规则
 
-为兼容 `coding-tools-mcp 0.3.0` 和已经按其行为实现的 MCP Client，本项目的
-OAuth canonical resource 使用公网服务的 **base URL**：
+当前实现将 OAuth Authorization Server 身份与 MCP Protected Resource 明确分离：
 
 ```text
 Public URL:       https://mcp.example.com
 MCP Endpoint:     https://mcp.example.com/mcp
-OAuth resource:   https://mcp.example.com
+OAuth issuer:     https://mcp.example.com
+OAuth resource:   https://mcp.example.com/mcp
 ```
 
-客户端在授权或 token 请求里传入 `https://mcp.example.com/mcp` 时，可以作为
-同一 MCP 服务的 endpoint alias 接受，但内部必须规范化回 base URL。其他域名
-或其他路径不能因为“看起来相似”而绕过 resource/audience 校验。
+为兼容升级前已建立的连接，客户端在授权或 token 请求里传入旧 base URL
+`https://mcp.example.com` 时暂时作为 legacy resource alias 接受，但内部统一规范化为
+`https://mcp.example.com/mcp`。新 access token 使用 `iss=issuer`、`aud=resource`。
+其他域名或其他路径不能因为“看起来相似”而绕过 resource/audience 校验。
 
 `CODING_TOOLS_MCP_SERVER_URL` 同样允许填写 base URL 或完整 `/mcp` URL，服务端
 必须规范化，禁止产生 `.../mcp/mcp`。
@@ -70,7 +71,8 @@ Protected Resource Metadata 同时兼容：
 /.well-known/oauth-protected-resource/mcp
 ```
 
-两者都应描述同一个 canonical OAuth resource。
+两者都应描述 canonical MCP resource `https://mcp.example.com/mcp`，并通过
+`authorization_servers` 指向 issuer `https://mcp.example.com`。
 
 ## 1. 设计目标
 
@@ -105,7 +107,7 @@ view_image
 ## 2. 当前源码结构
 
 ```text
-coding_tools_mcp/
+mcp_tools_server/
 ├── __init__.py
 ├── __main__.py
 ├── errors.py
@@ -146,7 +148,7 @@ coding_tools_launcher.mcp_worker
     ↓
 coding_tools_launcher.mcp_process.run_internal_mcp_server()
     ↓
-coding_tools_mcp.server.main()
+mcp_tools_server.server.main()
 ```
 
 网络提供层与 MCP Server 本身完全解耦。Provider 只负责把本机
@@ -205,7 +207,7 @@ ChatGPT 安装 MCP 时会读取 `tools/list`。
 Schema 定义集中在：
 
 ```text
-coding_tools_mcp/schemas.py
+mcp_tools_server/schemas.py
 ```
 
 ## 5. Tool Result 结构
@@ -213,7 +215,7 @@ coding_tools_mcp/schemas.py
 工具调用由：
 
 ```text
-coding_tools_mcp/results.py
+mcp_tools_server/results.py
 ```
 
 统一编码成：
@@ -279,13 +281,13 @@ view_image
 工具元数据、参数 Schema 与 annotations 位于：
 
 ```text
-coding_tools_mcp/schemas.py
+mcp_tools_server/schemas.py
 ```
 
 真实 handler 位于：
 
 ```text
-coding_tools_mcp/runtime.py
+mcp_tools_server/runtime.py
 ```
 
 两边以工具名一一对应。
@@ -295,7 +297,7 @@ coding_tools_mcp/runtime.py
 协议实现位于：
 
 ```text
-coding_tools_mcp/protocol.py
+mcp_tools_server/protocol.py
 ```
 
 支持：
@@ -343,7 +345,7 @@ cacheScope = private
 路径隔离集中在：
 
 ```text
-coding_tools_mcp/workspace.py
+mcp_tools_server/workspace.py
 ```
 
 任何用户路径都会转换为绝对真实路径，然后检查它仍然处于 Workspace 根目录内部。
@@ -369,7 +371,7 @@ PATH_OUTSIDE_WORKSPACE
 代码：
 
 ```text
-coding_tools_mcp/patching.py
+mcp_tools_server/patching.py
 ```
 
 支持：
@@ -406,7 +408,7 @@ coding_tools_mcp/patching.py
 进程生命周期由：
 
 ```text
-coding_tools_mcp/processes.py
+mcp_tools_server/processes.py
 ```
 
 管理。
@@ -513,7 +515,7 @@ Pillow>=10.0
 OAuth 实现：
 
 ```text
-coding_tools_mcp/oauth.py
+mcp_tools_server/oauth.py
 ```
 
 支持：
@@ -566,7 +568,7 @@ OAuthClientRegistry.authenticates()
 代码：
 
 ```text
-coding_tools_mcp/server.py
+mcp_tools_server/server.py
 ```
 
 主要路由：
@@ -666,7 +668,7 @@ token secret 持久化
 第一步，在：
 
 ```text
-coding_tools_mcp/schemas.py
+mcp_tools_server/schemas.py
 ```
 
 新增 `ToolSpec` 与 inputSchema。
@@ -674,7 +676,7 @@ coding_tools_mcp/schemas.py
 第二步，在：
 
 ```text
-coding_tools_mcp/runtime.py
+mcp_tools_server/runtime.py
 ```
 
 新增同名：
@@ -701,7 +703,7 @@ ok = true
 至少执行：
 
 ```bash
-python -m compileall -q coding_tools_mcp coding_tools_launcher
+python -m compileall -q mcp_tools_server coding_tools_launcher
 python -m unittest discover -s tests -v
 python scripts/verify_build_environment.py --expected-arch arm64
 python build_desktop.py
