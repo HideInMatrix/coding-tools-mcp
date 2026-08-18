@@ -4,6 +4,7 @@ import type {
   LogEntryDto,
   OAuthClientDto,
   ReleaseDto,
+  UpdateStatusDto,
   ServerDraft,
   ServerDto,
 } from '../types'
@@ -75,6 +76,15 @@ export const desktopApi = {
   },
   async checkUpdate(): Promise<ReleaseDto> {
     return (await bridge()).check_update()
+  },
+  async startUpdate(): Promise<UpdateStatusDto> {
+    return (await bridge()).start_update()
+  },
+  async updateStatus(): Promise<UpdateStatusDto> {
+    return (await bridge()).update_status()
+  },
+  async installUpdate(): Promise<UpdateStatusDto> {
+    return (await bridge()).install_update()
   },
   async openExternal(url: string): Promise<boolean> {
     return (await bridge()).open_external(url)

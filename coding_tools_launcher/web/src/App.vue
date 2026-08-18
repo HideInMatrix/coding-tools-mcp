@@ -7,7 +7,7 @@ import LogPanel from './components/LogPanel.vue'
 import OAuthClientView from './components/OAuthClientView.vue'
 import ServerEditor from './components/ServerEditor.vue'
 import ServerList from './components/ServerList.vue'
-import type { LogEntryDto, OAuthClientDto, PageKey, ReleaseDto, ServerDraft, ServerDto } from './types'
+import type { LogEntryDto, OAuthClientDto, PageKey, ReleaseDto, ServerDraft, ServerDto, UpdateStatusDto } from './types'
 
 const page = ref<PageKey>('servers')
 const version = ref('')
@@ -22,6 +22,10 @@ const busy = ref(false)
 const errorMessage = ref('')
 const release = ref<ReleaseDto | null>(null)
 const checkingUpdate = ref(false)
+const updateStatus = ref<UpdateStatusDto>({
+  state: 'idle', version: '', progress: 0, downloaded_bytes: 0, total_bytes: 0, message: '',
+})
+let installRequested = false
 let pollTimer = 0
 
 const selected = computed(() => servers.value.find(item => item.server_id === selectedId.value) || null)
@@ -160,6 +164,31 @@ async function checkUpdate() {
   try { release.value = await desktopApi.checkUpdate() } catch (error) { errorMessage.value = error instanceof Error ? error.message : String(error) } finally { checkingUpdate.value = false }
 }
 
+async function startUpdate() {
+  errorMessage.value = ''
+  installRequested = false
+  try {
+    updateStatus.value = await desktopApi.startUpdate()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+async function refreshUpdateStatus() {
+  if (!['downloading', 'verifying', 'ready', 'installing'].includes(updateStatus.value.state)) return
+  updateStatus.value = await desktopApi.updateStatus()
+  if (updateStatus.value.state === 'ready' && !installRequested) {
+    installRequested = true
+    try {
+      updateStatus.value = await desktopApi.installUpdate()
+    } catch (error) {
+      installRequested = false
+      errorMessage.value = error instanceof Error ? error.message : String(error)
+      updateStatus.value = await desktopApi.updateStatus()
+    }
+  }
+}
+
 async function poll() {
   try {
     await refreshServers(true)
@@ -168,6 +197,7 @@ async function poll() {
     logs.value.push(...response.entries)
     if (logs.value.length > 600) logs.value.splice(0, logs.value.length - 600)
     if (page.value === 'clients') await refreshClients()
+    await refreshUpdateStatus()
   } catch { /* transient polling failures are surfaced by explicit actions */ }
 }
 
@@ -236,7 +266,16 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
           </header>
           <LogPanel :logs="logs" />
         </section>
-        <AboutView v-else :version="version" :release="release" :checking="checkingUpdate" @check="checkUpdate" @open="desktopApi.openExternal" />
+        <AboutView
+          v-else
+          :version="version"
+          :release="release"
+          :checking="checkingUpdate"
+          :update-status="updateStatus"
+          @check="checkUpdate"
+          @update="startUpdate"
+          @open="desktopApi.openExternal"
+        />
       </div>
     </main>
   </div>

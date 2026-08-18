@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import http.client
 import json
 import platform
 import re
+import socket
 import ssl
+import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -13,6 +17,8 @@ GITHUB_REPOSITORY = "HideInMatrix/coding-tools-mcp"
 LATEST_RELEASE_API = (
     f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 )
+GITHUB_API_VERSION = "2022-11-28"
+UPDATE_CHECK_ATTEMPTS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +29,9 @@ class ReleaseInfo:
     release_url: str
     asset_name: str
     download_url: str
+    update_asset_name: str
+    update_download_url: str
+    checksum_url: str
     update_available: bool
 
 
@@ -79,6 +88,24 @@ def platform_asset_name(
     raise ValueError(f"不支持的系统: {current_system} {arch}")
 
 
+def updater_asset_name(
+    *,
+    system: str | None = None,
+    machine: str | None = None,
+) -> str:
+    """Return the release asset consumed by the in-app updater."""
+
+    current_system = (system or platform.system()).strip().lower()
+    arch = _architecture(machine)
+    if current_system == "windows":
+        return f"Coding-Tools-MCP-windows-{arch}.zip"
+    if current_system == "darwin":
+        return f"Coding-Tools-MCP-macos-{arch}.zip"
+    if current_system == "linux":
+        return f"Coding-Tools-MCP-linux-{arch}.tar.gz"
+    raise ValueError(f"不支持的系统: {current_system} {arch}")
+
+
 def _release_asset(payload: dict[str, Any], expected_name: str) -> str:
     assets = payload.get("assets")
     if not isinstance(assets, list):
@@ -91,38 +118,97 @@ def _release_asset(payload: dict[str, Any], expected_name: str) -> str:
     return ""
 
 
+def _fetch_release_payload(
+    *,
+    timeout: float,
+    attempts: int = UPDATE_CHECK_ATTEMPTS,
+) -> dict[str, Any]:
+    """Fetch the latest GitHub release with bounded transient retries.
+
+    Packaged desktop apps may sit behind transparent proxies/VPNs that
+    occasionally close an HTTPS response before the advertised Content-Length
+    has been received. ``json.load(response)`` surfaces that as
+    ``http.client.IncompleteRead``. Treat it like the other transient network
+    failures and retry with a fresh connection instead of leaking the raw
+    Python exception into the About page.
+    """
+
+    last_error: BaseException | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        request = urllib.request.Request(
+            LATEST_RELEASE_API,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": GITHUB_API_VERSION,
+                "User-Agent": "Coding-Tools-MCP",
+                "Connection": "close",
+            },
+        )
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=timeout,
+                context=_github_ssl_context(),
+            ) as response:
+                raw = response.read()
+            payload = json.loads(raw.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise RuntimeError("GitHub Release API 返回了无效数据")
+            return payload
+        except urllib.error.HTTPError:
+            # 4xx/5xx responses are actionable server/API failures; retrying a
+            # rate-limit or authentication failure would only delay feedback.
+            raise
+        except (
+            http.client.IncompleteRead,
+            urllib.error.URLError,
+            TimeoutError,
+            socket.timeout,
+            ConnectionError,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ) as exc:
+            last_error = exc
+            if attempt >= max(1, attempts):
+                break
+            time.sleep(0.25 * attempt)
+
+    retry_count = max(1, attempts)
+    if isinstance(last_error, http.client.IncompleteRead):
+        message = (
+            f"检查 GitHub 最新版本失败：网络响应不完整，已自动重试 {retry_count} 次，"
+            "请稍后再试。"
+        )
+    elif isinstance(last_error, (TimeoutError, socket.timeout)):
+        message = (
+            f"检查 GitHub 最新版本超时，已自动重试 {retry_count} 次，"
+            "请检查网络后再试。"
+        )
+    else:
+        message = (
+            f"无法连接 GitHub 检查最新版本，已自动重试 {retry_count} 次，"
+            "请检查网络、代理或 VPN 后再试。"
+        )
+    raise RuntimeError(message) from last_error
+
+
 def fetch_latest_release(
     current_version: str,
     *,
     timeout: float = 8.0,
 ) -> ReleaseInfo:
-    request = urllib.request.Request(
-        LATEST_RELEASE_API,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "Coding-Tools-MCP",
-        },
-    )
-    # PyInstaller 打包后的 Python 运行时在部分 macOS/Windows 环境中无法可靠
-    # 找到系统 CA，直接使用 urllib 会出现 CERTIFICATE_VERIFY_FAILED。
-    # certifi 随桌面包一起分发，显式指定 CA 文件可保证 GitHub HTTPS 校验一致。
-    ssl_context = _github_ssl_context()
-    with urllib.request.urlopen(
-        request,
-        timeout=timeout,
-        context=ssl_context,
-    ) as response:
-        payload = json.load(response)
-    if not isinstance(payload, dict):
-        raise RuntimeError("GitHub Release API 返回了无效数据")
+    payload = _fetch_release_payload(timeout=timeout)
 
     tag_name = str(payload.get("tag_name") or "").strip()
     if not tag_name:
         raise RuntimeError("GitHub Release 缺少 tag_name")
     latest_version = tag_name[1:] if tag_name.lower().startswith("v") else tag_name
     expected_asset = platform_asset_name()
+    expected_update_asset = updater_asset_name()
     release_url = str(payload.get("html_url") or "").strip()
     download_url = _release_asset(payload, expected_asset)
+    update_download_url = _release_asset(payload, expected_update_asset)
+    checksum_url = _release_asset(payload, expected_update_asset + ".sha256")
     return ReleaseInfo(
         current_version=current_version,
         latest_version=latest_version,
@@ -130,5 +216,8 @@ def fetch_latest_release(
         release_url=release_url,
         asset_name=expected_asset,
         download_url=download_url,
+        update_asset_name=expected_update_asset,
+        update_download_url=update_download_url,
+        checksum_url=checksum_url,
         update_available=is_newer_version(latest_version, current_version),
     )

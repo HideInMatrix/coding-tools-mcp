@@ -312,9 +312,30 @@ cp .env.example .env
 - 当前是否存在可用更新
 - Copyright © micromatrix.org
 
-程序首次进入“关于”页面时会自动检查一次 GitHub Release，也可以手动点击 `检查版本`。
+点击 `检查版本` 会读取 GitHub 最新 Release。检测到更高版本后，按钮会变成蓝色的 `更新到 x.y.z`。
 
-如果检测到 GitHub 上存在更高版本，按钮会变成蓝色的 `更新`。点击后优先打开当前系统对应的 Release 安装包；如果该 Release 缺少当前平台资产，则打开 Release 页面。
+正式打包版本支持应用内更新：
+
+```text
+点击更新
+  -> 应用内下载当前平台更新包
+  -> 显示下载进度与已下载大小
+  -> SHA-256 校验
+  -> 启动独立 updater helper
+  -> 当前程序退出
+  -> helper 替换旧程序
+  -> 自动重新启动新版本
+```
+
+如果历史 Release 缺少自动更新包或对应 `.sha256` 文件，则回退为手动打开 Release 下载页面。
+
+macOS 使用固定 Bundle Identifier：
+
+```text
+org.micromatrix.coding-tools-mcp
+```
+
+当前阶段未使用付费 Developer ID / Apple Notarization，因此固定 Bundle Identifier 和应用内替换可以改善升级连续性，但不能承诺完全消除所有 Gatekeeper 提示。
 
 Release 文件名不包含版本号，平台名称统一为：
 
@@ -323,9 +344,13 @@ Coding-Tools-MCP-windows-x64.zip
 Coding-Tools-MCP-windows-arm64.zip
 Coding-Tools-MCP-macos-x64.dmg
 Coding-Tools-MCP-macos-arm64.dmg
+Coding-Tools-MCP-macos-x64.zip
+Coding-Tools-MCP-macos-arm64.zip
 Coding-Tools-MCP-linux-x64.tar.gz
 Coding-Tools-MCP-linux-arm64.tar.gz
 ```
+
+macOS 的 `.dmg` 用于首次手动安装，`.zip` 专供应用内更新。每个可用于自动更新的归档同时发布对应的 `.sha256` 校验文件。
 
 版本号只保留在 Git Tag / GitHub Release 中，例如 `v0.1.4`，不会重复写入压缩包文件名。
 

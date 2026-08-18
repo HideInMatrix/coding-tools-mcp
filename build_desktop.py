@@ -18,6 +18,7 @@ from coding_tools_launcher.version import (
 
 
 ROOT = Path(__file__).resolve().parent
+MACOS_BUNDLE_IDENTIFIER = "org.micromatrix.coding-tools-mcp"
 
 
 def build_web_frontend() -> None:
@@ -111,8 +112,15 @@ def main() -> int:
         f"{version_file}{separator}coding_tools_launcher",
         "--add-data",
         f"{ROOT / 'coding_tools_launcher' / 'web' / 'dist'}{separator}coding_tools_launcher/web/dist",
-        "desktop.py",
     ]
+    if sys.platform == "darwin":
+        command.extend(
+            [
+                "--osx-bundle-identifier",
+                MACOS_BUNDLE_IDENTIFIER,
+            ]
+        )
+    command.append("desktop.py")
     print(f"Desktop build version: {build_version}")
     return subprocess.call(command, cwd=ROOT)
 

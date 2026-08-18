@@ -59,7 +59,19 @@ export interface ReleaseDto {
   release_url: string
   asset_name: string
   download_url: string
+  update_asset_name: string
+  update_download_url: string
+  checksum_url: string
   update_available: boolean
+}
+
+export interface UpdateStatusDto {
+  state: 'idle' | 'downloading' | 'verifying' | 'ready' | 'installing' | 'error'
+  version: string
+  progress: number
+  downloaded_bytes: number
+  total_bytes: number
+  message: string
 }
 
 export interface LogEntryDto {
@@ -86,5 +98,8 @@ export interface DesktopBridge {
   choose_workspace(initial?: string): Promise<string>
   choose_file(initial?: string): Promise<string>
   check_update(): Promise<ReleaseDto>
+  start_update(): Promise<UpdateStatusDto>
+  update_status(): Promise<UpdateStatusDto>
+  install_update(): Promise<UpdateStatusDto>
   open_external(url: string): Promise<boolean>
 }

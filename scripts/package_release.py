@@ -103,7 +103,7 @@ def package_linux(output_base: Path) -> Path:
     return archive
 
 
-def package_macos(output_base: Path) -> Path:
+def package_macos(output_base: Path) -> list[Path]:
     source = DIST_DIR / f"{APP_NAME}.app"
     if not source.is_dir():
         raise SystemExit(f"PyInstaller app bundle not found: {source}")
@@ -131,7 +131,25 @@ def package_macos(output_base: Path) -> Path:
             check=True,
         )
 
-    return image
+    # The DMG remains the human-friendly first-install artifact.  The ZIP is
+    # consumed by the in-app updater because macOS can extract it without
+    # mounting a disk image and it preserves the .app bundle structure.
+    updater_archive = Path(f"{output_base}.zip")
+    updater_archive.unlink(missing_ok=True)
+    subprocess.run(
+        [
+            "/usr/bin/ditto",
+            "-c",
+            "-k",
+            "--sequesterRsrc",
+            "--keepParent",
+            str(source),
+            str(updater_archive),
+        ],
+        check=True,
+    )
+
+    return [image, updater_archive]
 
 
 def main() -> int:
@@ -145,17 +163,18 @@ def main() -> int:
 
     system = platform.system().lower()
     if system == "windows":
-        package = package_windows(output_base)
+        packages = [package_windows(output_base)]
     elif system == "darwin":
-        package = package_macos(output_base)
+        packages = package_macos(output_base)
     elif system == "linux":
-        package = package_linux(output_base)
+        packages = [package_linux(output_base)]
     else:
         raise SystemExit(f"Unsupported platform: {platform.system()}")
 
-    checksum = write_sha256(package)
-    print(f"Package : {package}")
-    print(f"SHA256  : {checksum}")
+    for package in packages:
+        checksum = write_sha256(package)
+        print(f"Package : {package}")
+        print(f"SHA256  : {checksum}")
     return 0
 
 

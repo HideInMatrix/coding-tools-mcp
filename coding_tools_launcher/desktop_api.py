@@ -16,6 +16,7 @@ from .oauth_persistence import (
 )
 from .server_manager import MCPServerManager
 from .server_profiles import MCPServerProfile, ServerProfileStore, default_lifecycle
+from .self_update import UpdateManager
 from .updates import fetch_latest_release
 from .user_settings import load_settings, save_settings
 from .version import current_version
@@ -38,6 +39,8 @@ class DesktopAPI:
         self._log_cursor = 0
         self._logs: deque[dict[str, object]] = deque(maxlen=2000)
         self.manager = MCPServerManager(store=self.store, log=self._append_log)
+        self.update_manager = UpdateManager(log=self._append_log)
+        self._latest_release = None
         self._window: Any | None = None
         self._migrate_legacy_desktop_settings()
 
@@ -46,6 +49,7 @@ class DesktopAPI:
 
     def _close(self) -> None:
         self.manager.stop_all()
+        self.update_manager.cleanup()
 
     def _append_log(self, message: str) -> None:
         with self._log_lock:
@@ -117,6 +121,9 @@ class DesktopAPI:
             "release_url": info.release_url,
             "asset_name": info.asset_name,
             "download_url": info.download_url,
+            "update_asset_name": info.update_asset_name,
+            "update_download_url": info.update_download_url,
+            "checksum_url": info.checksum_url,
             "update_available": info.update_available,
         }
 
@@ -374,7 +381,32 @@ class DesktopAPI:
         return str(result[0]) if result else ""
 
     def check_update(self) -> dict[str, object]:
-        return self._release_payload(fetch_latest_release(current_version()))
+        info = fetch_latest_release(current_version())
+        self._latest_release = info
+        return self._release_payload(info)
+
+    def start_update(self) -> dict[str, object]:
+        info = self._latest_release
+        if info is None:
+            info = fetch_latest_release(current_version())
+            self._latest_release = info
+        return self.update_manager.start(info).to_dict()
+
+    def update_status(self) -> dict[str, object]:
+        return self.update_manager.status().to_dict()
+
+    def install_update(self) -> dict[str, object]:
+        status = self.update_manager.install_and_restart()
+        threading.Thread(target=self._close_window_for_update, daemon=True).start()
+        return status.to_dict()
+
+    def _close_window_for_update(self) -> None:
+        # Give the JS bridge enough time to receive the installing state before
+        # closing. The detached updater waits for this process to fully exit.
+        time.sleep(0.35)
+        window = self._window
+        if window is not None:
+            window.destroy()
 
     def open_external(self, url: str) -> bool:
         value = url.strip()

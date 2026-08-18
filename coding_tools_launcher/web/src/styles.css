@@ -201,6 +201,13 @@ tbody tr:hover { background: color-mix(in oklab, var(--secondary) 38%, transpare
 .about-row { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
 .about-card small { display: block; margin-top: 16px; color: var(--muted-foreground); font-size: 10px; }
 .update-note { margin: 12px 0 0; padding: 8px 10px; border-radius: 6px; background: var(--secondary); color: var(--foreground); font-size: 11px; }
+.update-progress-card { margin-top: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--secondary); }
+.update-progress-heading, .update-progress-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 11px; }
+.update-progress-heading strong { font-weight: 600; font-variant-numeric: tabular-nums; }
+.update-progress-track { height: 7px; margin-top: 9px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--muted-foreground) 16%, transparent); }
+.update-progress-value { height: 100%; min-width: 0; border-radius: inherit; background: var(--primary); transition: width .2s ease; }
+.update-progress-meta { margin-top: 6px; color: var(--muted-foreground); font-size: 10px; font-variant-numeric: tabular-nums; }
+.update-fallback-note { margin-top: 9px; font-size: 10px; line-height: 15px; }
 
 .empty-state { padding: 42px 20px; text-align: center; color: var(--muted-foreground); }
 .empty-state strong { color: var(--foreground); font-size: 12px; font-weight: 500; }
