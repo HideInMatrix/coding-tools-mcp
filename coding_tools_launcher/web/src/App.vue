@@ -7,6 +7,7 @@ import LogPanel from './components/LogPanel.vue'
 import OAuthClientView from './components/OAuthClientView.vue'
 import ServerEditor from './components/ServerEditor.vue'
 import ServerList from './components/ServerList.vue'
+import { isSelectedServerStarting } from './lib/serverState'
 import type { LogEntryDto, OAuthClientDto, PageKey, PermissionRequestDto, ReleaseDto, ServerDraft, ServerDto, UpdateStatusDto } from './types'
 
 const page = ref<PageKey>('servers')
@@ -32,6 +33,7 @@ let installRequested = false
 let pollTimer = 0
 
 const selected = computed(() => servers.value.find(item => item.server_id === selectedId.value) || null)
+const selectedIsStarting = computed(() => isSelectedServerStarting(selectedId.value, startingServerId.value))
 const activePermissionRequest = computed(() => permissionRequests.value[0] || null)
 const permissionArguments = computed(() => {
   const request = activePermissionRequest.value
@@ -315,7 +317,7 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
                 v-model="draft"
                 :is-new="isNew"
                 :running="selected?.running || false"
-                :starting="startingServerId === selectedId"
+                :starting="selectedIsStarting"
                 :public-mcp-url="selected?.public_mcp_url || ''"
                 @save="saveServer"
                 @delete="deleteServer"

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "node --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "typecheck:vue": "vue-tsc --noEmit",
     "build": "tsc --noEmit && vue-tsc --noEmit && vite build",
