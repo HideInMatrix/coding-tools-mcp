@@ -169,6 +169,7 @@ function permissionLabel(permission: string) {
     sensitive_env: '传入敏感环境变量',
     shell_expansion: '使用 Shell 展开',
     inline_script: '执行内联脚本',
+    privileged_executable: '查询并运行用户工具',
   } as Record<string, string>)[permission] || permission
 }
 
