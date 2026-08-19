@@ -1,5 +1,9 @@
 # Coding Tools MCP 自研服务端开发文档
 
+框架分层、ToolRegistry、Capability 与 PermissionProfile 的当前设计见
+`MCP_SERVER_FRAMEWORK.md`。新工具和后续 Local MCP Gateway 都应建立在该框架上，
+不要重新把工具按权限等级拆分。
+
 `mcp_tools_server` 是本仓库独立维护的 MCP Server 实现。MCP 协议、工具 Schema、OAuth、Workspace 隔离、Patch、进程管理、HTTP Server、权限 Broker 与沙箱能力都由本项目定义、实现和测试。
 
 项目不再以任何第三方 `coding-tools-mcp` 实现或版本作为技术兼容基线。实现正确性由 MCP/OAuth 等公开协议规范、本项目 Server Contract、安全设计和回归测试共同约束。
@@ -105,21 +109,52 @@ view_image
 mcp_tools_server/
 ├── __init__.py
 ├── __main__.py
+├── core/
+│   ├── constants.py
+│   ├── dispatcher.py
+│   ├── registry.py
+│   └── tool.py
 ├── errors.py
+├── gateway/
+│   ├── config.py
+│   ├── models.py
+│   ├── registry.py
+│   ├── routes.py
+│   └── runtime_pool.py
 ├── oauth.py
 ├── patching.py
+├── permissions/
+│   ├── capabilities.py
+│   ├── context.py
+│   ├── policy.py
+│   ├── state.py
+│   ├── grants.py
+│   ├── broker.py
+│   └── session.py
 ├── processes.py
 ├── project_context.py
 ├── protocol.py
 ├── results.py
 ├── runtime.py
+├── sandbox/
 ├── schemas.py
 ├── server.py
+├── toolchains/
+├── tools/
+│   ├── filesystem/
+│   ├── git/
+│   ├── process/
+│   ├── system/
+│   └── toolchains/
 ├── transport_stdio.py
 └── workspace.py
 ```
 
 这些模块都属于当前项目自己的实现。
+
+工具框架的目录职责、Capability 与 PermissionProfile 规则见
+`docs/MCP_SERVER_FRAMEWORK.md`。公开 Tool Handler 必须放在对应功能领域，
+`runtime.py` 只作为 Runtime Context、Permission Session、Sandbox 与 Dispatcher 的组合层。
 
 ## 3. 启动链路
 
@@ -199,11 +234,22 @@ ChatGPT 安装 MCP 时会读取 `tools/list`。
 
 而不是只解析文本描述。
 
-Schema 定义集中在：
+公共 Schema helper 与参数校验位于：
 
 ```text
 mcp_tools_server/schemas.py
 ```
+
+每个 Tool 的具体 input Schema 与 `ToolDefinition` 则跟随功能领域维护，例如：
+
+```text
+mcp_tools_server/tools/filesystem/definitions.py
+mcp_tools_server/tools/process/definitions.py
+mcp_tools_server/tools/git/definitions.py
+```
+
+这样新增工具时，Schema、Capability、annotations 与 Handler 能在同一功能领域内演进，
+而不会重新形成一个全局超大工具目录文件。
 
 ## 5. Tool Result 结构
 

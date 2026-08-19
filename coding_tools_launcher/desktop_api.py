@@ -6,12 +6,24 @@ import webbrowser
 from collections import deque
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .config import LaunchConfig, NetworkConfig
 from .executables import resolve_executable
+from .gateway_launcher import GatewayLaunchConfig
+from .gateway_manager import MCPGatewayManager
+from .gateway_profiles import (
+    GatewayProfileStore,
+    MCPGatewayMember,
+    MCPGatewayProfile,
+)
+from .gateway_process import GatewayChildProfile
 from .oauth_persistence import (
     bind_server_oauth_issuer,
+    bound_server_oauth_issuer,
     canonical_oauth_issuer,
+    delete_issuer_oauth_storage,
+    delete_server_oauth_storage,
     migrate_oauth_storage_to_issuer,
 )
 from .permission_broker import DesktopPermissionBroker
@@ -44,12 +56,18 @@ class DesktopAPI:
         # frontend and update checks must all report the exact same build.
         self._app_version = app_version or current_version()
         self.store = ServerProfileStore()
+        self.gateway_store = GatewayProfileStore()
         self.permission_broker = DesktopPermissionBroker()
         self._log_lock = threading.RLock()
         self._log_cursor = 0
         self._logs: deque[dict[str, object]] = deque(maxlen=2000)
         self.manager = MCPServerManager(
             store=self.store,
+            log=self._append_log,
+            permission_broker=self.permission_broker,
+        )
+        self.gateway_manager = MCPGatewayManager(
+            store=self.gateway_store,
             log=self._append_log,
             permission_broker=self.permission_broker,
         )
@@ -64,12 +82,17 @@ class DesktopAPI:
 
     def _close(self) -> None:
         self.manager.stop_all()
+        self.gateway_manager.stop_all()
         self.update_manager.cleanup()
         self.permission_broker.cleanup()
 
     def list_permission_requests(self) -> list[dict[str, object]]:
         requests = self.permission_broker.pending()
         names = {profile.server_id: profile.name for profile in self.store.list()}
+        for gateway in self.gateway_store.list():
+            names.update(
+                {member.server_id: member.name for member in gateway.members}
+            )
         payload = [
             {
                 **item,
@@ -156,6 +179,162 @@ class DesktopAPI:
             "exit_reason": status.exit_reason,
             "oauth_client_count": oauth_client_count,
         }
+
+    @staticmethod
+    def _public_hostname(network: NetworkConfig) -> str:
+        if not network.public_url:
+            return ""
+        return (urlsplit(network.public_url).hostname or "").lower()
+
+    def _next_available_port(self, start: int = 8234) -> int:
+        used = {profile.port for profile in self.store.list()}
+        used.update(gateway.port for gateway in self.gateway_store.list())
+        for port in range(max(1, int(start)), 65536):
+            if port not in used:
+                return port
+        raise RuntimeError("没有可用的 TCP 端口可分配。")
+
+    def _assert_direct_resources_available(
+        self,
+        *,
+        network: NetworkConfig,
+        host: str,
+        port: int,
+    ) -> None:
+        hostname = self._public_hostname(network)
+        for gateway in self.gateway_store.list():
+            if gateway.host == host and gateway.port == port:
+                raise ValueError(
+                    f"该地址已被 Local MCP Gateway 使用: {host}:{port}"
+                )
+            if hostname and hostname == self._public_hostname(gateway.network):
+                raise ValueError(
+                    "该 Public Hostname 已被 Local MCP Gateway 使用；"
+                    "直连 Server 必须使用独立 hostname。"
+                )
+
+    def _assert_gateway_resources_available(
+        self,
+        *,
+        network: NetworkConfig,
+        host: str,
+        port: int,
+    ) -> None:
+        hostname = self._public_hostname(network)
+        for profile in self.store.list():
+            if profile.host == host and profile.port == port:
+                raise ValueError(
+                    f"该地址已被直连 MCP Server 使用: {host}:{port}"
+                )
+            if hostname and hostname == self._public_hostname(profile.network):
+                raise ValueError(
+                    "该 Public Hostname 已被直连 MCP Server 使用；"
+                    "Gateway 必须使用独立 hostname。"
+                )
+
+    def _gateway_payload(self, gateway: MCPGatewayProfile) -> dict[str, object]:
+        status = self.gateway_manager.status(gateway.gateway_id)
+        info = status.info
+        members: list[dict[str, object]] = []
+        for member in gateway.members:
+            runtime_info = info.profile(member.server_id) if info else None
+            members.append(
+                {
+                    "server_id": member.server_id,
+                    "name": member.name,
+                    "workspace": str(member.workspace),
+                    "oauth_password": member.oauth_password,
+                    "has_saved_password": bool(member.oauth_password),
+                    "instance_path": member.instance_path,
+                    "permission_mode": member.permission_mode,
+                    "lifecycle": member.lifecycle,
+                    "allow_network": member.allow_network,
+                    "enable_view_image": member.enable_view_image,
+                    "public_mcp_url": (
+                        runtime_info.public_mcp_url if runtime_info else ""
+                    ),
+                    "local_mcp_url": (
+                        runtime_info.local_mcp_url if runtime_info else ""
+                    ),
+                    "oauth_issuer": (
+                        runtime_info.oauth_issuer if runtime_info else ""
+                    ),
+                }
+            )
+        return {
+            "gateway_id": gateway.gateway_id,
+            "name": gateway.name,
+            "host": gateway.host,
+            "port": gateway.port,
+            "created_at": gateway.created_at,
+            "updated_at": gateway.updated_at,
+            "network": {
+                "provider": gateway.network.provider,
+                "public_url": gateway.network.public_url,
+                "options": dict(gateway.network.options),
+            },
+            "members": members,
+            "running": status.running,
+            "public_base_url": info.public_base_url if info else "",
+            "url_mode": info.url_mode if info else "",
+            "exit_reason": status.exit_reason,
+        }
+
+    def _gateway_member_from_payload(
+        self,
+        raw: object,
+        *,
+        lifecycle: str,
+        remember_secrets: bool,
+        current: MCPGatewayMember | None = None,
+    ) -> MCPGatewayMember:
+        value = raw if isinstance(raw, dict) else {}
+        server_id = str(value.get("server_id") or (current.server_id if current else ""))
+        password = (
+            str(value.get("oauth_password") or (current.oauth_password if current else ""))
+            if remember_secrets
+            else ""
+        )
+        if server_id:
+            return MCPGatewayMember(
+                server_id=server_id,
+                name=str(value.get("name") or (current.name if current else "")),
+                workspace=Path(
+                    str(value.get("workspace") or (current.workspace if current else ""))
+                ),
+                oauth_password=password,
+                instance_path=str(
+                    value.get("instance_path")
+                    or (current.instance_path if current else "")
+                ),
+                permission_mode=str(
+                    value.get("permission_mode")
+                    or (current.permission_mode if current else "safe")
+                ),
+                lifecycle=lifecycle,
+                allow_network=bool(
+                    value.get(
+                        "allow_network",
+                        current.allow_network if current else False,
+                    )
+                ),
+                enable_view_image=bool(
+                    value.get(
+                        "enable_view_image",
+                        current.enable_view_image if current else True,
+                    )
+                ),
+            ).validated()
+        return MCPGatewayMember.create(
+            name=str(value.get("name") or ""),
+            workspace=Path(str(value.get("workspace") or "")),
+            oauth_password=password,
+            instance_path=str(value.get("instance_path") or ""),
+            permission_mode=str(value.get("permission_mode") or "safe"),
+            lifecycle=lifecycle,
+            allow_network=bool(value.get("allow_network", False)),
+            enable_view_image=bool(value.get("enable_view_image", True)),
+        )
 
     def _release_payload(self, info: Any) -> dict[str, object]:
         return {
@@ -261,6 +440,7 @@ class DesktopAPI:
 
     def bootstrap(self) -> dict[str, object]:
         profiles = self.store.list()
+        gateways = self.gateway_store.list()
         selected = self._selected_server_id()
         ids = {profile.server_id for profile in profiles}
         if selected not in ids:
@@ -270,8 +450,9 @@ class DesktopAPI:
             "version": self._app_version,
             "update_download_proxy_prefix": self._update_download_proxy_prefix(),
             "selected_server_id": selected,
-            "next_default_port": self.store.next_default_port(),
+            "next_default_port": self._next_available_port(),
             "servers": [self._profile_payload(profile) for profile in profiles],
+            "gateways": [self._gateway_payload(gateway) for gateway in gateways],
             "network_providers": [
                 {"key": "cloudflare", "label": "Cloudflare Tunnel"},
                 {"key": "frp", "label": "FRP"},
@@ -304,7 +485,7 @@ class DesktopAPI:
         return [self._profile_payload(profile) for profile in self.store.list()]
 
     def get_next_port(self) -> int:
-        return self.store.next_default_port()
+        return self._next_available_port()
 
     def select_server(self, server_id: str) -> bool:
         if self.store.get(server_id) is None:
@@ -315,13 +496,20 @@ class DesktopAPI:
     def create_server(self, payload: dict[str, object]) -> dict[str, object]:
         network = self._network_from_payload(payload.get("network"))
         remember = bool(payload.get("remember_secrets", True))
+        host = str(payload.get("host") or "127.0.0.1")
+        port = int(payload.get("port") or self._next_available_port())
+        self._assert_direct_resources_available(
+            network=network,
+            host=host,
+            port=port,
+        )
         profile = self.store.create(
             name=str(payload.get("name") or ""),
             workspace=Path(str(payload.get("workspace") or "")),
             oauth_password=str(payload.get("oauth_password") or "") if remember else "",
             network=self._persistable_network(network, remember),
-            host=str(payload.get("host") or "127.0.0.1"),
-            port=int(payload.get("port") or self.store.next_default_port()),
+            host=host,
+            port=port,
             lifecycle=default_lifecycle(network),
             permission_mode=str(payload.get("permission_mode") or "safe"),
         )
@@ -337,6 +525,13 @@ class DesktopAPI:
 
         network = self._network_from_payload(payload.get("network"))
         remember = bool(payload.get("remember_secrets", True))
+        host = str(payload.get("host") or current.host)
+        port = int(payload.get("port") or current.port)
+        self._assert_direct_resources_available(
+            network=network,
+            host=host,
+            port=port,
+        )
         profile = self.store.save(
             MCPServerProfile(
                 server_id=current.server_id,
@@ -346,8 +541,8 @@ class DesktopAPI:
                     str(payload.get("oauth_password") or "") if remember else ""
                 ),
                 network=self._persistable_network(network, remember),
-                host=str(payload.get("host") or current.host),
-                port=int(payload.get("port") or current.port),
+                host=host,
+                port=port,
                 lifecycle=default_lifecycle(network),
                 permission_mode=str(
                     payload.get("permission_mode") or current.permission_mode
@@ -418,6 +613,215 @@ class DesktopAPI:
         if profile is None:
             raise KeyError(f"找不到 MCP Server: {server_id}")
         return self._profile_payload(profile)
+
+    def list_gateways(self) -> list[dict[str, object]]:
+        return [
+            self._gateway_payload(gateway)
+            for gateway in self.gateway_store.list()
+        ]
+
+    def create_gateway(self, payload: dict[str, object]) -> dict[str, object]:
+        network = self._network_from_payload(payload.get("network"))
+        remember = bool(payload.get("remember_secrets", True))
+        host = str(payload.get("host") or "127.0.0.1")
+        port = int(payload.get("port") or self._next_available_port())
+        self._assert_gateway_resources_available(
+            network=network,
+            host=host,
+            port=port,
+        )
+        raw_members = payload.get("members")
+        if not isinstance(raw_members, list) or not raw_members:
+            raise ValueError("Gateway 至少需要一个 Member。")
+        lifecycle = default_lifecycle(network)
+        members = tuple(
+            self._gateway_member_from_payload(
+                raw,
+                lifecycle=lifecycle,
+                remember_secrets=remember,
+            )
+            for raw in raw_members
+        )
+        gateway = self.gateway_store.create(
+            name=str(payload.get("name") or ""),
+            network=self._persistable_network(network, remember),
+            members=members,
+            host=host,
+            port=port,
+        )
+        return self._gateway_payload(gateway)
+
+    def update_gateway(
+        self,
+        gateway_id: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        current = self.gateway_store.get(gateway_id)
+        if current is None:
+            raise KeyError(f"找不到 Local MCP Gateway: {gateway_id}")
+        if self.gateway_manager.is_running(gateway_id):
+            raise RuntimeError("请先停止 Local MCP Gateway，再修改配置。")
+
+        network = self._network_from_payload(payload.get("network"))
+        remember = bool(payload.get("remember_secrets", True))
+        host = str(payload.get("host") or current.host)
+        port = int(payload.get("port") or current.port)
+        self._assert_gateway_resources_available(
+            network=network,
+            host=host,
+            port=port,
+        )
+        lifecycle = default_lifecycle(network)
+        raw_members = payload.get("members")
+        current_by_id = {member.server_id: member for member in current.members}
+        if raw_members is None:
+            raw_members = [member.to_dict() for member in current.members]
+        if not isinstance(raw_members, list) or not raw_members:
+            raise ValueError("Gateway 至少需要一个 Member。")
+        members: list[MCPGatewayMember] = []
+        for raw in raw_members:
+            raw_dict = raw if isinstance(raw, dict) else {}
+            member_id = str(raw_dict.get("server_id") or "")
+            members.append(
+                self._gateway_member_from_payload(
+                    raw_dict,
+                    lifecycle=lifecycle,
+                    remember_secrets=remember,
+                    current=current_by_id.get(member_id),
+                )
+            )
+        removed_members = [
+            member
+            for member in current.members
+            if member.server_id not in {item.server_id for item in members}
+        ]
+        removed_issuers = {
+            member.server_id: bound_server_oauth_issuer(member.server_id)
+            for member in removed_members
+        }
+        gateway = self.gateway_store.save(
+            MCPGatewayProfile(
+                gateway_id=current.gateway_id,
+                name=str(payload.get("name") or current.name),
+                network=self._persistable_network(network, remember),
+                members=tuple(members),
+                host=host,
+                port=port,
+                created_at=current.created_at,
+                updated_at=current.updated_at,
+            )
+        )
+        for member in removed_members:
+            self.permission_broker.clear_server(member.server_id)
+            delete_server_oauth_storage(member.server_id)
+            issuer = removed_issuers.get(member.server_id)
+            if issuer and not self._oauth_identity_still_referenced(issuer):
+                delete_issuer_oauth_storage(issuer)
+        return self._gateway_payload(gateway)
+
+    def _oauth_identity_still_referenced(self, issuer: str) -> bool:
+        for profile in self.store.list():
+            if bound_server_oauth_issuer(profile.server_id) == issuer:
+                return True
+        for gateway in self.gateway_store.list():
+            for member in gateway.members:
+                if bound_server_oauth_issuer(member.server_id) == issuer:
+                    return True
+        return False
+
+    def delete_gateway(self, gateway_id: str) -> bool:
+        gateway = self.gateway_store.get(gateway_id)
+        if gateway is None:
+            return False
+        issuers = {
+            member.server_id: bound_server_oauth_issuer(member.server_id)
+            for member in gateway.members
+        }
+        deleted = self.gateway_manager.delete_profile(gateway_id)
+        if not deleted:
+            return False
+        for member in gateway.members:
+            self.permission_broker.clear_server(member.server_id)
+            delete_server_oauth_storage(member.server_id)
+            issuer = issuers.get(member.server_id)
+            if issuer and not self._oauth_identity_still_referenced(issuer):
+                delete_issuer_oauth_storage(issuer)
+        return True
+
+    def start_gateway(
+        self,
+        gateway_id: str,
+        runtime_payload: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        gateway = self.gateway_store.get(gateway_id)
+        if gateway is None:
+            raise KeyError(f"找不到 Local MCP Gateway: {gateway_id}")
+
+        if runtime_payload:
+            raw_network = runtime_payload.get("network")
+            network_payload = raw_network if isinstance(raw_network, dict) else {}
+            runtime_network = self._network_from_payload(network_payload)
+            if (
+                runtime_network.provider != gateway.network.provider
+                or runtime_network.public_url != gateway.network.public_url
+            ):
+                raise ValueError("运行配置与已保存 Gateway 不一致，请先保存配置。")
+            merged_options = dict(gateway.network.options)
+            for key, value in runtime_network.options.items():
+                if value:
+                    merged_options[key] = value
+            network = NetworkConfig(
+                provider=gateway.network.provider,
+                public_url=gateway.network.public_url,
+                options=merged_options,
+            ).validated()
+            raw_members = runtime_payload.get("members")
+            overrides: dict[str, dict[str, object]] = {}
+            if isinstance(raw_members, list):
+                for raw in raw_members:
+                    if not isinstance(raw, dict):
+                        continue
+                    server_id = str(raw.get("server_id") or "")
+                    if server_id:
+                        overrides[server_id] = raw
+            profiles: list[GatewayChildProfile] = []
+            for member in gateway.members:
+                override = overrides.get(member.server_id, {})
+                profiles.append(
+                    GatewayChildProfile(
+                        server_id=member.server_id,
+                        name=member.name,
+                        workspace=member.workspace,
+                        oauth_password=str(
+                            override.get("oauth_password")
+                            or member.oauth_password
+                        ),
+                        instance_path=member.instance_path,
+                        permission_mode=member.permission_mode,
+                        lifecycle=member.lifecycle,
+                        allow_network=member.allow_network,
+                        enable_view_image=member.enable_view_image,
+                    )
+                )
+            config = GatewayLaunchConfig(
+                network=network,
+                profiles=tuple(profiles),
+                host=gateway.host,
+                port=gateway.port,
+            ).validated()
+            self.gateway_manager.start_config(gateway_id, config)
+        else:
+            self.gateway_manager.start(gateway_id)
+        return self._gateway_payload(self.gateway_store.get(gateway_id) or gateway)
+
+    def stop_gateway(self, gateway_id: str) -> dict[str, object]:
+        self.gateway_manager.stop(gateway_id)
+        gateway = self.gateway_store.get(gateway_id)
+        if gateway is None:
+            raise KeyError(f"找不到 Local MCP Gateway: {gateway_id}")
+        for member in gateway.members:
+            self.permission_broker.clear_server(member.server_id)
+        return self._gateway_payload(gateway)
 
     def list_oauth_clients(self, server_id: str) -> list[dict[str, object]]:
         return [

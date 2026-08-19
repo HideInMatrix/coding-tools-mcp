@@ -1,4 +1,4 @@
-export type PageKey = 'servers' | 'clients' | 'logs' | 'about'
+export type PageKey = 'servers' | 'gateways' | 'clients' | 'logs' | 'about'
 
 export interface NetworkConfigDto {
   provider: 'cloudflare' | 'frp' | 'ngrok' | 'tailscale' | 'external'
@@ -37,6 +37,57 @@ export interface ServerDraft {
   network: NetworkConfigDto
 }
 
+export interface GatewayMemberDto {
+  server_id: string
+  name: string
+  workspace: string
+  oauth_password: string
+  has_saved_password: boolean
+  instance_path: string
+  permission_mode: 'safe' | 'trusted' | 'dangerous'
+  lifecycle: 'persistent' | 'ephemeral'
+  allow_network: boolean
+  enable_view_image: boolean
+  public_mcp_url: string
+  local_mcp_url: string
+  oauth_issuer: string
+}
+
+export interface GatewayMemberDraft {
+  server_id?: string
+  name: string
+  workspace: string
+  oauth_password: string
+  instance_path: string
+  permission_mode: 'safe' | 'trusted' | 'dangerous'
+  allow_network: boolean
+  enable_view_image: boolean
+}
+
+export interface GatewayDto {
+  gateway_id: string
+  name: string
+  host: string
+  port: number
+  created_at: number
+  updated_at: number
+  network: NetworkConfigDto
+  members: GatewayMemberDto[]
+  running: boolean
+  public_base_url: string
+  url_mode: string
+  exit_reason: string
+}
+
+export interface GatewayDraft {
+  name: string
+  host: string
+  port: number
+  remember_secrets: boolean
+  network: NetworkConfigDto
+  members: GatewayMemberDraft[]
+}
+
 export interface OAuthClientDto {
   client_id: string
   client_name: string
@@ -52,6 +103,7 @@ export interface BootstrapDto {
   selected_server_id: string
   next_default_port: number
   servers: ServerDto[]
+  gateways: GatewayDto[]
   network_providers: Array<{ key: string; label: string }>
 }
 
@@ -101,6 +153,7 @@ export interface DesktopBridge {
   get_update_download_proxy(): Promise<string>
   save_update_download_proxy(prefix: string): Promise<string>
   list_servers(): Promise<ServerDto[]>
+  list_gateways(): Promise<GatewayDto[]>
   get_next_port(): Promise<number>
   select_server(serverId: string): Promise<boolean>
   create_server(payload: ServerDraft): Promise<ServerDto>
@@ -108,6 +161,11 @@ export interface DesktopBridge {
   delete_server(serverId: string): Promise<boolean>
   start_server(serverId: string, payload?: ServerDraft): Promise<ServerDto>
   stop_server(serverId: string): Promise<ServerDto>
+  create_gateway(payload: GatewayDraft): Promise<GatewayDto>
+  update_gateway(gatewayId: string, payload: GatewayDraft): Promise<GatewayDto>
+  delete_gateway(gatewayId: string): Promise<boolean>
+  start_gateway(gatewayId: string, payload?: GatewayDraft): Promise<GatewayDto>
+  stop_gateway(gatewayId: string): Promise<GatewayDto>
   list_oauth_clients(serverId: string): Promise<OAuthClientDto[]>
   revoke_oauth_client(serverId: string, clientId: string): Promise<boolean>
   revoke_all_oauth_clients(serverId: string): Promise<number>

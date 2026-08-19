@@ -1926,7 +1926,7 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertIn("ahead", payload)
         self.assertIn("behind", payload)
 
-    def test_git_read_tools_keep_030_compatible_fields(self) -> None:
+    def test_git_read_tools_keep_project_contract_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
@@ -2042,7 +2042,7 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertFalse(result["isError"])
         self.assertEqual(final_text, "ONE\ntwo\nthree\nFOUR\n")
 
-    def test_patch_move_preserves_mode_and_reports_030_shape(self) -> None:
+    def test_patch_move_preserves_mode_and_reports_project_contract_shape(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "script.sh"

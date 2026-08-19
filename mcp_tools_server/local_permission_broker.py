@@ -127,6 +127,25 @@ class LocalPermissionBrokerClient:
             os.environ.get(BROKER_SERVER_ID_ENV, "").strip(),
         )
 
+    @classmethod
+    def from_values(
+        cls,
+        *,
+        directory: str | Path,
+        secret_hex: str,
+        server_id: str,
+    ) -> "LocalPermissionBrokerClient":
+        resolved = Path(directory).expanduser().resolve()
+        try:
+            secret = bytes.fromhex(secret_hex.strip())
+        except ValueError as exc:
+            raise ValueError("permission broker secret must be hex encoded") from exc
+        if len(secret) != 32:
+            raise ValueError("permission broker secret must contain exactly 32 bytes")
+        if not resolved.is_dir():
+            raise ValueError(f"permission broker directory is not available: {resolved}")
+        return cls(resolved, secret, server_id.strip())
+
     def request(
         self,
         *,

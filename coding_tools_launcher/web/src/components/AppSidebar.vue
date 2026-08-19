@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Info, KeyRound, ScrollText, Server } from '@lucide/vue'
+import { Info, KeyRound, Network, ScrollText, Server } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import type { PageKey } from '../types'
 
@@ -21,6 +21,10 @@ const emit = defineEmits<{ select: [page: PageKey] }>()
       <Button variant="ghost" :class="['group nav-item', { active: active === 'servers' }]" @click="emit('select', 'servers')">
         <Server :size="16" :stroke-width="1.8" />
         <span>服务</span>
+      </Button>
+      <Button variant="ghost" :class="['group nav-item', { active: active === 'gateways' }]" @click="emit('select', 'gateways')">
+        <Network :size="16" :stroke-width="1.8" />
+        <span>Gateway</span>
       </Button>
       <Button variant="ghost" :class="['group nav-item', { active: active === 'clients' }]" @click="emit('select', 'clients')">
         <KeyRound :size="16" :stroke-width="1.8" />

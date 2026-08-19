@@ -34,6 +34,7 @@ from .oauth import (
     OAUTH_REFRESH_TOKEN_TTL_SECONDS,
     OAUTH_TOKEN_TTL_SECONDS,
     OAuthClient,
+    OAuthClientRegistry,
     OAuthConfig,
     client_from_metadata_document,
     create_access_token,
@@ -43,6 +44,10 @@ from .oauth import (
     verify_pkce,
 )
 from .errors import RpcError
+from .gateway import GatewayProfile, GatewayRuntimePool
+from .gateway.config import build_gateway_runtime_pool, load_gateway_config
+from .core import ENDPOINT_PATH
+from .permissions import PERMISSION_MODES
 from .protocol import (
     HEADER_MISMATCH,
     KNOWN_PROTOCOL_VERSIONS,
@@ -51,7 +56,7 @@ from .protocol import (
     rpc_response_status,
     validate_mirror_headers,
 )
-from .runtime import ENDPOINT_PATH, PERMISSION_MODES, Runtime
+from .runtime import Runtime
 from .route_probe import ROUTE_PROBE_HEADER, ROUTE_PROBE_PATH, ROUTE_PROBE_TOKEN_ENV
 from .transport_stdio import serve_stdio
 
@@ -333,8 +338,19 @@ def _allowed_origin(origin: str) -> bool:
 class MCPHTTPServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], runtime: Runtime):
+    def __init__(
+        self,
+        address: tuple[str, int],
+        runtime: Runtime | None = None,
+        *,
+        gateway_pool: GatewayRuntimePool | None = None,
+    ):
+        if runtime is None and gateway_pool is None:
+            raise ValueError("runtime or gateway_pool is required")
+        if runtime is not None and gateway_pool is not None:
+            raise ValueError("runtime and gateway_pool are mutually exclusive")
         self.runtime = runtime
+        self.gateway_pool = gateway_pool
         super().__init__(address, MCPHandler)
 
 
@@ -343,7 +359,30 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
 
     @property
     def runtime(self) -> Runtime:
-        return self.server.runtime  # type: ignore[attr-defined, no-any-return]
+        selected = getattr(self, "_gateway_runtime", None)
+        if selected is not None:
+            return selected
+        runtime = self.server.runtime  # type: ignore[attr-defined]
+        if runtime is None:
+            raise RuntimeError("gateway request runtime has not been selected")
+        return runtime
+
+    @property
+    def gateway_profile(self) -> GatewayProfile | None:
+        return getattr(self, "_gateway_profile", None)
+
+    def _select_request_runtime(self) -> bool:
+        pool = self.server.gateway_pool  # type: ignore[attr-defined]
+        if pool is None:
+            return True
+        resolved = pool.runtime_for_path(urllib.parse.urlparse(self.path).path)
+        if resolved is None:
+            self._json(404, {"error": "gateway_profile_not_found"})
+            return False
+        profile, runtime = resolved
+        self._gateway_profile = profile
+        self._gateway_runtime = runtime
+        return True
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(fmt % args, file=sys.stderr)
@@ -357,9 +396,14 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         if not host:
             server_host, server_port = self.server.server_address[:2]  # type: ignore[attr-defined]
             host = f"{server_host}:{server_port}"
-        return f"{scheme}://{host}".rstrip("/")
+        base = f"{scheme}://{host}".rstrip("/")
+        profile = self.gateway_profile
+        return f"{base}{profile.instance_path}" if profile else base
 
     def _instance_prefix(self) -> str:
+        profile = self.gateway_profile
+        if profile is not None:
+            return profile.instance_path
         config = self.runtime.oauth_config
         return _url_path(config.server_url if config else None)
 
@@ -374,7 +418,10 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
     def _resource_metadata_path(self) -> str:
         config = self.runtime.oauth_config
         resource = config.resource if config and config.resource else None
-        return f"/.well-known/oauth-protected-resource{_url_path(resource)}"
+        resource_path = _url_path(resource)
+        if not resource_path and self._instance_prefix():
+            resource_path = f"{self._instance_prefix()}{ENDPOINT_PATH}"
+        return f"/.well-known/oauth-protected-resource{resource_path}"
 
     def _authorization_metadata_paths(self) -> set[str]:
         prefix = self._instance_prefix()
@@ -502,7 +549,10 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             auth = {"type": "none"}
         tools = self.runtime.list_tools()["tools"]
         config = self.runtime.oauth_config
-        endpoint = _url_path(config.resource if config and config.resource else None) or ENDPOINT_PATH
+        endpoint = _url_path(config.resource if config and config.resource else None)
+        if not endpoint:
+            prefix = self._instance_prefix()
+            endpoint = f"{prefix}{ENDPOINT_PATH}" if prefix else ENDPOINT_PATH
         return {
             "server": self.runtime.server_identity(),
             "supportedProtocolVersions": list(KNOWN_PROTOCOL_VERSIONS),
@@ -543,6 +593,8 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         }
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        if not self._select_request_runtime():
+            return
         self.send_response(204)
         self.send_header("Allow", "GET, HEAD, POST, OPTIONS")
         origin = self.headers.get("Origin")
@@ -553,6 +605,8 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
+        if not self._select_request_runtime():
+            return
         raw_path = urllib.parse.urlparse(self.path).path
         path = self._route_path(raw_path)
         if path == ROUTE_PROBE_PATH:
@@ -605,6 +659,8 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         self._json(404, {"error": "not_found"})
 
     def do_DELETE(self) -> None:  # noqa: N802
+        if not self._select_request_runtime():
+            return
         path = self._route_path(urllib.parse.urlparse(self.path).path)
         if path != ENDPOINT_PATH:
             self._json(404, {"error": "not_found"})
@@ -633,6 +689,8 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         return None
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._select_request_runtime():
+            return
         path = self._route_path(urllib.parse.urlparse(self.path).path)
         if path == ENDPOINT_PATH:
             self._mcp_post()
@@ -1063,6 +1121,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stdio", action="store_true")
     parser.add_argument("--auth-token", default=None)
     parser.add_argument("--oauth-mode", action="store_true", default=False)
+    parser.add_argument(
+        "--gateway-config",
+        default=os.environ.get(f"{ENV_PREFIX}_GATEWAY_CONFIG") or None,
+        help="Run Local MCP Gateway mode using a versioned local JSON config file.",
+    )
     parser.add_argument("--permission-mode", choices=PERMISSION_MODES, default=None)
     parser.add_argument("--allow-network", action="store_true")
     parser.add_argument("--enable-view-image", action="store_true", default=os.environ.get(f"{ENV_PREFIX}_ENABLE_VIEW_IMAGE", "1") != "0")
@@ -1114,6 +1177,9 @@ def _oauth_config() -> OAuthConfig:
         token_secret=token_secret,
         token_ttl=token_ttl,
         refresh_token_ttl=refresh_token_ttl,
+        registry=OAuthClientRegistry(
+            os.environ.get(f"{ENV_PREFIX}_OAUTH_CLIENT_REGISTRY_FILE") or None
+        ),
     )
     return config
 
@@ -1136,6 +1202,8 @@ def build_runtime(args: argparse.Namespace, *, http: bool) -> Runtime:
 
 
 def run_http(args: argparse.Namespace) -> int:
+    if args.gateway_config:
+        return run_gateway_http(args)
     try:
         runtime = build_runtime(args, http=True)
     except (ValueError, OSError) as exc:
@@ -1163,7 +1231,57 @@ def run_http(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_gateway_http(args: argparse.Namespace) -> int:
+    try:
+        config = load_gateway_config(args.gateway_config)
+        registry, pool = build_gateway_runtime_pool(config)
+        # Instantiate every profile before binding so invalid Workspace/OAuth
+        # state fails startup atomically rather than on the first request.
+        runtimes = [pool.get(profile.profile_id) for profile in registry.profiles()]
+    except (ValueError, OSError, RuntimeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    auth_mode = os.environ.get(f"{ENV_PREFIX}_AUTH_MODE", "").strip().lower()
+    if (
+        not _loopback(str(args.host))
+        and auth_mode != "noauth"
+        and any(not runtime.auth_enabled() for runtime in runtimes)
+    ):
+        print(
+            "ERROR: non-loopback Gateway binding requires authentication for every profile or CODING_TOOLS_MCP_AUTH_MODE=noauth.",
+            file=sys.stderr,
+        )
+        pool.close()
+        return 2
+    try:
+        server = MCPHTTPServer(
+            (str(args.host), int(args.port)),
+            gateway_pool=pool,
+        )
+    except OSError as exc:
+        print(f"ERROR: cannot bind {args.host}:{args.port}: {exc}", file=sys.stderr)
+        pool.close()
+        return 2
+    print(
+        f"Coding Tools MCP Gateway listening on http://{args.host}:{args.port} "
+        f"with {len(registry)} profiles",
+        file=sys.stderr,
+    )
+    try:
+        server.serve_forever(poll_interval=0.3)
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        server.server_close()
+        pool.close()
+    return 0
+
+
 def run_stdio(args: argparse.Namespace) -> int:
+    if args.gateway_config:
+        print("ERROR: Local MCP Gateway currently supports HTTP mode only.", file=sys.stderr)
+        return 2
     try:
         runtime = build_runtime(args, http=False)
     except (ValueError, OSError) as exc:

@@ -400,6 +400,12 @@ def install_oauth_registry_persistence() -> None:
 
     from mcp_tools_server.oauth import OAuthClient, OAuthClientRegistry
 
+    # Newer project-owned mcp_tools_server versions persist each registry
+    # instance directly. Keep this launcher hook as a compatibility no-op so
+    # old startup code does not need to branch by server version.
+    if hasattr(OAuthClientRegistry, "persistence_file"):
+        return
+
     if getattr(OAuthClientRegistry, "_launcher_persistence_installed", False):
         return
 

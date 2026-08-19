@@ -12,10 +12,13 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import secrets
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -143,13 +146,110 @@ class OAuthClient:
 class OAuthClientRegistry:
     """Thread-safe RFC 7591 client registry.
 
-    Attribute names intentionally remain simple/private so
-    ``coding_tools_launcher.oauth_persistence`` can serialize the registry.
+    Persistence is instance-scoped so multiple Gateway profiles can keep
+    independent DCR client registries in one process.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, persistence_file: str | Path | None = None) -> None:
         self._clients: dict[str, OAuthClient] = {}
         self._lock = threading.RLock()
+        self._persistence_file = (
+            Path(persistence_file).expanduser()
+            if persistence_file is not None and str(persistence_file).strip()
+            else None
+        )
+        self._load_persisted()
+
+    @property
+    def persistence_file(self) -> Path | None:
+        return self._persistence_file
+
+    def _load_persisted(self) -> None:
+        path = self._persistence_file
+        if path is None or not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"OAuth client registry 文件损坏: {path}") from exc
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            raise RuntimeError(f"OAuth client registry 格式不受支持: {path}")
+        raw_clients = payload.get("clients", [])
+        if not isinstance(raw_clients, list):
+            raise RuntimeError(f"OAuth client registry clients 字段无效: {path}")
+
+        restored: dict[str, OAuthClient] = {}
+        try:
+            for item in raw_clients:
+                if not isinstance(item, dict):
+                    raise ValueError("client entry must be an object")
+                client_id = str(item["client_id"])
+                redirect_uris = tuple(str(value) for value in item["redirect_uris"])
+                auth_method = str(item["token_endpoint_auth_method"])
+                client_name_value = item.get("client_name")
+                secret_digest_value = item.get("secret_digest")
+                restored[client_id] = OAuthClient(
+                    client_id=client_id,
+                    redirect_uris=redirect_uris,
+                    token_endpoint_auth_method=auth_method,
+                    client_name=(
+                        str(client_name_value)
+                        if client_name_value is not None
+                        else None
+                    ),
+                    secret_digest=(
+                        str(secret_digest_value)
+                        if secret_digest_value is not None
+                        else None
+                    ),
+                    issued_at=int(item["issued_at"]),
+                    application_type=str(item.get("application_type", "web")),
+                )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(f"OAuth client registry 内容无效: {path}") from exc
+        with self._lock:
+            self._clients.update(restored)
+
+    def _save_persisted(self) -> None:
+        path = self._persistence_file
+        if path is None:
+            return
+        with self._lock:
+            clients = list(self._clients.values())
+        payload = {
+            "version": 1,
+            "clients": [
+                {
+                    "client_id": client.client_id,
+                    "redirect_uris": list(client.redirect_uris),
+                    "token_endpoint_auth_method": client.token_endpoint_auth_method,
+                    "client_name": client.client_name,
+                    "secret_digest": client.secret_digest,
+                    "issued_at": client.issued_at,
+                    "application_type": client.application_type,
+                }
+                for client in clients
+            ],
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            text=True,
+        )
+        temporary_path = Path(temporary)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, path)
+        finally:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def get(self, client_id: str) -> OAuthClient | None:
         with self._lock:
@@ -166,13 +266,18 @@ class OAuthClientRegistry:
 
     def remove(self, client_id: str) -> bool:
         with self._lock:
-            return self._clients.pop(client_id, None) is not None
+            removed = self._clients.pop(client_id, None) is not None
+        if removed:
+            self._save_persisted()
+        return removed
 
     def clear(self) -> int:
         with self._lock:
             count = len(self._clients)
             self._clients.clear()
-            return count
+        if count:
+            self._save_persisted()
+        return count
 
     def add_preregistered(
         self,
@@ -196,6 +301,7 @@ class OAuthClientRegistry:
         )
         with self._lock:
             self._clients[client_id] = client
+        self._save_persisted()
 
     def register(self, metadata: dict[str, Any]) -> dict[str, Any]:
         raw_redirects = metadata.get("redirect_uris")
@@ -233,6 +339,7 @@ class OAuthClientRegistry:
         )
         with self._lock:
             self._clients[client_id] = client
+        self._save_persisted()
         response: dict[str, Any] = {
             "client_id": client_id,
             "client_id_issued_at": issued_at,

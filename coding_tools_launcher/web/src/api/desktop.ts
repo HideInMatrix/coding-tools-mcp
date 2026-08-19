@@ -1,5 +1,7 @@
 import type {
   DesktopBridge,
+  GatewayDraft,
+  GatewayDto,
   LogEntryDto,
   OAuthClientDto,
   PermissionRequestDto,
@@ -55,6 +57,9 @@ export const desktopApi = {
   async listServers(): Promise<ServerDto[]> {
     return (await bridge()).list_servers()
   },
+  async listGateways(): Promise<GatewayDto[]> {
+    return (await bridge()).list_gateways()
+  },
   async nextPort(): Promise<number> {
     return (await bridge()).get_next_port()
   },
@@ -75,6 +80,21 @@ export const desktopApi = {
   },
   async stopServer(serverId: string): Promise<ServerDto> {
     return (await bridge()).stop_server(serverId)
+  },
+  async createGateway(payload: GatewayDraft): Promise<GatewayDto> {
+    return (await bridge()).create_gateway(payload)
+  },
+  async updateGateway(gatewayId: string, payload: GatewayDraft): Promise<GatewayDto> {
+    return (await bridge()).update_gateway(gatewayId, payload)
+  },
+  async deleteGateway(gatewayId: string): Promise<boolean> {
+    return (await bridge()).delete_gateway(gatewayId)
+  },
+  async startGateway(gatewayId: string, payload?: GatewayDraft): Promise<GatewayDto> {
+    return (await bridge()).start_gateway(gatewayId, payload)
+  },
+  async stopGateway(gatewayId: string): Promise<GatewayDto> {
+    return (await bridge()).stop_gateway(gatewayId)
   },
   async listOAuthClients(serverId: string): Promise<OAuthClientDto[]> {
     return (await bridge()).list_oauth_clients(serverId)

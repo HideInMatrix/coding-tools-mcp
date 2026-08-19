@@ -4,6 +4,7 @@ import { ChevronDown } from '@lucide/vue'
 import { desktopApi } from './api/desktop'
 import AboutView from './components/AboutView.vue'
 import AppSidebar from './components/AppSidebar.vue'
+import GatewayView from './components/GatewayView.vue'
 import LogPanel from './components/LogPanel.vue'
 import OAuthClientView from './components/OAuthClientView.vue'
 import ServerEditor from './components/ServerEditor.vue'
@@ -366,6 +367,7 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
           </section>
         </template>
 
+        <GatewayView v-else-if="page === 'gateways'" />
         <OAuthClientView v-else-if="page === 'clients'" :servers="servers" :selected-id="selectedId" :clients="clients" @select="openClients" @refresh="refreshClients" @revoke="revokeClient" @revoke-all="revokeAll" />
         <section v-else-if="page === 'logs'" class="content-page page-stack">
           <header class="page-header">

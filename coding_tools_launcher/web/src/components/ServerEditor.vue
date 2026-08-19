@@ -225,7 +225,7 @@ async function autoDetect(product: string, option = 'executable') {
           <span class="field-help">多台电脑请分别使用不同 hostname，并在 Cloudflare 中把该 hostname 绑定到当前电脑自己的 Named Tunnel。</span>
         </label>
         <label class="field span-2">
-          <span>Local Gateway Path（预留）</span>
+          <span>实例 Path（高级）</span>
           <InputGroup>
             <InputGroupAddon>/</InputGroupAddon>
             <InputGroupInput
@@ -245,13 +245,13 @@ async function autoDetect(product: string, option = 'executable') {
             </InputGroupButton>
           </InputGroup>
           <span v-if="resolvedPublicMcpUrl" class="field-help">当前 MCP URL：{{ resolvedPublicMcpUrl }}</span>
-          <span class="field-help">Path 不用于选择 Cloudflare Tunnel。它保留给后续 Local MCP Gateway：同一台机器由一个 Gateway 端口按 Path 分发多个 Profile。</span>
+          <span class="field-help">Path 不用于选择 Cloudflare Tunnel。直连 Server 通常留空；同一台机器需要一个 hostname 承载多个 Profile 时，请使用左侧 Gateway 页面统一配置 Path 分流。</span>
         </label>
         <label class="field span-2">
           <span>Tunnel Token</span>
           <input v-model="model.network.options.tunnel_token" :disabled="locked" type="password" placeholder="每台电脑使用独立 Named Tunnel Token" />
         </label>
-        <p class="form-note span-2">当前直连模式采用“一个 Public Hostname + 一个 Named Tunnel + 一个 Server Profile”。不同电脑使用不同 hostname；Cloudflare 的 Published Application Path 保持为空即可。Local Gateway 完成后才会开放同 hostname + 不同 Path 的多 Profile 分发。Hostname 和 Token 都留空时使用临时 Quick Tunnel。</p>
+        <p class="form-note span-2">当前直连模式采用“一个 Public Hostname + 一个 Named Tunnel + 一个 Server Profile”。不同电脑使用不同 hostname；Cloudflare 的 Published Application Path 保持为空即可。同一台机器需要“同 hostname + 不同 Path”的多个 Profile 时，请使用 Local MCP Gateway。Hostname 和 Token 都留空时使用临时 Quick Tunnel。</p>
       </template>
 
       <label v-else class="field span-2">
