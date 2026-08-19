@@ -375,6 +375,8 @@ org.micromatrix.coding-tools-mcp
 Release 文件名不包含版本号，平台名称统一为：
 
 ```text
+Coding-Tools-MCP-windows-x64.exe
+Coding-Tools-MCP-windows-arm64.exe
 Coding-Tools-MCP-windows-x64.zip
 Coding-Tools-MCP-windows-arm64.zip
 Coding-Tools-MCP-macos-x64.dmg
@@ -385,7 +387,7 @@ Coding-Tools-MCP-linux-x64.tar.gz
 Coding-Tools-MCP-linux-arm64.tar.gz
 ```
 
-macOS 的 `.dmg` 用于首次手动安装，`.zip` 专供应用内更新。每个可用于自动更新的归档同时发布对应的 `.sha256` 校验文件。
+Windows 的 `.exe` 是当前正式安装与应用内更新包；Windows `.zip` 仅用于旧版 `onedir` updater 迁移到单文件版本。macOS 的 `.dmg` 用于首次手动安装，`.zip` 专供应用内更新。每个可用于自动更新的包同时发布对应的 `.sha256` 校验文件。
 
 版本号只保留在 Git Tag / GitHub Release 中，例如 `v0.1.4`，不会重复写入压缩包文件名。
 

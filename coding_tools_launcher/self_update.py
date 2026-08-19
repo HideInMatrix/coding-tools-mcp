@@ -64,6 +64,8 @@ def current_install_target() -> Path:
                     )
                 return candidate
         raise RuntimeError("无法定位当前 macOS .app 安装目录。")
+    if sys.platform.startswith("win"):
+        return executable
     return executable.parent
 
 
@@ -268,51 +270,103 @@ exit 0
 
 
 _WINDOWS_HELPER = r'''param(
-  [Parameter(Mandatory=$true)][string]$Archive,
+  [Parameter(Mandatory=$true)][string]$Package,
   [Parameter(Mandatory=$true)][string]$Target,
-  [Parameter(Mandatory=$true)][int]$ParentPid,
-  [Parameter(Mandatory=$true)][string]$ExecutableName
+  [Parameter(Mandatory=$true)][int]$ParentPid
 )
 $ErrorActionPreference = "Stop"
+$exitCode = 0
+$backup = $Target + ".coding-tools-update-backup"
 
+function Start-CurrentExecutable {
+  if (Test-Path -LiteralPath $Target -PathType Leaf) {
+    Start-Process -FilePath $Target -ErrorAction SilentlyContinue | Out-Null
+  }
+}
+
+function Move-CurrentToBackup {
+  $lastError = $null
+  for ($attempt = 1; $attempt -le 20; $attempt++) {
+    try {
+      Move-Item -LiteralPath $Target -Destination $backup -Force
+      return
+    } catch {
+      $lastError = $_
+      if ($attempt -lt 20) { Start-Sleep -Milliseconds 250 }
+    }
+  }
+  throw $lastError
+}
+
+$parentDeadline = [DateTime]::UtcNow.AddSeconds(15)
 while (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {
+  if ([DateTime]::UtcNow -ge $parentDeadline) {
+    [Console]::Error.WriteLine("Updater: parent process did not exit in time; forcing shutdown")
+    Stop-Process -Id $ParentPid -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+    break
+  }
   Start-Sleep -Milliseconds 250
 }
-
-$staging = Join-Path $env:TEMP ("coding-tools-mcp-update-" + [guid]::NewGuid().ToString("N"))
-$backup = $Target + ".coding-tools-update-backup"
-New-Item -ItemType Directory -Path $staging | Out-Null
+if (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {
+  throw "Updater: parent process is still running after forced shutdown"
+}
 
 try {
-  Expand-Archive -LiteralPath $Archive -DestinationPath $staging -Force
-  $source = Join-Path $staging (Split-Path $Target -Leaf)
-  if (-not (Test-Path -LiteralPath $source -PathType Container)) {
-    throw "Updater: extracted application directory not found: $source"
+  if (-not (Test-Path -LiteralPath $Package -PathType Leaf)) {
+    throw "Updater: downloaded executable not found: $Package"
   }
-  if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
-  Move-Item -LiteralPath $Target -Destination $backup
+  if (-not (Test-Path -LiteralPath $Target -PathType Leaf)) {
+    throw "Updater: current executable not found: $Target"
+  }
+  if (Test-Path -LiteralPath $backup) {
+    Remove-Item -LiteralPath $backup -Force
+  }
+
+  Move-CurrentToBackup
   try {
-    Move-Item -LiteralPath $source -Destination $Target
+    Copy-Item -LiteralPath $Package -Destination $Target -Force
   } catch {
-    if (Test-Path -LiteralPath $Target) { Remove-Item -LiteralPath $Target -Recurse -Force }
-    Move-Item -LiteralPath $backup -Destination $Target
+    if (Test-Path -LiteralPath $Target) {
+      Remove-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
+    }
+    Move-Item -LiteralPath $backup -Destination $Target -Force
     throw
   }
-  Remove-Item -LiteralPath $Archive -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath (Split-Path $Archive -Parent) -Force -ErrorAction SilentlyContinue
-  Start-Process -FilePath (Join-Path $Target $ExecutableName)
-  Start-Sleep -Seconds 2
-  Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
-} catch {
-  $currentExe = Join-Path $Target $ExecutableName
-  if (Test-Path -LiteralPath $currentExe -PathType Leaf) {
-    Start-Process -FilePath $currentExe -ErrorAction SilentlyContinue
+
+  try {
+    $newProcess = Start-Process -FilePath $Target -PassThru
+    Start-Sleep -Seconds 2
+    if ($newProcess.HasExited) {
+      throw "Updater: new executable exited during automatic restart"
+    }
+  } catch {
+    if (Test-Path -LiteralPath $Target) {
+      Remove-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $backup) {
+      Move-Item -LiteralPath $backup -Destination $Target -Force
+    }
+    throw
   }
-  throw
-} finally {
-  Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+
+  Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $Package -Force -ErrorAction SilentlyContinue
+  $downloadDir = Split-Path $Package -Parent
+  if (Test-Path -LiteralPath $downloadDir -PathType Container) {
+    Remove-Item -LiteralPath $downloadDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+} catch {
+  $exitCode = 1
+  if (-not (Test-Path -LiteralPath $Target -PathType Leaf) -and (Test-Path -LiteralPath $backup -PathType Leaf)) {
+    Move-Item -LiteralPath $backup -Destination $Target -Force -ErrorAction SilentlyContinue
+  }
+  Start-CurrentExecutable
+  [Console]::Error.WriteLine("Updater failed: " + $_.Exception.Message)
 }
+
 Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+exit $exitCode
 '''
 
 
@@ -357,14 +411,12 @@ def _spawn_update_helper(archive: Path, target: Path) -> None:
             "Bypass",
             "-File",
             str(script),
-            "-Archive",
+            "-Package",
             str(archive),
             "-Target",
             str(target),
             "-ParentPid",
             str(parent_pid),
-            "-ExecutableName",
-            executable_name,
         ]
         creationflags = 0
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)

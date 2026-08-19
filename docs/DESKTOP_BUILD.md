@@ -8,8 +8,8 @@ Vue/Vite 生成的 `coding_tools_launcher/web/dist/` 是平台无关的静态资
 
 ```text
 Frontend Build（一次）
-  pnpm install --frozen-lockfile
-  pnpm build
+  npm install --no-package-lock --no-audit --no-fund
+  npm run build
         ↓
   web-dist artifact
         ↓
@@ -33,12 +33,14 @@ python build_desktop.py
 
 ```bash
 cd coding_tools_launcher/web
-pnpm install
+npm install --no-package-lock --no-audit --no-fund
 cd ../..
 python build_desktop.py --build-web
 ```
 
-`--build-web` 只执行 `pnpm build`，不会隐式安装依赖。
+`--build-web` 使用 npm 安装前端依赖并执行 `npm run build`。
+
+本地前端开发仍可使用 pnpm；这里只约束 Desktop Release / CI 构建链统一使用 npm。
 
 ## 3. CI Artifact 复用
 
@@ -65,6 +67,15 @@ coding_tools_launcher/web/dist
 - `cloudflared` 原生可执行文件。
 - macOS `.app` / Windows `.exe` / Linux bundle。
 - 后续可能加入的签名、公证、安装器资源。
+
+Windows Release 使用 PyInstaller `--onefile`，直接发布
+`Coding-Tools-MCP-windows-<arch>.exe`。应用内更新下载新的 `.exe`，在主进程退出后
+由独立 PowerShell helper 原子替换当前可执行文件并重新启动；替换或重启失败时回滚旧 `.exe`。
+
+过渡期 Release 还会额外生成同名 `.zip`。这个 ZIP 只用于兼容旧版 `onedir` updater，
+内部仅包含 `Coding Tools MCP/Coding Tools MCP.exe`。新版本不会再消费该 ZIP；待旧版迁移窗口结束后可以移除。
+
+macOS 与 Linux 继续使用目录型 bundle，因为 `.app` / Linux bundle 本身包含平台目录结构。
 
 因此只复用 Web `dist/`，不要试图复用整个 Desktop Bundle。
 

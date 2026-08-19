@@ -10,8 +10,39 @@ permissions:
   contents: read
 
 jobs:
+  web:
+    name: Build Vue frontend
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install frontend dependencies
+        working-directory: coding_tools_launcher/web
+        run: npm install --no-package-lock --no-audit --no-fund
+
+      - name: Build frontend
+        working-directory: coding_tools_launcher/web
+        run: npm run build
+
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: coding_tools_launcher/web/dist/
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     name: ${{ matrix.name }}
+    needs: web
     strategy:
       fail-fast: false
       matrix:
@@ -51,12 +82,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          package-manager-cache: false
-
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -74,8 +99,14 @@ jobs:
       - name: Download bundled cloudflared
         run: python scripts/fetch_cloudflared.py
 
+      - name: Download frontend artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: web-dist
+          path: web-dist
+
       - name: Build desktop application
-        run: python build_desktop.py
+        run: python build_desktop.py --web-dist web-dist
 
       - name: Package release file
         run: python scripts/package_release.py

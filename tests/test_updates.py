@@ -6,10 +6,12 @@ import json
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
 from build_desktop import MACOS_BUNDLE_IDENTIFIER, resolve_build_version
+import coding_tools_launcher.self_update as self_update
 from coding_tools_launcher.self_update import _parse_checksum
 from coding_tools_launcher.version import DEV_VERSION, git_release_version
 from coding_tools_launcher.updates import (
@@ -21,10 +23,50 @@ from coding_tools_launcher.updates import (
     platform_asset_name,
     updater_asset_name,
 )
+import scripts.package_release as package_release
 from scripts.package_release import _create_macos_dmg, platform_label, release_base_name
 
 
 class UpdateNamingTests(unittest.TestCase):
+    def test_windows_release_package_is_single_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dist = root / "dist"
+            dist.mkdir()
+            source = dist / "Coding Tools MCP.exe"
+            source.write_bytes(b"single-executable")
+            output_base = root / "release" / "Coding-Tools-MCP-windows-x64"
+            output_base.parent.mkdir()
+
+            with patch.object(package_release, "DIST_DIR", dist):
+                packages = package_release.package_windows(output_base)
+
+            executable, legacy_zip = packages
+            self.assertEqual(executable, Path(f"{output_base}.exe"))
+            self.assertEqual(executable.read_bytes(), b"single-executable")
+            self.assertEqual(legacy_zip, Path(f"{output_base}.zip"))
+            with zipfile.ZipFile(legacy_zip) as archive:
+                self.assertEqual(
+                    archive.read("Coding Tools MCP/Coding Tools MCP.exe"),
+                    b"single-executable",
+                )
+
+    def test_windows_updater_replaces_current_executable_not_install_directory(self) -> None:
+        executable = Path("C:/Portable/Coding Tools MCP.exe")
+        with (
+            patch.object(self_update, "is_frozen", return_value=True),
+            patch.object(self_update.sys, "platform", "win32"),
+            patch.object(self_update.sys, "executable", str(executable)),
+        ):
+            self.assertEqual(self_update.current_install_target(), executable.resolve())
+
+    def test_windows_update_helper_uses_file_replacement_and_restart(self) -> None:
+        self.assertNotIn("Expand-Archive", self_update._WINDOWS_HELPER)
+        self.assertIn("Copy-Item -LiteralPath $Package -Destination $Target", self_update._WINDOWS_HELPER)
+        self.assertIn("Start-Process -FilePath $Target -PassThru", self_update._WINDOWS_HELPER)
+        self.assertIn("Stop-Process -Id $ParentPid -Force", self_update._WINDOWS_HELPER)
+        self.assertIn("coding-tools-update-backup", self_update._WINDOWS_HELPER)
+
     def test_macos_dmg_creation_retries_resource_busy_at_fresh_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -130,8 +172,8 @@ class UpdateNamingTests(unittest.TestCase):
 
     def test_release_asset_names_are_versionless_and_normalized(self) -> None:
         expected = {
-            ("Windows", "AMD64"): "Coding-Tools-MCP-windows-x64.zip",
-            ("Windows", "ARM64"): "Coding-Tools-MCP-windows-arm64.zip",
+            ("Windows", "AMD64"): "Coding-Tools-MCP-windows-x64.exe",
+            ("Windows", "ARM64"): "Coding-Tools-MCP-windows-arm64.exe",
             ("Darwin", "x86_64"): "Coding-Tools-MCP-macos-x64.dmg",
             ("Darwin", "arm64"): "Coding-Tools-MCP-macos-arm64.dmg",
             ("Linux", "x86_64"): "Coding-Tools-MCP-linux-x64.tar.gz",
@@ -145,14 +187,14 @@ class UpdateNamingTests(unittest.TestCase):
                 )
                 self.assertNotIn("0.1.0", filename)
 
-    def test_updater_asset_names_use_extractable_archives(self) -> None:
+    def test_updater_asset_names_use_platform_update_packages(self) -> None:
         self.assertEqual(
             updater_asset_name(system="Darwin", machine="arm64"),
             "Coding-Tools-MCP-macos-arm64.zip",
         )
         self.assertEqual(
             updater_asset_name(system="Windows", machine="AMD64"),
-            "Coding-Tools-MCP-windows-x64.zip",
+            "Coding-Tools-MCP-windows-x64.exe",
         )
         self.assertEqual(
             updater_asset_name(system="Linux", machine="x86_64"),
@@ -199,17 +241,17 @@ class UpdateNamingTests(unittest.TestCase):
             "html_url": "https://github.com/HideInMatrix/coding-tools-mcp/releases/tag/v0.1.4",
             "assets": [
                 {
-                    "name": "Coding-Tools-MCP-windows-arm64.zip",
+                    "name": "Coding-Tools-MCP-windows-arm64.exe",
                     "browser_download_url": (
                         "https://github.com/HideInMatrix/coding-tools-mcp/releases/download/"
-                        "v0.1.4/Coding-Tools-MCP-windows-arm64.zip"
+                        "v0.1.4/Coding-Tools-MCP-windows-arm64.exe"
                     ),
                 },
                 {
-                    "name": "Coding-Tools-MCP-windows-arm64.zip.sha256",
+                    "name": "Coding-Tools-MCP-windows-arm64.exe.sha256",
                     "browser_download_url": (
                         "https://github.com/HideInMatrix/coding-tools-mcp/releases/download/"
-                        "v0.1.4/Coding-Tools-MCP-windows-arm64.zip.sha256"
+                        "v0.1.4/Coding-Tools-MCP-windows-arm64.exe.sha256"
                     ),
                 },
             ],
@@ -218,11 +260,11 @@ class UpdateNamingTests(unittest.TestCase):
         with (
             patch(
                 "coding_tools_launcher.updates.platform_asset_name",
-                return_value="Coding-Tools-MCP-windows-arm64.zip",
+                return_value="Coding-Tools-MCP-windows-arm64.exe",
             ),
             patch(
                 "coding_tools_launcher.updates.updater_asset_name",
-                return_value="Coding-Tools-MCP-windows-arm64.zip",
+                return_value="Coding-Tools-MCP-windows-arm64.exe",
             ),
             patch(
                 "coding_tools_launcher.updates.urllib.request.urlopen",
@@ -233,11 +275,11 @@ class UpdateNamingTests(unittest.TestCase):
 
         self.assertTrue(info.update_available)
         self.assertEqual(info.latest_version, "0.1.4")
-        self.assertEqual(info.asset_name, "Coding-Tools-MCP-windows-arm64.zip")
-        self.assertTrue(info.download_url.endswith("/Coding-Tools-MCP-windows-arm64.zip"))
-        self.assertEqual(info.update_asset_name, "Coding-Tools-MCP-windows-arm64.zip")
-        self.assertTrue(info.update_download_url.endswith("/Coding-Tools-MCP-windows-arm64.zip"))
-        self.assertTrue(info.checksum_url.endswith(".zip.sha256"))
+        self.assertEqual(info.asset_name, "Coding-Tools-MCP-windows-arm64.exe")
+        self.assertTrue(info.download_url.endswith("/Coding-Tools-MCP-windows-arm64.exe"))
+        self.assertEqual(info.update_asset_name, "Coding-Tools-MCP-windows-arm64.exe")
+        self.assertTrue(info.update_download_url.endswith("/Coding-Tools-MCP-windows-arm64.exe"))
+        self.assertTrue(info.checksum_url.endswith(".exe.sha256"))
         self.assertTrue(info.download_url.startswith(DEFAULT_GITHUB_DOWNLOAD_PROXY))
         self.assertTrue(info.update_download_url.startswith(DEFAULT_GITHUB_DOWNLOAD_PROXY))
         self.assertTrue(info.checksum_url.startswith(DEFAULT_GITHUB_DOWNLOAD_PROXY))
@@ -253,7 +295,7 @@ class UpdateNamingTests(unittest.TestCase):
         with (
             patch(
                 "coding_tools_launcher.updates.platform_asset_name",
-                return_value="Coding-Tools-MCP-windows-arm64.zip",
+                return_value="Coding-Tools-MCP-windows-arm64.exe",
             ),
             patch(
                 "coding_tools_launcher.updates.urllib.request.urlopen",

@@ -81,18 +81,32 @@ def write_sha256(path: Path) -> Path:
     return checksum
 
 
-def package_windows(output_base: Path) -> Path:
-    source = DIST_DIR / APP_NAME
-    if not source.is_dir():
-        raise SystemExit(f"PyInstaller output not found: {source}")
+def package_windows(output_base: Path) -> list[Path]:
+    source = DIST_DIR / f"{APP_NAME}.exe"
+    if not source.is_file():
+        raise SystemExit(f"PyInstaller executable not found: {source}")
 
-    archive = shutil.make_archive(
-        str(output_base),
-        "zip",
-        root_dir=DIST_DIR,
-        base_dir=APP_NAME,
-    )
-    return Path(archive)
+    executable = Path(f"{output_base}.exe")
+    executable.unlink(missing_ok=True)
+    shutil.copy2(source, executable)
+
+    # Compatibility bridge for releases installed before the Windows onefile
+    # migration. Those clients still request a .zip and their updater expects
+    # one top-level ``Coding Tools MCP`` directory. Put the new single exe into
+    # that legacy shape so one successful update migrates them to onefile.
+    with tempfile.TemporaryDirectory(prefix="coding-tools-mcp-windows-legacy-") as raw_temp:
+        staging = Path(raw_temp) / APP_NAME
+        staging.mkdir()
+        shutil.copy2(source, staging / source.name)
+        legacy_archive = Path(
+            shutil.make_archive(
+                str(output_base),
+                "zip",
+                root_dir=Path(raw_temp),
+                base_dir=APP_NAME,
+            )
+        )
+    return [executable, legacy_archive]
 
 
 def package_linux(output_base: Path) -> Path:
@@ -230,7 +244,7 @@ def main() -> int:
 
     system = platform.system().lower()
     if system == "windows":
-        packages = [package_windows(output_base)]
+        packages = package_windows(output_base)
     elif system == "darwin":
         packages = package_macos(output_base)
     elif system == "linux":

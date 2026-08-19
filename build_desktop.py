@@ -25,12 +25,26 @@ DEFAULT_WEB_DIST = DEFAULT_WEB_DIR / "dist"
 
 
 def build_web_frontend() -> None:
-    pnpm = shutil.which("pnpm")
-    if not pnpm:
+    npm = shutil.which("npm")
+    if not npm:
         raise SystemExit(
-            "重新构建前端需要 pnpm。请先安装 Node.js/pnpm 并在 coding_tools_launcher/web 下执行 pnpm install。"
+            "重新构建前端需要 Node.js/npm。请先安装 Node.js 后重新执行。"
         )
-    subprocess.check_call([pnpm, "build"], cwd=DEFAULT_WEB_DIR)
+    # Desktop release packaging is standardized on npm. Local frontend
+    # development may still use pnpm, but CI/release builds should not depend
+    # on a globally installed pnpm binary on every target platform.
+    if (DEFAULT_WEB_DIR / "package-lock.json").is_file():
+        install_command = [npm, "ci", "--no-audit", "--no-fund"]
+    else:
+        install_command = [
+            npm,
+            "install",
+            "--no-package-lock",
+            "--no-audit",
+            "--no-fund",
+        ]
+    subprocess.check_call(install_command, cwd=DEFAULT_WEB_DIR)
+    subprocess.check_call([npm, "run", "build"], cwd=DEFAULT_WEB_DIR)
 
 
 def resolve_web_dist(path: str | None) -> Path:
@@ -40,7 +54,7 @@ def resolve_web_dist(path: str | None) -> Path:
         raise SystemExit(
             f"找不到前端构建产物: {entrypoint}\n"
             "桌面打包默认复用已构建的 Vue dist。请先执行:\n"
-            "  cd coding_tools_launcher/web && pnpm install && pnpm build\n"
+            "  cd coding_tools_launcher/web && npm install --no-package-lock && npm run build\n"
             "或使用 build_desktop.py --build-web。"
         )
     return web_dist
@@ -52,7 +66,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     web_source.add_argument(
         "--build-web",
         action="store_true",
-        help="Run pnpm build before desktop packaging. Dependencies must already be installed.",
+        help="Install/build the Vue frontend with npm before desktop packaging.",
     )
     web_source.add_argument(
         "--web-dist",
@@ -60,6 +74,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Use an existing frontend dist artifact instead of coding_tools_launcher/web/dist.",
     )
     return parser.parse_args(argv)
+
+
+def pyinstaller_bundle_mode(platform_name: str | None = None) -> str:
+    current = (platform_name or sys.platform).lower()
+    return "--onefile" if current.startswith("win") else "--onedir"
 
 
 def resolve_build_version() -> str:
@@ -110,13 +129,14 @@ def main(argv: list[str] | None = None) -> int:
     build_version = resolve_build_version()
     version_file = write_build_version(build_version)
     separator = ";" if sys.platform.startswith("win") else ":"
+    bundle_mode = pyinstaller_bundle_mode()
     command = [
         sys.executable,
         "-m",
         "PyInstaller",
         "--noconfirm",
         "--clean",
-        "--onedir",
+        bundle_mode,
         "--windowed",
         "--name",
         "Coding Tools MCP",

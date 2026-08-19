@@ -115,7 +115,7 @@ def platform_asset_name(
     current_system = (system or platform.system()).strip().lower()
     arch = _architecture(machine)
     if current_system == "windows":
-        return f"Coding-Tools-MCP-windows-{arch}.zip"
+        return f"Coding-Tools-MCP-windows-{arch}.exe"
     if current_system == "darwin":
         return f"Coding-Tools-MCP-macos-{arch}.dmg"
     if current_system == "linux":
@@ -133,7 +133,7 @@ def updater_asset_name(
     current_system = (system or platform.system()).strip().lower()
     arch = _architecture(machine)
     if current_system == "windows":
-        return f"Coding-Tools-MCP-windows-{arch}.zip"
+        return f"Coding-Tools-MCP-windows-{arch}.exe"
     if current_system == "darwin":
         return f"Coding-Tools-MCP-macos-{arch}.zip"
     if current_system == "linux":
