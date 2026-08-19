@@ -36,6 +36,7 @@ from .oauth import (
     OAuthClient,
     OAuthClientRegistry,
     OAuthConfig,
+    OAuthObservedClientRegistry,
     client_from_metadata_document,
     create_access_token,
     is_client_id_metadata_url,
@@ -264,11 +265,13 @@ def _resolve_oauth_client(config: OAuthConfig, client_id: str) -> OAuthClient | 
     with config.lock:
         cached = config.cimd_cache.get(client_id)
         if cached is not None and cached[1] > now:
+            config.observed_clients.observe_client(cached[0])
             return cached[0]
     metadata, ttl = _fetch_cimd_document(client_id)
     client = client_from_metadata_document(client_id, metadata)
     with config.lock:
         config.cimd_cache[client_id] = (client, now + ttl)
+    config.observed_clients.observe_client(client)
     return client
 
 
@@ -1185,14 +1188,19 @@ def _oauth_config() -> OAuthConfig:
         raise ValueError(
             f"{ENV_PREFIX}_OAUTH_REFRESH_TOKEN_TTL must be between 3600 and 31536000"
         )
+    registry_file_value = (
+        os.environ.get(f"{ENV_PREFIX}_OAUTH_CLIENT_REGISTRY_FILE") or ""
+    ).strip()
+    registry_file = Path(registry_file_value).expanduser() if registry_file_value else None
     config = OAuthConfig(
         password=password,
         server_url=server_url,
         token_secret=token_secret,
         token_ttl=token_ttl,
         refresh_token_ttl=refresh_token_ttl,
-        registry=OAuthClientRegistry(
-            os.environ.get(f"{ENV_PREFIX}_OAUTH_CLIENT_REGISTRY_FILE") or None
+        registry=OAuthClientRegistry(registry_file),
+        observed_clients=OAuthObservedClientRegistry(
+            registry_file.with_name("cimd-clients.json") if registry_file else None
         ),
     )
     return config

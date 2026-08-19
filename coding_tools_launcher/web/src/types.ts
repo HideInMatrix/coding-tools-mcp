@@ -116,6 +116,8 @@ export interface OAuthClientDto {
   redirect_uris: string[]
   token_endpoint_auth_method: string
   issued_at: number
+  client_type: 'dcr' | 'cimd'
+  revocable: boolean
 }
 
 export interface BootstrapDto {

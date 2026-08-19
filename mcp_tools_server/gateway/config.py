@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ..local_permission_broker import LocalPermissionBrokerClient
-from ..oauth import OAuthClientRegistry, OAuthConfig
+from ..oauth import OAuthClientRegistry, OAuthConfig, OAuthObservedClientRegistry
 from ..runtime import Runtime
 from .models import GatewayProfile
 from .registry import GatewayProfileRegistry
@@ -203,6 +203,9 @@ def build_gateway_runtime_pool(
                 server_url=oauth.server_url,
                 token_secret=bytes.fromhex(oauth.token_secret_hex),
                 registry=OAuthClientRegistry(oauth.registry_file),
+                observed_clients=OAuthObservedClientRegistry(
+                    oauth.registry_file.with_name("cimd-clients.json")
+                ),
             ),
             enable_view_image=profile.enable_view_image,
             permission_broker=broker.client() if broker is not None else None,

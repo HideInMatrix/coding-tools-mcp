@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from coding_tools_launcher import oauth_persistence
-from coding_tools_launcher.oauth_client_store import OAuthClientStore
+from coding_tools_launcher.oauth_client_store import CIMDClientStore, OAuthClientStore
 
 
 class OAuthClientStoreTests(unittest.TestCase):
@@ -81,6 +81,33 @@ class OAuthClientStoreTests(unittest.TestCase):
                 [item.client_id for item in items],
                 ["client-a", "client-b"],
             )
+
+    def test_cimd_store_is_read_only_summary_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "cimd-clients.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "clients": [
+                            {
+                                "client_id": "https://chat.example.com/client.json",
+                                "client_name": "Chat Example",
+                                "redirect_uris": ["https://chat.example.com/callback"],
+                                "token_endpoint_auth_method": "none",
+                                "observed_at": 30,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            items = CIMDClientStore("server-a", path=path).list()
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0].client_type, "cimd")
+            self.assertFalse(items[0].revocable)
+            self.assertEqual(items[0].issued_at, 30)
 
 
 if __name__ == "__main__":

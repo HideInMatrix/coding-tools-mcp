@@ -218,7 +218,7 @@ class OAuthPersistenceTests(unittest.TestCase):
 
                 from mcp_tools_server.oauth import OAuthClientRegistry
 
-                first = OAuthClientRegistry()
+                first = OAuthClientRegistry(registry_file)
                 registered = first.register(
                     {
                         "redirect_uris": ["https://chat.example.com/oauth/callback"],
@@ -229,7 +229,7 @@ class OAuthPersistenceTests(unittest.TestCase):
                     }
                 )
 
-                second = OAuthClientRegistry()
+                second = OAuthClientRegistry(registry_file)
                 client_id = registered["client_id"]
                 client_secret = registered["client_secret"]
 
@@ -253,7 +253,7 @@ class OAuthPersistenceTests(unittest.TestCase):
 
                 from mcp_tools_server.oauth import OAuthClientRegistry
 
-                registry = OAuthClientRegistry()
+                registry = OAuthClientRegistry(registry_file)
                 first = registry.register(
                     {
                         "redirect_uris": ["https://chat.example.com/oauth/a"],
@@ -269,11 +269,11 @@ class OAuthPersistenceTests(unittest.TestCase):
                 self.assertEqual(len(registry.list_clients()), 2)
                 self.assertTrue(registry.remove(first["client_id"]))
 
-                after_remove = OAuthClientRegistry()
+                after_remove = OAuthClientRegistry(registry_file)
                 self.assertEqual(len(after_remove.list_clients()), 1)
                 self.assertEqual(after_remove.clear(), 1)
 
-                after_clear = OAuthClientRegistry()
+                after_clear = OAuthClientRegistry(registry_file)
                 self.assertEqual(after_clear.list_clients(), ())
 
 

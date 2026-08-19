@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Check, Copy, LoaderCircle, Plus, Trash2 } from '@lucide/vue'
+import { Check, Copy, Eye, EyeOff, LoaderCircle, Plus, Trash2 } from '@lucide/vue'
+import {
+  InputGroup,
+  InputGroupButton,
+  InputGroupInput,
+} from '@/components/ui/input-group'
 import { desktopApi } from '../api/desktop'
 import { isSelectedResourceStarting } from '../lib/serverState'
 import type {
@@ -27,6 +32,8 @@ const startingKey = ref('')
 const errorMessage = ref('')
 const copiedUrl = ref('')
 const diagnostic = ref<GatewayDiagnosticDto | null>(null)
+const tunnelTokenVisible = ref(false)
+const oauthPasswordVisibility = ref(new Map<GatewayMemberDraft, boolean>())
 let pollTimer = 0
 
 const services = computed<ServiceItem[]>(() => [
@@ -255,6 +262,8 @@ async function refresh(preserveSelection = true) {
 async function selectService(key: string) {
   const service = services.value.find(item => item.key === key)
   if (!service) return
+  tunnelTokenVisible.value = false
+  oauthPasswordVisibility.value.clear()
   selectedKey.value = key
   isNew.value = false
   diagnostic.value = service.kind === 'gateway' ? service.gateway.diagnostic : null
@@ -262,10 +271,20 @@ async function selectService(key: string) {
 }
 
 async function createNew() {
+  tunnelTokenVisible.value = false
+  oauthPasswordVisibility.value.clear()
   selectedKey.value = ''
   isNew.value = true
   diagnostic.value = null
   draft.value = emptyDraft(await desktopApi.nextPort())
+}
+
+function isOAuthPasswordVisible(member: GatewayMemberDraft): boolean {
+  return oauthPasswordVisibility.value.get(member) === true
+}
+
+function toggleOAuthPassword(member: GatewayMemberDraft) {
+  oauthPasswordVisibility.value.set(member, !isOAuthPasswordVisible(member))
 }
 
 function addProfile() {
@@ -554,7 +573,26 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
             <span>Public Hostname</span>
             <input v-model.trim="draft.network.public_url" :disabled="locked || draft.network.provider === 'tailscale'" placeholder="例如 https://mcp.example.com；Quick Tunnel 可留空" />
           </label>
-          <label v-if="draft.network.provider === 'cloudflare'" class="field span-2"><span>Tunnel Token</span><input v-model="draft.network.options.tunnel_token" :disabled="locked" type="password" /></label>
+          <label v-if="draft.network.provider === 'cloudflare'" class="field span-2">
+            <span>Tunnel Token</span>
+            <InputGroup>
+              <InputGroupInput
+                v-model="draft.network.options.tunnel_token"
+                :disabled="locked"
+                :type="tunnelTokenVisible ? 'text' : 'password'"
+                autocomplete="off"
+              />
+              <InputGroupButton
+                :aria-label="tunnelTokenVisible ? '隐藏 Tunnel Token' : '显示 Tunnel Token'"
+                :aria-pressed="tunnelTokenVisible"
+                :title="tunnelTokenVisible ? '隐藏 Tunnel Token' : '显示 Tunnel Token'"
+                @click="tunnelTokenVisible = !tunnelTokenVisible"
+              >
+                <EyeOff v-if="tunnelTokenVisible" :size="15" />
+                <Eye v-else :size="15" />
+              </InputGroupButton>
+            </InputGroup>
+          </label>
           <template v-else-if="draft.network.provider === 'frp'">
             <label class="field span-2"><span>frpc 路径</span><input v-model.trim="draft.network.options.executable" :disabled="locked" /></label>
             <label class="field span-2"><span>frpc 配置文件</span><input v-model.trim="draft.network.options.config_file" :disabled="locked" /></label>
@@ -597,7 +635,26 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
                 <span>Workspace</span>
                 <div class="input-action"><input v-model.trim="member.workspace" :disabled="locked" /><button type="button" :disabled="locked" @click="chooseWorkspace(member)">选择</button></div>
               </label>
-              <label class="field"><span>OAuth Password</span><input v-model="member.oauth_password" type="password" /></label>
+              <label class="field">
+                <span>OAuth Password</span>
+                <InputGroup>
+                  <InputGroupInput
+                    v-model="member.oauth_password"
+                    :disabled="locked"
+                    :type="isOAuthPasswordVisible(member) ? 'text' : 'password'"
+                    autocomplete="off"
+                  />
+                  <InputGroupButton
+                    :aria-label="isOAuthPasswordVisible(member) ? '隐藏 OAuth Password' : '显示 OAuth Password'"
+                    :aria-pressed="isOAuthPasswordVisible(member)"
+                    :title="isOAuthPasswordVisible(member) ? '隐藏 OAuth Password' : '显示 OAuth Password'"
+                    @click="toggleOAuthPassword(member)"
+                  >
+                    <EyeOff v-if="isOAuthPasswordVisible(member)" :size="15" />
+                    <Eye v-else :size="15" />
+                  </InputGroupButton>
+                </InputGroup>
+              </label>
               <label class="field"><span>权限模式</span><select v-model="member.permission_mode" :disabled="locked"><option value="safe">Safe</option><option value="trusted">Trusted</option><option value="dangerous">Dangerous</option></select></label>
               <label class="check-field"><input v-model="member.allow_network" :disabled="locked" type="checkbox" /><span>允许网络</span></label>
               <label class="check-field"><input v-model="member.enable_view_image" :disabled="locked" type="checkbox" /><span>启用图片工具</span></label>

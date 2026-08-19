@@ -782,6 +782,13 @@ OAuthClientRegistry.get()
 OAuthClientRegistry.authenticates()
 ```
 
+OAuth Client 管理区分两类来源：
+
+- **DCR**：RFC 7591 Dynamic Client Registration 创建，写入权威 `clients.json`，桌面端停止对应 Runtime 后可以撤销。
+- **CIMD**：`client_id` 本身是 HTTPS Client ID Metadata Document URL，由 Runtime 动态解析，不写入 DCR Registry。Runtime 会把实际观察到的 CIMD Client 写入同目录的 `cimd-clients.json` 只读 sidecar，供桌面 UI 展示；该文件不是授权权威数据，不能把“删除观察记录”等价为撤销客户端。
+
+有效 CIMD Access Token 首次访问 MCP 时也会留下观察记录，因此应用升级后已经存在的 ChatGPT CIMD 连接不需要重新注册，下一次请求即可出现在授权客户端页面。
+
 ## 16. HTTP 路由
 
 代码：

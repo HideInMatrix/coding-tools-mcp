@@ -254,10 +254,12 @@ class MCPLauncher:
                     env.update(
                         self._permission_broker.child_environment(config.server_id)
                     )
-                # OAuth clients are always created through RFC 7591 Dynamic
-                # Client Registration. Explicitly discard legacy environment
+                # Locally persisted clients use RFC 7591 Dynamic Client
+                # Registration. CIMD clients are resolved dynamically by the
+                # Runtime and recorded separately as read-only observations.
+                # Explicitly discard legacy preregistration environment
                 # variables so old shells/settings cannot silently re-enable
-                # preregistered client behaviour.
+                # the previous fixed-client behaviour.
                 env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_ID", None)
                 env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET", None)
                 if oauth_persistence.ephemeral:

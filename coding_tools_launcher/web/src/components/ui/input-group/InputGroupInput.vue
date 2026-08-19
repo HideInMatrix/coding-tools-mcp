@@ -24,7 +24,7 @@ function handleInput(event: Event) {
     data-slot="input-group-control"
     :value="props.modelValue"
     :class="cn(
-      'h-8 min-w-0 flex-1 border-0 bg-transparent px-3 text-xs text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground',
+      'h-8 min-w-0 flex-1 border-0 bg-transparent px-3 text-xs text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:bg-transparent disabled:text-muted-foreground',
       props.class,
     )"
     @input="handleInput"

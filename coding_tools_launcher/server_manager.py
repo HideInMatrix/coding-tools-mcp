@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from .config import LaunchConfig, LaunchInfo
 from .launcher import MCPLauncher
-from .oauth_client_store import OAuthClientStore, OAuthClientSummary
+from .oauth_client_store import CIMDClientStore, OAuthClientStore, OAuthClientSummary
 from .oauth_persistence import (
     bound_server_oauth_issuer,
     delete_issuer_oauth_storage,
@@ -152,8 +152,17 @@ class MCPServerManager:
             registry_file = launcher.oauth_registry_file
             if registry_file is None:
                 return []
-            return OAuthClientStore(profile.server_id, path=registry_file).list()
-        return OAuthClientStore(profile.server_id).list()
+            clients = OAuthClientStore(profile.server_id, path=registry_file).list()
+            clients.extend(
+                CIMDClientStore(
+                    profile.server_id,
+                    path=registry_file.with_name("cimd-clients.json"),
+                ).list()
+            )
+            return sorted(clients, key=lambda item: (item.issued_at, item.client_id))
+        clients = OAuthClientStore(profile.server_id).list()
+        clients.extend(CIMDClientStore(profile.server_id).list())
+        return sorted(clients, key=lambda item: (item.issued_at, item.client_id))
 
     def remove_oauth_client(self, server_id: str, client_id: str) -> bool:
         with self._lock:

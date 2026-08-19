@@ -143,6 +143,168 @@ class OAuthClient:
     application_type: str = "web"
 
 
+@dataclass(frozen=True, slots=True)
+class OAuthObservedClient:
+    client_id: str
+    client_name: str | None
+    redirect_uris: tuple[str, ...]
+    token_endpoint_auth_method: str
+    observed_at: int
+
+
+class OAuthObservedClientRegistry:
+    """Best-effort cache of CIMD clients observed by a Runtime.
+
+    CIMD clients are not locally registered and therefore must not be mixed
+    into the authoritative RFC 7591 registry.  This sidecar exists only so the
+    desktop UI can explain which external OAuth clients are actually using a
+    Runtime.  Cache failures never participate in authentication decisions.
+    """
+
+    def __init__(self, persistence_file: str | Path | None = None) -> None:
+        self._clients: dict[str, OAuthObservedClient] = {}
+        self._lock = threading.RLock()
+        self._persistence_file = (
+            Path(persistence_file).expanduser()
+            if persistence_file is not None and str(persistence_file).strip()
+            else None
+        )
+        self._load_persisted()
+
+    @property
+    def persistence_file(self) -> Path | None:
+        return self._persistence_file
+
+    def _load_persisted(self) -> None:
+        path = self._persistence_file
+        if path is None or not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("version") != 1:
+                return
+            raw_clients = payload.get("clients", [])
+            if not isinstance(raw_clients, list):
+                return
+            restored: dict[str, OAuthObservedClient] = {}
+            for item in raw_clients:
+                if not isinstance(item, dict):
+                    continue
+                client_id = item.get("client_id")
+                if not isinstance(client_id, str) or not is_client_id_metadata_url(client_id):
+                    continue
+                redirect_uris = item.get("redirect_uris", [])
+                restored[client_id] = OAuthObservedClient(
+                    client_id=client_id,
+                    client_name=(
+                        str(item["client_name"])
+                        if item.get("client_name") is not None
+                        else None
+                    ),
+                    redirect_uris=(
+                        tuple(str(value) for value in redirect_uris)
+                        if isinstance(redirect_uris, list)
+                        else ()
+                    ),
+                    token_endpoint_auth_method=str(
+                        item.get("token_endpoint_auth_method") or ""
+                    ),
+                    observed_at=int(item.get("observed_at") or 0),
+                )
+            with self._lock:
+                self._clients.update(restored)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            # This file is a non-authoritative UI cache.  A damaged cache must
+            # never prevent OAuth from starting or authenticating requests.
+            return
+
+    def _save_persisted(self) -> None:
+        path = self._persistence_file
+        if path is None:
+            return
+        with self._lock:
+            clients = sorted(
+                self._clients.values(),
+                key=lambda item: (item.observed_at, item.client_id),
+            )
+        payload = {
+            "version": 1,
+            "clients": [
+                {
+                    "client_id": client.client_id,
+                    "client_name": client.client_name,
+                    "redirect_uris": list(client.redirect_uris),
+                    "token_endpoint_auth_method": client.token_endpoint_auth_method,
+                    "observed_at": client.observed_at,
+                }
+                for client in clients
+            ],
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                dir=path.parent,
+                text=True,
+            )
+            temporary_path = Path(temporary)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary_path, path)
+            finally:
+                temporary_path.unlink(missing_ok=True)
+        except OSError:
+            return
+
+    def observe_client_id(self, client_id: str) -> None:
+        if not is_client_id_metadata_url(client_id):
+            return
+        with self._lock:
+            if client_id in self._clients:
+                return
+            self._clients[client_id] = OAuthObservedClient(
+                client_id=client_id,
+                client_name=None,
+                redirect_uris=(),
+                token_endpoint_auth_method="",
+                observed_at=int(time.time()),
+            )
+        self._save_persisted()
+
+    def observe_client(self, client: OAuthClient) -> None:
+        if not is_client_id_metadata_url(client.client_id):
+            return
+        changed = False
+        with self._lock:
+            existing = self._clients.get(client.client_id)
+            observed_at = existing.observed_at if existing else int(time.time())
+            observed = OAuthObservedClient(
+                client_id=client.client_id,
+                client_name=client.client_name,
+                redirect_uris=client.redirect_uris,
+                token_endpoint_auth_method=client.token_endpoint_auth_method,
+                observed_at=observed_at,
+            )
+            if existing != observed:
+                self._clients[client.client_id] = observed
+                changed = True
+        if changed:
+            self._save_persisted()
+
+    def list_clients(self) -> tuple[OAuthObservedClient, ...]:
+        with self._lock:
+            return tuple(
+                sorted(
+                    self._clients.values(),
+                    key=lambda item: (item.observed_at, item.client_id),
+                )
+            )
+
+
 class OAuthClientRegistry:
     """Thread-safe RFC 7591 client registry.
 
@@ -392,6 +554,9 @@ class OAuthConfig:
     token_ttl: int = OAUTH_TOKEN_TTL_SECONDS
     refresh_token_ttl: int = OAUTH_REFRESH_TOKEN_TTL_SECONDS
     registry: OAuthClientRegistry = field(default_factory=OAuthClientRegistry)
+    observed_clients: OAuthObservedClientRegistry = field(
+        default_factory=OAuthObservedClientRegistry
+    )
     cimd_cache: dict[str, tuple[OAuthClient, float]] = field(default_factory=dict)
     pending_codes: dict[str, AuthorizationCode] = field(default_factory=dict)
     consumed_refresh_tokens: dict[str, int] = field(default_factory=dict)
@@ -628,6 +793,8 @@ def validate_access_token(config: OAuthConfig, token: str) -> bool:
         if audience is not None and config.resource:
             if audience not in {config.resource, config.legacy_resource}:
                 return False
+        if is_cimd_client:
+            config.observed_clients.observe_client_id(client_id)
         return True
     except (ValueError, TypeError, json.JSONDecodeError):
         return False

@@ -993,6 +993,8 @@ class DesktopAPI:
                 "redirect_uris": list(client.redirect_uris),
                 "token_endpoint_auth_method": client.token_endpoint_auth_method,
                 "issued_at": client.issued_at,
+                "client_type": client.client_type,
+                "revocable": client.revocable,
             }
             for client in self.manager.oauth_clients(server_id)
         ]
@@ -1009,6 +1011,8 @@ class DesktopAPI:
                 "redirect_uris": list(client.redirect_uris),
                 "token_endpoint_auth_method": client.token_endpoint_auth_method,
                 "issued_at": client.issued_at,
+                "client_type": client.client_type,
+                "revocable": client.revocable,
             }
             for client in self.gateway_manager.oauth_clients(gateway_id, server_id)
         ]

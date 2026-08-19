@@ -11,7 +11,7 @@ from .gateway_launcher import (
     MCPGatewayLauncher,
 )
 from .gateway_profiles import GatewayProfileStore, MCPGatewayProfile
-from .oauth_client_store import OAuthClientStore, OAuthClientSummary
+from .oauth_client_store import CIMDClientStore, OAuthClientStore, OAuthClientSummary
 from .process_utils import LogCallback
 
 if TYPE_CHECKING:
@@ -176,8 +176,17 @@ class MCPGatewayManager:
                 registry_file = launcher.oauth_registry_file(member.server_id)
                 if registry_file is None:
                     return []
-                return OAuthClientStore(member.server_id, path=registry_file).list()
-            return OAuthClientStore(member.server_id).list()
+                clients = OAuthClientStore(member.server_id, path=registry_file).list()
+                clients.extend(
+                    CIMDClientStore(
+                        member.server_id,
+                        path=registry_file.with_name("cimd-clients.json"),
+                    ).list()
+                )
+                return sorted(clients, key=lambda item: (item.issued_at, item.client_id))
+            clients = OAuthClientStore(member.server_id).list()
+            clients.extend(CIMDClientStore(member.server_id).list())
+            return sorted(clients, key=lambda item: (item.issued_at, item.client_id))
 
     def remove_oauth_client(
         self,

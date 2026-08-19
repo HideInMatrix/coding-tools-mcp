@@ -9,7 +9,7 @@ const props = defineProps<{ class?: HTMLAttributes['class'] }>()
   <div
     data-slot="input-group"
     :class="cn(
-      'group/input-group relative flex w-full items-center overflow-hidden rounded-md border border-input bg-background shadow-xs transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/15',
+      'group/input-group relative flex w-full items-center overflow-hidden rounded-md bg-background transition-[background-color,box-shadow] focus-within:ring-2 focus-within:ring-ring/15',
       props.class,
     )"
   >
