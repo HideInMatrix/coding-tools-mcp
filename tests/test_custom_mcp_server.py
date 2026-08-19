@@ -16,7 +16,7 @@ import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 
-from mcp_tools_server import __compatibility_baseline__, __version__
+from mcp_tools_server import __version__
 from mcp_tools_server.local_permission_broker import (
     BROKER_DIR_ENV,
     BROKER_SECRET_ENV,
@@ -53,9 +53,8 @@ from mcp_tools_server.toolchains import ToolchainResolver
 class CustomMCPServerContractTests(unittest.TestCase):
     def test_project_owned_version(self) -> None:
         self.assertEqual(__version__, "0.1.0")
-        self.assertEqual(__compatibility_baseline__, "0.3.0")
 
-    def test_oauth_defaults_match_030_compatibility_baseline(self) -> None:
+    def test_oauth_defaults_match_project_contract(self) -> None:
         self.assertEqual(OAUTH_TOKEN_TTL_SECONDS, 24 * 60 * 60)
         self.assertTrue(valid_pkce_challenge("A" * 43))
         self.assertFalse(valid_pkce_challenge("A" * 44))
@@ -283,6 +282,7 @@ class CustomMCPServerContractTests(unittest.TestCase):
         self.assertFalse(result["isError"])
         self.assertTrue(result["structuredContent"]["ok"])
         self.assertIsInstance(result["content"], list)
+        self.assertNotIn("compatibility_baseline", result["structuredContent"])
 
     def test_unexpected_tool_exception_is_returned_as_structured_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

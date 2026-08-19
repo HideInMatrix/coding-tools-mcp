@@ -189,6 +189,30 @@ class ProviderTests(unittest.TestCase):
                     attempts=1,
                 )
 
+    def test_named_tunnel_probe_403_is_inconclusive_not_failure(self) -> None:
+        logs: list[str] = []
+        launcher = MCPLauncher(logs.append)
+        error = urllib.error.HTTPError(
+            "https://mcp.example.com/.well-known/coding-tools-mcp-route-probe",
+            403,
+            "Forbidden",
+            None,
+            None,
+        )
+        with patch(
+            "coding_tools_launcher.launcher.urllib.request.urlopen",
+            side_effect=error,
+        ):
+            launcher._verify_named_tunnel_route(
+                "https://mcp.example.com",
+                "probe-token",
+                attempts=1,
+            )
+
+        self.assertEqual(len(logs), 1)
+        self.assertIn("HTTP 403", logs[0])
+        self.assertIn("不据此判断 MCP 公网连接不可用", logs[0])
+
     def test_named_tunnel_probe_background_is_non_fatal(self) -> None:
         logs: list[str] = []
         launcher = MCPLauncher(logs.append)

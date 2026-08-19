@@ -110,6 +110,13 @@ class MCPLauncher:
                         "请检查该 Public Hostname 是否绑定到当前电脑的独立 Tunnel，"
                         "并确认没有与其他电脑复用同一个 hostname/Tunnel Token。"
                     ) from exc
+                if exc.code in {401, 403}:
+                    self._log(
+                        f"Cloudflare 公网探针收到 HTTP {exc.code}；"
+                        "这通常表示 Access/WAF 等边缘安全策略拦截了内部诊断请求。"
+                        "已跳过精确回源校验，不据此判断 MCP 公网连接不可用。"
+                    )
+                    return
                 if exc.code in {502, 503, 504}:
                     last_error = f"HTTP {exc.code} Bad Gateway"
                 else:

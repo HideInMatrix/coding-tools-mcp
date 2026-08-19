@@ -1,8 +1,8 @@
 # Coding Tools MCP 自研服务端开发文档
 
-当前仓库已经不再依赖外部 `coding-tools-mcp` wheel，也不再直接 vendoring 原版源码。
+`mcp_tools_server` 是本仓库独立维护的 MCP Server 实现。MCP 协议、工具 Schema、OAuth、Workspace 隔离、Patch、进程管理、HTTP Server、权限 Broker 与沙箱能力都由本项目定义、实现和测试。
 
-项目保留原版对外能力作为兼容目标，但 MCP 协议、工具 Schema、OAuth、Workspace 隔离、Patch、进程管理和 HTTP Server 都由本仓库重新实现。
+项目不再以任何第三方 `coding-tools-mcp` 实现或版本作为技术兼容基线。实现正确性由 MCP/OAuth 等公开协议规范、本项目 Server Contract、安全设计和回归测试共同约束。
 
 当前自研服务端版本：
 
@@ -10,42 +10,36 @@
 coding-tools-mcp 0.1.0
 ```
 
-### 兼容基线与版本规则
+### 项目版本与 Server Contract
 
-`0.1.0` 是本仓库自研 `coding-tools-mcp` 的第一个版本。自研实现不沿用
-第三方包的版本号，因此不能因为第三方实现已经发布到 `0.3.0` 就把本项目
-首版标记为 `1.0.0`。
+`0.1.0` 是本仓库自研服务端的项目版本。版本号仅描述本项目自己的功能、兼容性与发布节奏，不跟随其他实现。
 
-当前兼容基线为已经验证可正常工作的第三方：
+服务端行为以本项目的 **Server Contract** 为基线，主要包括：
 
-```text
-coding-tools-mcp 0.3.0
-```
-
-这里的“兼容”指 **客户端可观察行为兼容**，不是复制第三方源码。开发时需要
-优先对齐以下行为：
-
-- 20 个工具的名称、输入 Schema、公共 outputSchema 与 annotations；
-- legacy `initialize`、modern MCP 请求和 JSON-RPC 错误语义；
+- 已发布工具的名称、输入 Schema、公共 outputSchema 与 annotations；
+- 支持的 MCP protocol version、`initialize`、modern MCP 请求和 JSON-RPC 错误语义；
 - HTTP transport 的状态码、Content-Type、协议 Header 与 modern mirror headers；
-- OAuth Authorization Code + PKCE、Dynamic Client Registration、Protected Resource Metadata；
+- OAuth Authorization Code + PKCE、Dynamic Client Registration、Protected Resource Metadata，以及项目定义的 OAuth 持久化策略；
 - 文件读取、目录/搜索、Patch、命令生命周期、TTY、输出分页、Git 返回结构；
-- 客户端可读取的结构化错误码、分页字段和 `next_action`。
+- 客户端可读取的结构化错误码、分页字段和 `next_action`；
+- Safe / Trusted / Dangerous 权限模式、Permission Broker、Workspace confinement 与 OS sandbox 行为；
+- 多 Server Profile、Network Provider 与后续 Local MCP Gateway 的隔离规则。
 
-以下能力不是 `0.1.x` 达成客户端兼容的强制前提，可以在后续版本独立实现：
+Server Contract 的来源按优先级分为：
 
-- telemetry；
-- Linux Landlock 内核级沙箱；
-- 第三方包内部的单文件组织方式或私有实现细节。
+1. MCP、OAuth、HTTP 等公开协议规范；
+2. 本项目已经发布并由客户端依赖的稳定行为；
+3. 本项目的安全模型和架构决策文档；
+4. 自动化测试覆盖的稳定接口与边界条件。
 
-每次发现“第三方 `0.3.0` 正常、自研版本异常”的行为差异，都必须：
+发现行为异常或需要调整已有 Contract 时，应：
 
-1. 先确认差异是否属于客户端可观察行为；
-2. 修复自研实现，而不是直接依赖或复制第三方 wheel；
+1. 先确认是否违反公开协议、项目安全约束或已经发布的客户端可观察行为；
+2. 在对应模块中修复根因，不通过引入外部实现规避问题；
 3. 在 `tests/test_custom_mcp_server.py` 或对应测试文件增加回归测试；
-4. 保留已经对外使用的兼容字段，除非有明确的版本升级计划。
+4. 已经对外使用的稳定字段如需变更，应明确迁移策略和版本影响。
 
-### OAuth issuer / resource 兼容规则
+### OAuth issuer / resource Contract
 
 当前实现将 OAuth Authorization Server 身份与 MCP Protected Resource 明确分离：
 
@@ -56,7 +50,7 @@ OAuth issuer:     https://mcp.example.com
 OAuth resource:   https://mcp.example.com/mcp
 ```
 
-为兼容升级前已建立的连接，客户端在授权或 token 请求里传入旧 base URL
+为兼容本项目早期版本已经建立的连接，客户端在授权或 token 请求里传入旧 base URL
 `https://mcp.example.com` 时暂时作为 legacy resource alias 接受，但内部统一规范化为
 `https://mcp.example.com/mcp`。新 access token 使用 `iss=issuer`、`aud=resource`。
 其他域名或其他路径不能因为“看起来相似”而绕过 resource/audience 校验。
@@ -76,12 +70,13 @@ Protected Resource Metadata 同时兼容：
 
 ## 1. 设计目标
 
-本次重构解决两个问题：
+当前服务端设计目标包括：
 
-1. 桌面发行包不再依赖运行时安装外部 `coding-tools-mcp`；
-2. 不为了兼容而复制一个难维护的超大单文件实现。
+1. 提供独立、可测试、可持续演进的 MCP Server；
+2. 以模块化方式维护协议、工具、OAuth、权限、安全沙箱和进程能力；
+3. 在保持稳定客户端 Contract 的同时允许项目自主扩展。
 
-兼容目标包括：
+当前核心 Contract 包括：
 
 ```text
 20 个 Coding Tools

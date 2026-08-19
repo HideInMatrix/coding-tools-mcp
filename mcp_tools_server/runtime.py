@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import __compatibility_baseline__, __version__
+from . import __version__
 from .errors import RpcError, ToolError
 from .local_permission_broker import (
     BROKER_DIR_ENV,
@@ -969,7 +969,6 @@ class Runtime:
             "server": SERVER_NAME,
             "title": SERVER_TITLE,
             "version": __version__,
-            "compatibility_baseline": __compatibility_baseline__,
             "workspace": str(self.workspace.root),
             "permission_mode": self.permission_mode,
             "auth_enabled": self.auth_enabled(),
