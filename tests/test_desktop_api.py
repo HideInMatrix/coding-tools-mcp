@@ -85,7 +85,7 @@ class DesktopAPITests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "相同地址"):
             self.api.create_server(self.payload(name="Server B", port=8234))
 
-    def test_same_public_domain_can_use_different_instance_paths(self) -> None:
+    def test_same_public_hostname_is_rejected_even_with_different_paths(self) -> None:
         first = self.payload(name="Server A", port=8234)
         first["network"] = {
             "provider": "cloudflare",
@@ -100,8 +100,8 @@ class DesktopAPITests(unittest.TestCase):
         }
 
         self.api.create_server(first)
-        created = self.api.create_server(second)
-        self.assertEqual(created["network"]["public_url"], "https://mcp.example.com/home")
+        with self.assertRaisesRegex(ValueError, "相同 Public Hostname"):
+            self.api.create_server(second)
 
     def test_duplicate_public_instance_url_is_rejected(self) -> None:
         first = self.payload(name="Server A", port=8234)
@@ -118,8 +118,26 @@ class DesktopAPITests(unittest.TestCase):
         }
 
         self.api.create_server(first)
-        with self.assertRaisesRegex(ValueError, "相同 Public URL"):
+        with self.assertRaisesRegex(ValueError, "相同 Public Hostname"):
             self.api.create_server(second)
+
+    def test_different_public_hostnames_are_allowed(self) -> None:
+        first = self.payload(name="Server A", port=8234)
+        first["network"] = {
+            "provider": "cloudflare",
+            "public_url": "https://company.mcp.example.com",
+            "options": {"tunnel_token": "token-a"},
+        }
+        second = self.payload(name="Server B", port=8235)
+        second["network"] = {
+            "provider": "cloudflare",
+            "public_url": "https://home.mcp.example.com",
+            "options": {"tunnel_token": "token-b"},
+        }
+
+        self.api.create_server(first)
+        created = self.api.create_server(second)
+        self.assertEqual(created["network"]["public_url"], "https://home.mcp.example.com")
 
     def test_secret_persistence_can_be_disabled(self) -> None:
         payload = self.payload()

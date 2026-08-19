@@ -124,20 +124,18 @@ Cloudflare Published Application 应指向本机 MCP：
 http://127.0.0.1:8234
 ```
 
-多电脑共用同一个公网 hostname 时，不要在多台电脑复用同一个 Tunnel Token。推荐使用：
-
-```text
-统一公网域名 + 唯一实例 Path + 每台电脑独立 Named Tunnel/Token + Cloudflare Path Router
-```
+多电脑固定入口采用更直接的模型：**每台电脑一个独立 hostname + 一个独立 Named Tunnel + 一个独立 Tunnel Token**。
 
 例如：
 
 ```text
-https://mcp.example.com/company/mcp -> 公司电脑独立 Tunnel
-https://mcp.example.com/home/mcp    -> 家里电脑独立 Tunnel
+https://company.mcp.example.com/mcp -> 公司电脑独立 Tunnel
+https://home.mcp.example.com/mcp    -> 家里电脑独立 Tunnel
 ```
 
-桌面端 Cloudflare 表单会把统一公网域名与实例 Path 分开编辑，内部仍保存 canonical Public Base URL，例如 `https://mcp.example.com/company`。完整 Worker 路由和 OAuth well-known 规则见 `docs/multi-mcp-server-manager/11-CLOUDFLARE-PATH-ROUTING.md`。
+Cloudflare 中每个 hostname 的 Published Application 都直接指向对应电脑的 `http://127.0.0.1:<MCP端口>`，Path 保持为空，不需要 Worker 或 Path Router。
+
+桌面端仍保留 URL Path 能力，例如 `https://company.mcp.example.com/crm/mcp`。该能力不是用来选择不同 Cloudflare Tunnel，而是为后续 **Local MCP Gateway** 预留：未来同一台机器可由一个 Gateway 端口按 `/crm`、`/project-a` 等 Path 分发到多个本地 Server Profile。当前直连模式下，同一个 Public Hostname 只允许配置一个 Profile。
 
 Cloudflare 当前仍是唯一默认随桌面包一起分发 helper 二进制的 Provider。
 

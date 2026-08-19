@@ -100,18 +100,6 @@ const cloudflareInstancePath = computed({
   },
 })
 
-const cloudflareRouteHint = computed(() => {
-  const origin = cloudflarePublicOrigin.value
-  const instance = cloudflareInstancePath.value
-  if (!origin || !instance) return ''
-  try {
-    const hostname = new URL(origin).host
-    return `${hostname}/${instance}/*`
-  } catch {
-    return ''
-  }
-})
-
 const resolvedPublicMcpUrl = computed(() => {
   if (props.publicMcpUrl) return withMcpSuffix(props.publicMcpUrl)
   return withMcpSuffix(model.value.network.public_url)
@@ -228,21 +216,22 @@ async function autoDetect(product: string, option = 'executable') {
 
       <template v-if="provider === 'cloudflare'">
         <label class="field span-2">
-          <span>统一公网域名</span>
+          <span>Public Hostname</span>
           <input
             v-model="cloudflarePublicOrigin"
             :disabled="locked"
-            placeholder="例如 https://mcp.example.com；留空使用 Quick Tunnel"
+            placeholder="例如 https://company.mcp.example.com；留空使用 Quick Tunnel"
           />
+          <span class="field-help">多台电脑请分别使用不同 hostname，并在 Cloudflare 中把该 hostname 绑定到当前电脑自己的 Named Tunnel。</span>
         </label>
         <label class="field span-2">
-          <span>MCP 实例 Path</span>
+          <span>Local Gateway Path（预留）</span>
           <InputGroup>
             <InputGroupAddon>/</InputGroupAddon>
             <InputGroupInput
               v-model="cloudflareInstancePath"
               :disabled="locked || !cloudflarePublicOrigin"
-              placeholder="例如 company、home；单实例可留空"
+              placeholder="例如 crm、workspace-a；当前直连模式通常留空"
             />
             <InputGroupAddon>/mcp</InputGroupAddon>
             <InputGroupButton
@@ -256,13 +245,13 @@ async function autoDetect(product: string, option = 'executable') {
             </InputGroupButton>
           </InputGroup>
           <span v-if="resolvedPublicMcpUrl" class="field-help">当前 MCP URL：{{ resolvedPublicMcpUrl }}</span>
-          <span v-if="cloudflareRouteHint" class="field-help">Cloudflare 路由键：{{ cloudflareRouteHint }}；OAuth `.well-known` 路径也必须按同一实例键路由。</span>
+          <span class="field-help">Path 不用于选择 Cloudflare Tunnel。它保留给后续 Local MCP Gateway：同一台机器由一个 Gateway 端口按 Path 分发多个 Profile。</span>
         </label>
         <label class="field span-2">
           <span>Tunnel Token</span>
           <input v-model="model.network.options.tunnel_token" :disabled="locked" type="password" placeholder="每台电脑使用独立 Named Tunnel Token" />
         </label>
-        <p class="form-note span-2">多电脑可以共用同一个公网域名，但每台电脑必须使用不同实例 Path 和独立 Tunnel Token，再由 Cloudflare Path Router 将该 Path 定向到对应 Tunnel。域名和 Token 都留空时使用临时 Quick Tunnel。</p>
+        <p class="form-note span-2">当前直连模式采用“一个 Public Hostname + 一个 Named Tunnel + 一个 Server Profile”。不同电脑使用不同 hostname；Cloudflare 的 Published Application Path 保持为空即可。Local Gateway 完成后才会开放同 hostname + 不同 Path 的多 Profile 分发。Hostname 和 Token 都留空时使用临时 Quick Tunnel。</p>
       </template>
 
       <label v-else class="field span-2">

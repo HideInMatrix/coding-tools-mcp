@@ -169,7 +169,7 @@ class ProviderTests(unittest.TestCase):
             )
         )
 
-    def test_named_tunnel_probe_reports_path_router_mismatch(self) -> None:
+    def test_named_tunnel_probe_reports_public_hostname_mismatch(self) -> None:
         launcher = MCPLauncher()
         error = urllib.error.HTTPError(
             "https://mcp.example.com/company/.well-known/coding-tools-mcp-route-probe",
@@ -182,12 +182,29 @@ class ProviderTests(unittest.TestCase):
             "coding_tools_launcher.launcher.urllib.request.urlopen",
             side_effect=error,
         ):
-            with self.assertRaisesRegex(RuntimeError, "Path Router"):
+            with self.assertRaisesRegex(RuntimeError, "Public Hostname"):
                 launcher._verify_named_tunnel_route(
                     "https://mcp.example.com/company",
                     "probe-token",
                     attempts=1,
                 )
+
+    def test_named_tunnel_probe_background_is_non_fatal(self) -> None:
+        logs: list[str] = []
+        launcher = MCPLauncher(logs.append)
+        with patch.object(
+            launcher,
+            "_verify_named_tunnel_route",
+            side_effect=RuntimeError("Public Hostname returned 404"),
+        ):
+            launcher._verify_named_tunnel_route_background(
+                "https://mcp.example.com/company",
+                "probe-token",
+            )
+
+        self.assertEqual(len(logs), 1)
+        self.assertIn("保持运行", logs[0])
+        self.assertIn("Public Hostname returned 404", logs[0])
 
 
 if __name__ == "__main__":

@@ -64,13 +64,12 @@ class MCPLauncher:
         *,
         attempts: int = 6,
     ) -> None:
-        """Verify that a Named Tunnel public instance path routes to this process.
+        """Verify that a Named Tunnel public URL routes to this process.
 
-        Multiple computers may share one public hostname when a Cloudflare
-        path router directs each instance path to a separate Named Tunnel.
-        The per-process probe verifies that the configured public base URL
-        reaches this exact MCP process without exposing the Tunnel token or
-        OAuth password.
+        The per-process probe verifies that the configured public URL reaches
+        this exact MCP process without exposing the Tunnel token or OAuth
+        password.  It is only a post-start diagnostic and is not used for
+        cross-machine path routing.
         """
 
         context = ssl.create_default_context()
@@ -108,8 +107,8 @@ class MCPLauncher:
                 if exc.code == 404:
                     raise RuntimeError(
                         "Cloudflare Named Tunnel 公网路由没有回到当前 MCP 进程。"
-                        "请检查实例 Path 的 Cloudflare Path Router 规则是否指向当前电脑的独立 Tunnel，"
-                        "并确认该电脑没有与其他电脑复用同一个 Tunnel Token。"
+                        "请检查该 Public Hostname 是否绑定到当前电脑的独立 Tunnel，"
+                        "并确认没有与其他电脑复用同一个 hostname/Tunnel Token。"
                     ) from exc
                 if exc.code in {502, 503, 504}:
                     last_error = f"HTTP {exc.code} Bad Gateway"
@@ -132,14 +131,36 @@ class MCPLauncher:
         if successful_probes:
             raise RuntimeError(
                 "Cloudflare Named Tunnel 路由校验结果不稳定：部分请求回到了当前 MCP 进程，"
-                "但无法连续确认。请检查 Path Router、Tunnel Origin 和是否存在 Token 复用。"
+                "但无法连续确认。请检查 Public Hostname、Tunnel Origin 和是否存在 Token 复用。"
             )
         raise RuntimeError(
             "Cloudflare Named Tunnel 已连接 Edge，但 Public URL 无法回源到当前 MCP Server"
-            f"（{last_error or '未知错误'}）。请确认当前实例 Path 已由 Cloudflare Path Router 定向到"
+            f"（{last_error or '未知错误'}）。请确认当前 Public Hostname 已绑定到"
             "这台电脑的独立 Tunnel，且该 Tunnel 的 Published Application 指向"
             " http://127.0.0.1:<MCP端口>。"
         )
+
+    def _verify_named_tunnel_route_background(
+        self,
+        public_base_url: str,
+        route_probe_token: str,
+    ) -> None:
+        """Run the public route probe as a non-fatal post-start diagnostic.
+
+        A Named Tunnel becoming connected to Cloudflare Edge and its public
+        hostname becoming reachable are two separate pieces of state.  DNS or
+        the published application may lag behind or be misconfigured.  None
+        of those cases should tear down an otherwise healthy local MCP process
+        and tunnel.
+        """
+
+        try:
+            self._verify_named_tunnel_route(public_base_url, route_probe_token)
+        except Exception as exc:  # noqa: BLE001 - diagnostic must never kill startup
+            self._log(
+                "警告：Cloudflare 公网回源校验未通过，但 MCP Server 与 Named Tunnel "
+                f"保持运行。公网 MCP 连接可能暂不可用：{exc}"
+            )
 
     @property
     def info(self) -> LaunchInfo | None:
@@ -239,11 +260,6 @@ class MCPLauncher:
                         "OAuth 状态持久化已启用：DCR client_id 与 token secret 按 issuer 跨重启保留。"
                     )
                 self._mcp.start(config, env)
-                if named_cloudflare:
-                    self._verify_named_tunnel_route(
-                        public_base_url,
-                        route_probe_token,
-                    )
                 self._info = LaunchInfo(
                     workspace=config.workspace,
                     local_mcp_url=f"http://{config.host}:{config.port}/mcp",
@@ -254,6 +270,12 @@ class MCPLauncher:
                 )
                 self._log(f"MCP 已启动: {self._info.public_mcp_url}")
                 threading.Thread(target=self._watch_children, daemon=True).start()
+                if named_cloudflare:
+                    threading.Thread(
+                        target=self._verify_named_tunnel_route_background,
+                        args=(public_base_url, route_probe_token),
+                        daemon=True,
+                    ).start()
                 return self._info
             except Exception:
                 self._stop_locked()

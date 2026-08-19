@@ -7,6 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any
 
 from .config import (
@@ -16,7 +17,6 @@ from .config import (
     LaunchConfig,
     NetworkConfig,
 )
-from .oauth_persistence import canonical_oauth_issuer
 from .user_settings import settings_dir
 
 
@@ -37,9 +37,12 @@ def default_lifecycle(network: NetworkConfig) -> str:
     return "persistent"
 
 
-def _public_url_identity(value: str) -> str:
+def _public_hostname_identity(value: str) -> str:
     raw = value.strip().rstrip("/")
-    return canonical_oauth_issuer(raw) if raw else ""
+    if not raw:
+        return ""
+    parsed = urlsplit(raw)
+    return (parsed.hostname or "").lower()
 
 
 @dataclass(slots=True)
@@ -292,7 +295,7 @@ class ServerProfileStore:
     def _save(self, profiles: list[MCPServerProfile]) -> None:
         ids: set[str] = set()
         endpoints: set[tuple[str, int]] = set()
-        public_urls: set[str] = set()
+        public_hostnames: set[str] = set()
         validated_profiles: list[MCPServerProfile] = []
         for profile in profiles:
             validated = profile.validated()
@@ -305,14 +308,15 @@ class ServerProfileStore:
                     f"多个 Server Profile 不能配置相同地址: {validated.host}:{validated.port}"
                 )
             endpoints.add(endpoint)
-            public_url = _public_url_identity(validated.network.public_url)
-            if public_url:
-                if public_url in public_urls:
+            public_hostname = _public_hostname_identity(validated.network.public_url)
+            if public_hostname:
+                if public_hostname in public_hostnames:
                     raise ValueError(
-                        "多个 Server Profile 不能配置相同 Public URL；"
-                        "共用域名时请为每个实例使用不同 Path。"
+                        "多个直连 Server Profile 不能配置相同 Public Hostname；"
+                        "当前请为每个 Profile 使用独立 hostname。"
+                        "同 hostname + 不同 Path 将由后续 Local MCP Gateway 模式提供。"
                     )
-                public_urls.add(public_url)
+                public_hostnames.add(public_hostname)
             validated_profiles.append(validated)
 
         payload = {

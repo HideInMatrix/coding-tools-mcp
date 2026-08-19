@@ -91,19 +91,20 @@
 - 在新的正式版本发布前继续观察，不立即调整现有版本显示架构；如问题可稳定复现，再决定是否统一恢复为 `bootstrap().version` 作为前端初始化版本号来源。
 - 发布前验收时必须同时检查：原生窗口标题、Sidebar 版本号、About 页面“当前版本”三处是否一致。
 
-## 10. Cloudflare 多电脑统一域名 Path Routing
+## 10. Cloudflare 固定 Hostname 与 Local Gateway Path
 
-- 多台电脑允许共用同一个公网 hostname，例如 `mcp.example.com`。
-- 每个独立 MCP 实例必须使用唯一实例 Path，例如 `/company`、`/home`。
+- 多台电脑必须分别使用独立 Public Hostname，例如 `company.mcp.example.com`、`home.mcp.example.com`。
 - 每台电脑必须使用独立 Named Tunnel、Tunnel ID 和 Tunnel Token；禁止使用同一个 Token 的多个 replica 作为 MCP 实例分流方案。
-- 同一台电脑上的多个 Server Profile 可以使用同一 hostname 的不同 Path，但不能使用完全相同的 canonical Public Base URL。
-- `https://mcp.example.com/company` 的 MCP resource 必须是 `https://mcp.example.com/company/mcp`。
-- RFC 9728 Protected Resource Metadata 必须可从 `/.well-known/oauth-protected-resource/company/mcp` 获取。
-- Authorization Server Metadata 必须可从 `/.well-known/oauth-authorization-server/company` 获取，且 `issuer` 为 `https://mcp.example.com/company`。
-- OAuth authorize/token/register endpoint 必须保留实例 Path：`/company/oauth/*`。
-- OAuth 授权页 POST action 必须提交回带实例 Path 的 `/company/oauth/authorize`，不能退回根路径 `/oauth/authorize`。
-- `company` 与 `home` 必须使用不同 OAuth issuer 存储目录、Registry 和 token secret。
-- Named Tunnel 启动后 route probe 必须通过统一公网 URL 的实例 Path 回到当前 MCP 进程；404、502、503、504 或 probe 不匹配必须给出 Path Router/Tunnel Origin 诊断。
+- Cloudflare Published Application 的 Path 默认保持为空，直接将 hostname 回源到对应电脑的 `127.0.0.1:<port>`。
+- 当前直连模式下，同一个 Public Hostname 只能分配给一个 Server Profile；即使 Path 不同也必须拒绝，避免产生无法分流的配置。
+- route probe 仅作为启动后的非致命公网回源诊断；失败不得关闭已经正常运行的 MCP Server / Named Tunnel。
 - route probe token 属于内部敏感环境变量，不得传入 `exec_command` / `exec_process` 子进程。
-- Cloudflare Worker/Edge Router 必须同时路由普通实例路径和 RFC well-known path-insertion 路径，不能只配置 `/company/*` 而遗漏 `/.well-known/.../company/...`。
-- 从旧 `https://mcp.example.com/mcp` 迁移到 `https://mcp.example.com/company/mcp` 后视为新的 OAuth/MCP 身份，需要在客户端重新添加或重新授权连接。
+- `https://company.mcp.example.com` 的 MCP resource 默认应为 `https://company.mcp.example.com/mcp`。
+- URL Path-aware 能力必须继续保留，为后续 Local MCP Gateway 使用。
+- 例如配置 `https://company.mcp.example.com/crm` 时，MCP resource 必须是 `https://company.mcp.example.com/crm/mcp`。
+- RFC 9728 Protected Resource Metadata 必须正确保留该 Path，例如 `/.well-known/oauth-protected-resource/crm/mcp`。
+- Authorization Server Metadata 必须保留 Path issuer，例如 `issuer = https://company.mcp.example.com/crm`。
+- OAuth authorize/token/register endpoint 必须保留 Path：`/crm/oauth/*`。
+- OAuth 授权页 POST action 必须提交回带 Path 的 `/crm/oauth/authorize`，不能退回根路径 `/oauth/authorize`。
+- 不同 Path 必须能够使用不同 OAuth issuer 存储目录、Registry 和 token secret，为未来 Gateway 隔离 Profile 状态。
+- Local MCP Gateway 完成后，才允许同一 Public Hostname 下的多个 Profile 使用不同 Path；Gateway 必须显式维护 `path -> server_id` 路由表。

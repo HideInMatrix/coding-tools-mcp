@@ -160,14 +160,14 @@ Tailscale Funnel
 | 已经使用 Tailscale | Tailscale Funnel |
 | 已有 Nginx/Caddy/反向代理 | 自定义公网 URL |
 
-如果需要让多台电脑共用同一个 Cloudflare 公网域名，推荐不要复用同一个 Tunnel Token，而是为每台电脑创建独立 Named Tunnel，并使用不同实例 Path：
+如果有多台电脑，推荐为每台电脑创建独立 Named Tunnel、独立 Tunnel Token，并使用不同 Public Hostname：
 
 ```text
-https://mcp.example.com/company/mcp
-https://mcp.example.com/home/mcp
+https://company.mcp.example.com/mcp
+https://home.mcp.example.com/mcp
 ```
 
-桌面端 Cloudflare 配置中分别填写“统一公网域名”和“MCP 实例 Path”。Cloudflare Edge 再通过 Path Router 将 `company`、`home` 分别转发到对应电脑的独立 Tunnel。完整配置见 `multi-mcp-server-manager/11-CLOUDFLARE-PATH-ROUTING.md`。
+Cloudflare 中对应的 Published Application Path 保持为空即可，不需要额外配置 Worker/Path Router。桌面端的 `Local Gateway Path（预留）` 不负责跨电脑分流，它是后续同一台机器“一个 Gateway 端口承载多个 Profile”的路由标识。
 
 完整部署步骤见：
 
@@ -415,9 +415,11 @@ macOS 的 `.dmg` 用于首次手动安装，`.zip` 专供应用内更新。每�
 
 第一个服务默认使用 `8234`。新建服务时可以点击“自动”选择下一个未被 Profile 使用的端口，也可以手工填写。固定 Cloudflare hostname 的 Published Application 必须指向对应服务实际配置的 `127.0.0.1:<port>`。
 
-### 多台电脑可以共用同一个 MCP 域名吗
+### 多台电脑应该怎么配置固定 MCP 地址
 
-可以，但不要让多台独立 MCP Server 复用同一个 Tunnel Token。推荐每台电脑使用独立 Named Tunnel/Token，并用唯一实例 Path 区分，例如 `/company`、`/home`。同一 hostname 下的不同 Path 会形成不同 OAuth issuer/resource，并保存到不同 OAuth Registry。
+当前推荐每台电脑使用独立 Public Hostname、独立 Named Tunnel 和独立 Tunnel Token，例如公司电脑使用 `company.mcp.example.com`，家里电脑使用 `home.mcp.example.com`。不要依赖 `/company`、`/home` 这样的 URL Path 去选择不同 Tunnel；Cloudflare 不会自动用 HTTP Path 判断应该进入哪台电脑。
+
+URL Path 能力仍然保留，但定位为后续 Local MCP Gateway 的路由键。Gateway 完成后，同一台机器才会支持一个公网 hostname / 一个入口端口按不同 Path 分发多个本地 Profile。
 
 ### Quick Tunnel 为什么重启后 OAuth Client 不见了
 
