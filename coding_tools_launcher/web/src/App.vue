@@ -269,14 +269,18 @@ async function poll() {
 }
 
 onMounted(async () => {
+  // Resolve the version independently so a version-only bridge issue cannot
+  // block the rest of the desktop UI from finishing its startup sequence.
+  const versionRequest = desktopApi.appVersion()
+    .then(value => { if (value) version.value = value })
+    .catch(() => undefined)
+
   try {
-    const [appVersion, serverItems, persistedSelectedId, proxyPrefix] = await Promise.all([
-      desktopApi.appVersion(),
+    const [serverItems, persistedSelectedId, proxyPrefix] = await Promise.all([
       desktopApi.listServers(),
       desktopApi.selectedServerId(),
       desktopApi.updateDownloadProxy(),
     ])
-    version.value = appVersion || ''
     servers.value = serverItems
     updateProxyPrefix.value = proxyPrefix
     if (persistedSelectedId && serverItems.some(item => item.server_id === persistedSelectedId)) {
@@ -288,6 +292,7 @@ onMounted(async () => {
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
   }
+  await versionRequest
   pollTimer = window.setInterval(poll, 900)
 })
 

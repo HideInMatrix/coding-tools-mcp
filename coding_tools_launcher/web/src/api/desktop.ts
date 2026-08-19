@@ -11,16 +11,30 @@ import type {
 
 let bridgePromise: Promise<DesktopBridge> | null = null
 
+function isBridgeReady(api: Partial<DesktopBridge> | undefined): api is DesktopBridge {
+  return Boolean(
+    api
+      && typeof api.get_app_version === 'function'
+      && typeof api.list_servers === 'function',
+  )
+}
+
 function bridge(): Promise<DesktopBridge> {
-  if (window.pywebview?.api) return Promise.resolve(window.pywebview.api)
+  if (isBridgeReady(window.pywebview?.api)) return Promise.resolve(window.pywebview.api)
   if (bridgePromise) return bridgePromise
 
   bridgePromise = new Promise<DesktopBridge>((resolve) => {
-    window.addEventListener(
-      'pywebviewready',
-      () => resolve(window.pywebview!.api),
-      { once: true },
-    )
+    const resolveWhenReady = () => {
+      const api = window.pywebview?.api
+      if (isBridgeReady(api)) {
+        resolve(api)
+        return
+      }
+      window.setTimeout(resolveWhenReady, 10)
+    }
+
+    window.addEventListener('pywebviewready', resolveWhenReady, { once: true })
+    resolveWhenReady()
   })
   return bridgePromise
 }
