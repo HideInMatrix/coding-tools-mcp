@@ -100,11 +100,16 @@
 - route probe 仅作为启动后的非致命公网回源诊断；失败不得关闭已经正常运行的 MCP Server / Named Tunnel。
 - route probe token 属于内部敏感环境变量，不得传入 `exec_command` / `exec_process` 子进程。
 - `https://company.mcp.example.com` 的 MCP resource 默认应为 `https://company.mcp.example.com/mcp`。
-- URL Path-aware 能力必须继续保留，为后续 Local MCP Gateway 使用。
+- URL Path-aware 能力必须继续保留；Local MCP Gateway 通过该能力在同一监听端口分发多个 Profile。
 - 例如配置 `https://company.mcp.example.com/crm` 时，MCP resource 必须是 `https://company.mcp.example.com/crm/mcp`。
 - RFC 9728 Protected Resource Metadata 必须正确保留该 Path，例如 `/.well-known/oauth-protected-resource/crm/mcp`。
 - Authorization Server Metadata 必须保留 Path issuer，例如 `issuer = https://company.mcp.example.com/crm`。
 - OAuth authorize/token/register endpoint 必须保留 Path：`/crm/oauth/*`。
 - OAuth 授权页 POST action 必须提交回带 Path 的 `/crm/oauth/authorize`，不能退回根路径 `/oauth/authorize`。
-- 不同 Path 必须能够使用不同 OAuth issuer 存储目录、Registry 和 token secret，为未来 Gateway 隔离 Profile 状态。
-- Local MCP Gateway 完成后，才允许同一 Public Hostname 下的多个 Profile 使用不同 Path；Gateway 必须显式维护 `path -> server_id` 路由表。
+- 不同 Path 必须使用不同 OAuth issuer 存储目录、Registry 和 token secret，Gateway Profile 状态不得互相共享。
+- Service 必须显式保存 `single | multi` 运行模式；Profile 数量不得自动改变运行模式。`single` 只启动根 Workspace，`multi` 才允许同一 Public Hostname 下的多个 Profile 使用不同 Path，并维护 `path -> server_id` 路由表。
+- 从 `multi` 切回 `single` 时，子 Profile 配置必须保留，但不得创建 Runtime、OAuth active session 或可用 Path；再次切回 `multi` 后恢复参与运行。
+- Gateway route probe 必须返回非敏感 Workspace fingerprint，用于确认 `/company`、`/home` 等公网 Path 实际落到正确 Runtime；不得返回真实 Workspace Path。
+- Cloudflare Named Tunnel 启动后的多 Workspace E2E 自检失败不得关闭已经健康运行的服务/Tunnel，只记录告警并允许用户在服务页面手动重试。
+- Gateway E2E 必须至少覆盖：本地 Path→Runtime、公网 Path→Runtime、Server Card、Authorization Server Metadata、Protected Resource Metadata、MCP 401 `resource_metadata` challenge。
+- “OAuth 授权”页面按 Service/Profile 展示；`single` 模式下仅根 Workspace 标记为运行中，已保存但未启用的子 Profile 不得伪装成活动 Runtime。

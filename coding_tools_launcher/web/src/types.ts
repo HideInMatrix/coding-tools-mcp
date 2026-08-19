@@ -1,5 +1,3 @@
-export type PageKey = 'servers' | 'gateways' | 'clients' | 'logs' | 'about'
-
 export interface NetworkConfigDto {
   provider: 'cloudflare' | 'frp' | 'ngrok' | 'tailscale' | 'external'
   public_url: string
@@ -16,6 +14,8 @@ export interface ServerDto {
   port: number
   lifecycle: 'persistent' | 'ephemeral'
   permission_mode: 'safe' | 'trusted' | 'dangerous'
+  allow_network: boolean
+  enable_view_image: boolean
   created_at: number
   updated_at: number
   network: NetworkConfigDto
@@ -34,6 +34,8 @@ export interface ServerDraft {
   port: number
   remember_secrets: boolean
   permission_mode: 'safe' | 'trusted' | 'dangerous'
+  allow_network: boolean
+  enable_view_image: boolean
   network: NetworkConfigDto
 }
 
@@ -51,6 +53,7 @@ export interface GatewayMemberDto {
   public_mcp_url: string
   local_mcp_url: string
   oauth_issuer: string
+  oauth_client_count: number
 }
 
 export interface GatewayMemberDraft {
@@ -67,6 +70,7 @@ export interface GatewayMemberDraft {
 export interface GatewayDto {
   gateway_id: string
   name: string
+  mode: 'single' | 'multi'
   host: string
   port: number
   created_at: number
@@ -77,15 +81,33 @@ export interface GatewayDto {
   public_base_url: string
   url_mode: string
   exit_reason: string
+  diagnostic: GatewayDiagnosticDto | null
 }
 
 export interface GatewayDraft {
   name: string
+  mode: 'single' | 'multi'
   host: string
   port: number
   remember_secrets: boolean
   network: NetworkConfigDto
   members: GatewayMemberDraft[]
+}
+
+export interface GatewayProfileDiagnosticDto {
+  server_id: string
+  name: string
+  instance_path: string
+  ok: boolean
+  checks: string[]
+  errors: string[]
+}
+
+export interface GatewayDiagnosticDto {
+  ok: boolean
+  public_base_url: string
+  checked_at: number
+  profiles: GatewayProfileDiagnosticDto[]
 }
 
 export interface OAuthClientDto {
@@ -163,12 +185,17 @@ export interface DesktopBridge {
   stop_server(serverId: string): Promise<ServerDto>
   create_gateway(payload: GatewayDraft): Promise<GatewayDto>
   update_gateway(gatewayId: string, payload: GatewayDraft): Promise<GatewayDto>
+  promote_server_to_gateway(serverId: string, payload: GatewayDraft): Promise<GatewayDto>
   delete_gateway(gatewayId: string): Promise<boolean>
   start_gateway(gatewayId: string, payload?: GatewayDraft): Promise<GatewayDto>
   stop_gateway(gatewayId: string): Promise<GatewayDto>
+  test_gateway(gatewayId: string): Promise<GatewayDiagnosticDto>
   list_oauth_clients(serverId: string): Promise<OAuthClientDto[]>
+  list_gateway_oauth_clients(gatewayId: string, serverId: string): Promise<OAuthClientDto[]>
   revoke_oauth_client(serverId: string, clientId: string): Promise<boolean>
   revoke_all_oauth_clients(serverId: string): Promise<number>
+  revoke_gateway_oauth_client(gatewayId: string, serverId: string, clientId: string): Promise<boolean>
+  revoke_all_gateway_oauth_clients(gatewayId: string, serverId: string): Promise<number>
   list_permission_requests(): Promise<PermissionRequestDto[]>
   respond_permission_request(requestId: string, decision: 'deny' | 'once' | 'session'): Promise<boolean>
   get_logs(after?: number): Promise<{ cursor: number; entries: LogEntryDto[] }>

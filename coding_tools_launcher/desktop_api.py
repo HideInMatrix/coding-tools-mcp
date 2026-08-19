@@ -166,6 +166,8 @@ class DesktopAPI:
             "port": profile.port,
             "lifecycle": profile.lifecycle,
             "permission_mode": profile.permission_mode,
+            "allow_network": profile.allow_network,
+            "enable_view_image": profile.enable_view_image,
             "created_at": profile.created_at,
             "updated_at": profile.updated_at,
             "network": {
@@ -219,9 +221,12 @@ class DesktopAPI:
         network: NetworkConfig,
         host: str,
         port: int,
+        ignore_server_id: str = "",
     ) -> None:
         hostname = self._public_hostname(network)
         for profile in self.store.list():
+            if ignore_server_id and profile.server_id == ignore_server_id:
+                continue
             if profile.host == host and profile.port == port:
                 raise ValueError(
                     f"该地址已被直连 MCP Server 使用: {host}:{port}"
@@ -238,6 +243,15 @@ class DesktopAPI:
         members: list[dict[str, object]] = []
         for member in gateway.members:
             runtime_info = info.profile(member.server_id) if info else None
+            try:
+                oauth_client_count = len(
+                    self.gateway_manager.oauth_clients(
+                        gateway.gateway_id,
+                        member.server_id,
+                    )
+                )
+            except Exception:
+                oauth_client_count = 0
             members.append(
                 {
                     "server_id": member.server_id,
@@ -259,11 +273,13 @@ class DesktopAPI:
                     "oauth_issuer": (
                         runtime_info.oauth_issuer if runtime_info else ""
                     ),
+                    "oauth_client_count": oauth_client_count,
                 }
             )
         return {
             "gateway_id": gateway.gateway_id,
             "name": gateway.name,
+            "mode": gateway.mode,
             "host": gateway.host,
             "port": gateway.port,
             "created_at": gateway.created_at,
@@ -278,6 +294,30 @@ class DesktopAPI:
             "public_base_url": info.public_base_url if info else "",
             "url_mode": info.url_mode if info else "",
             "exit_reason": status.exit_reason,
+            "diagnostic": (
+                self._gateway_diagnostic_payload(status.diagnostic)
+                if status.diagnostic is not None
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _gateway_diagnostic_payload(report: Any) -> dict[str, object]:
+        return {
+            "ok": bool(report.ok),
+            "public_base_url": str(report.public_base_url),
+            "checked_at": int(report.checked_at),
+            "profiles": [
+                {
+                    "server_id": profile.server_id,
+                    "name": profile.name,
+                    "instance_path": profile.instance_path,
+                    "ok": profile.ok,
+                    "checks": list(profile.checks),
+                    "errors": list(profile.errors),
+                }
+                for profile in report.profiles
+            ],
         }
 
     def _gateway_member_from_payload(
@@ -512,6 +552,8 @@ class DesktopAPI:
             port=port,
             lifecycle=default_lifecycle(network),
             permission_mode=str(payload.get("permission_mode") or "safe"),
+            allow_network=bool(payload.get("allow_network", False)),
+            enable_view_image=bool(payload.get("enable_view_image", True)),
         )
         self._save_selected_server_id(profile.server_id)
         return self._profile_payload(profile)
@@ -546,6 +588,12 @@ class DesktopAPI:
                 lifecycle=default_lifecycle(network),
                 permission_mode=str(
                     payload.get("permission_mode") or current.permission_mode
+                ),
+                allow_network=bool(
+                    payload.get("allow_network", current.allow_network)
+                ),
+                enable_view_image=bool(
+                    payload.get("enable_view_image", current.enable_view_image)
                 ),
                 created_at=current.created_at,
                 updated_at=current.updated_at,
@@ -600,6 +648,8 @@ class DesktopAPI:
                 server_id=profile.server_id,
                 lifecycle=profile.lifecycle,
                 permission_mode=profile.permission_mode,
+                allow_network=profile.allow_network,
+                enable_view_image=profile.enable_view_image,
             ).validated()
             self.manager.start_config(server_id, config)
         else:
@@ -646,6 +696,7 @@ class DesktopAPI:
             name=str(payload.get("name") or ""),
             network=self._persistable_network(network, remember),
             members=members,
+            mode=str(payload.get("mode") or "multi"),
             host=host,
             port=port,
         )
@@ -705,6 +756,7 @@ class DesktopAPI:
                 name=str(payload.get("name") or current.name),
                 network=self._persistable_network(network, remember),
                 members=tuple(members),
+                mode=str(payload.get("mode") or current.mode),
                 host=host,
                 port=port,
                 created_at=current.created_at,
@@ -717,6 +769,111 @@ class DesktopAPI:
             issuer = removed_issuers.get(member.server_id)
             if issuer and not self._oauth_identity_still_referenced(issuer):
                 delete_issuer_oauth_storage(issuer)
+        return self._gateway_payload(gateway)
+
+    def promote_server_to_gateway(
+        self,
+        server_id: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        """Promote a Direct Server into one multi-profile Service.
+
+        The original server_id becomes the root Profile identity, so `/mcp`,
+        OAuth issuer storage, and Desktop Permission Broker identity remain
+        stable while child Profiles are added.
+        """
+
+        current = self.store.get(server_id)
+        if current is None:
+            raise KeyError(f"找不到 MCP Server: {server_id}")
+        if self.manager.is_running(server_id):
+            raise RuntimeError("请先停止当前服务，再添加子 Profile。")
+
+        network = self._network_from_payload(payload.get("network"))
+        remember = bool(payload.get("remember_secrets", True))
+        host = str(payload.get("host") or current.host)
+        port = int(payload.get("port") or current.port)
+        self._assert_gateway_resources_available(
+            network=network,
+            host=host,
+            port=port,
+            ignore_server_id=server_id,
+        )
+        raw_members = payload.get("members")
+        if not isinstance(raw_members, list) or not raw_members:
+            raise ValueError("服务至少需要一个 Workspace Profile。")
+
+        lifecycle = default_lifecycle(network)
+        members: list[MCPGatewayMember] = []
+        root_seen = False
+        for raw in raw_members:
+            value = raw if isinstance(raw, dict) else {}
+            instance_path = str(value.get("instance_path") or "")
+            if not instance_path.strip().strip("/"):
+                if root_seen:
+                    raise ValueError("一个服务只能有一个根 Workspace Profile。")
+                root_seen = True
+                members.append(
+                    MCPGatewayMember(
+                        server_id=current.server_id,
+                        name=str(value.get("name") or current.name),
+                        workspace=Path(
+                            str(value.get("workspace") or current.workspace)
+                        ),
+                        oauth_password=(
+                            str(
+                                value.get("oauth_password")
+                                or current.oauth_password
+                            )
+                            if remember
+                            else ""
+                        ),
+                        instance_path="",
+                        permission_mode=str(
+                            value.get("permission_mode")
+                            or current.permission_mode
+                        ),
+                        lifecycle=lifecycle,
+                        allow_network=bool(value.get("allow_network", False)),
+                        enable_view_image=bool(
+                            value.get("enable_view_image", True)
+                        ),
+                    ).validated()
+                )
+                continue
+            members.append(
+                self._gateway_member_from_payload(
+                    value,
+                    lifecycle=lifecycle,
+                    remember_secrets=remember,
+                )
+            )
+
+        if not root_seen:
+            raise ValueError(
+                "从单 Workspace 升级时必须保留原来的根 Workspace Profile。"
+            )
+        if len(members) < 2:
+            raise ValueError("没有新增子 Profile，无需切换到多 Workspace Runtime。")
+
+        gateway = self.gateway_store.save(
+            MCPGatewayProfile(
+                gateway_id=current.server_id,
+                name=str(payload.get("name") or current.name),
+                network=self._persistable_network(network, remember),
+                members=tuple(members),
+                mode=str(payload.get("mode") or "multi"),
+                host=host,
+                port=port,
+                created_at=current.created_at,
+                updated_at=current.updated_at,
+            )
+        )
+        # Only remove the legacy Direct record. The root Profile keeps the
+        # original identity, so no OAuth/Broker cleanup is performed.
+        if not self.store.delete(server_id):
+            self.gateway_store.delete(gateway.gateway_id)
+            raise RuntimeError("服务运行模型转换失败：旧 Direct Profile 未能移除。")
         return self._gateway_payload(gateway)
 
     def _oauth_identity_still_referenced(self, issuer: str) -> bool:
@@ -806,6 +963,7 @@ class DesktopAPI:
             config = GatewayLaunchConfig(
                 network=network,
                 profiles=tuple(profiles),
+                mode=gateway.mode,
                 host=gateway.host,
                 port=gateway.port,
             ).validated()
@@ -823,6 +981,10 @@ class DesktopAPI:
             self.permission_broker.clear_server(member.server_id)
         return self._gateway_payload(gateway)
 
+    def test_gateway(self, gateway_id: str) -> dict[str, object]:
+        report = self.gateway_manager.diagnose(gateway_id)
+        return self._gateway_diagnostic_payload(report)
+
     def list_oauth_clients(self, server_id: str) -> list[dict[str, object]]:
         return [
             {
@@ -835,11 +997,46 @@ class DesktopAPI:
             for client in self.manager.oauth_clients(server_id)
         ]
 
+    def list_gateway_oauth_clients(
+        self,
+        gateway_id: str,
+        server_id: str,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "client_id": client.client_id,
+                "client_name": client.client_name or "未命名客户端",
+                "redirect_uris": list(client.redirect_uris),
+                "token_endpoint_auth_method": client.token_endpoint_auth_method,
+                "issued_at": client.issued_at,
+            }
+            for client in self.gateway_manager.oauth_clients(gateway_id, server_id)
+        ]
+
     def revoke_oauth_client(self, server_id: str, client_id: str) -> bool:
         return self.manager.remove_oauth_client(server_id, client_id)
 
     def revoke_all_oauth_clients(self, server_id: str) -> int:
         return self.manager.clear_oauth_clients(server_id)
+
+    def revoke_gateway_oauth_client(
+        self,
+        gateway_id: str,
+        server_id: str,
+        client_id: str,
+    ) -> bool:
+        return self.gateway_manager.remove_oauth_client(
+            gateway_id,
+            server_id,
+            client_id,
+        )
+
+    def revoke_all_gateway_oauth_clients(
+        self,
+        gateway_id: str,
+        server_id: str,
+    ) -> int:
+        return self.gateway_manager.clear_oauth_clients(gateway_id, server_id)
 
     def get_logs(self, after: int = 0) -> dict[str, object]:
         with self._log_lock:

@@ -56,6 +56,8 @@ class MCPServerProfile:
     port: int = DEFAULT_PORT
     lifecycle: str = "persistent"
     permission_mode: str = "safe"
+    allow_network: bool = False
+    enable_view_image: bool = True
     created_at: int = field(default_factory=_timestamp)
     updated_at: int = field(default_factory=_timestamp)
 
@@ -71,6 +73,8 @@ class MCPServerProfile:
         port: int = DEFAULT_PORT,
         lifecycle: str | None = None,
         permission_mode: str = "safe",
+        allow_network: bool = False,
+        enable_view_image: bool = True,
     ) -> "MCPServerProfile":
         resolved_network = (network or NetworkConfig()).validated()
         now = _timestamp()
@@ -84,6 +88,8 @@ class MCPServerProfile:
             port=port,
             lifecycle=lifecycle or default_lifecycle(resolved_network),
             permission_mode=permission_mode,
+            allow_network=allow_network,
+            enable_view_image=enable_view_image,
             created_at=now,
             updated_at=now,
         ).validated()
@@ -122,6 +128,8 @@ class MCPServerProfile:
             port=int(self.port),
             lifecycle=lifecycle,
             permission_mode=permission_mode,
+            allow_network=bool(self.allow_network),
+            enable_view_image=bool(self.enable_view_image),
             created_at=int(self.created_at),
             updated_at=int(self.updated_at),
         )
@@ -136,6 +144,8 @@ class MCPServerProfile:
             server_id=self.server_id,
             lifecycle=self.lifecycle,
             permission_mode=self.permission_mode,
+            allow_network=self.allow_network,
+            enable_view_image=self.enable_view_image,
         ).validated()
 
     def to_dict(self) -> dict[str, Any]:
@@ -149,6 +159,8 @@ class MCPServerProfile:
             "port": profile.port,
             "lifecycle": profile.lifecycle,
             "permission_mode": profile.permission_mode,
+            "allow_network": profile.allow_network,
+            "enable_view_image": profile.enable_view_image,
             "created_at": profile.created_at,
             "updated_at": profile.updated_at,
             "network": {
@@ -176,6 +188,8 @@ class MCPServerProfile:
                 port=int(raw.get("port", DEFAULT_PORT)),
                 lifecycle=str(raw.get("lifecycle", "persistent")),
                 permission_mode=str(raw.get("permission_mode", "safe")),
+                allow_network=bool(raw.get("allow_network", False)),
+                enable_view_image=bool(raw.get("enable_view_image", True)),
                 created_at=int(raw.get("created_at", _timestamp())),
                 updated_at=int(raw.get("updated_at", _timestamp())),
                 network=NetworkConfig(
@@ -240,6 +254,8 @@ class ServerProfileStore:
         port: int | None = None,
         lifecycle: str | None = None,
         permission_mode: str = "safe",
+        allow_network: bool = False,
+        enable_view_image: bool = True,
     ) -> MCPServerProfile:
         selected_port = self.next_default_port() if port is None else int(port)
         profile = MCPServerProfile.create(
@@ -251,6 +267,8 @@ class ServerProfileStore:
             port=selected_port,
             lifecycle=lifecycle,
             permission_mode=permission_mode,
+            allow_network=allow_network,
+            enable_view_image=enable_view_image,
         )
         profiles = self.list()
         profiles.append(profile)
@@ -271,6 +289,8 @@ class ServerProfileStore:
             port=validated.port,
             lifecycle=validated.lifecycle,
             permission_mode=validated.permission_mode,
+            allow_network=validated.allow_network,
+            enable_view_image=validated.enable_view_image,
             created_at=validated.created_at,
             updated_at=now,
         )
@@ -313,8 +333,8 @@ class ServerProfileStore:
                 if public_hostname in public_hostnames:
                     raise ValueError(
                         "多个直连 Server Profile 不能配置相同 Public Hostname；"
-                        "当前请为每个 Profile 使用独立 hostname。"
-                        "同 hostname + 不同 Path 将由后续 Local MCP Gateway 模式提供。"
+                        "独立服务请使用独立 hostname；同一 hostname 下需要多个 Workspace 时，"
+                        "请在同一个服务中添加 Profile。"
                     )
                 public_hostnames.add(public_hostname)
             validated_profiles.append(validated)

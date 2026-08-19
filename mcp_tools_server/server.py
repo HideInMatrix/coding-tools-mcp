@@ -57,7 +57,12 @@ from .protocol import (
     validate_mirror_headers,
 )
 from .runtime import Runtime
-from .route_probe import ROUTE_PROBE_HEADER, ROUTE_PROBE_PATH, ROUTE_PROBE_TOKEN_ENV
+from .route_probe import (
+    ROUTE_PROBE_HEADER,
+    ROUTE_PROBE_PATH,
+    ROUTE_PROBE_TOKEN_ENV,
+    workspace_fingerprint,
+)
 from .transport_stdio import serve_stdio
 
 
@@ -615,7 +620,16 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             if not expected or not provided or not secrets.compare_digest(expected, provided):
                 self._json(404, {"error": "not_found"}, {"Cache-Control": "no-store"})
                 return
-            self._json(200, {"ok": True}, {"Cache-Control": "no-store"})
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "workspace_fingerprint": workspace_fingerprint(
+                        self.runtime.workspace.root
+                    ),
+                },
+                {"Cache-Control": "no-store"},
+            )
             return
         if path == "/":
             self._json(200, self._server_card())

@@ -133,7 +133,9 @@ typescript         -> @typescript/typescript6，仅供 vue-tsc 等 API 工具兼
 - UI 组件体系统一采用 shadcn-vue，组件源码保存在仓库中，不把 shadcn-vue 当成黑盒运行时组件库。
 - shadcn-vue 底层使用到 Reka UI 的组件必须封装在 `components/ui/`，业务页面不直接依赖 Reka UI 私有实现。
 - 图标统一使用 `@lucide/vue`，不再用字母、Emoji 或自制文本符号代替功能图标。
-- UI 基础样式优先使用 UnoCSS utility + CSS Variables；复杂全局布局允许保留少量语义 CSS。
+- UI 基础样式统一优先使用 UnoCSS `presetWind4` utility，也就是项目当前采用的 Tailwind CSS v4 / Wind4 风格语法，例如 `flex items-center gap-2 border-border bg-card text-muted-foreground`。
+- 新页面和新业务组件禁止为了普通布局、间距、颜色、边框、圆角、响应式等能力新增大段 `<style scoped>`；这些场景必须优先使用 Wind4 utility。只有 utility 难以清晰表达的复杂全局布局、浏览器兼容规则或复用型底层样式才允许保留少量语义 CSS。
+- 主题颜色必须优先使用 `uno.config.ts` 中映射到 CSS Variables 的语义 token，如 `bg-background`、`bg-card`、`text-foreground`、`text-muted-foreground`、`border-border`，避免业务组件重复直接书写 `var(--*)`。
 - 状态应保留在组件/组合函数中，不依赖全局单例组件实例。
 
 未来开启 Vapor 的必要条件：
@@ -150,7 +152,13 @@ typescript         -> @typescript/typescript6，仅供 vue-tsc 等 API 工具兼
 
 ```text
 App.vue
-  页面状态与顶层数据编排
+  桌面 Layout、RouterView、全局 Permission Dialog
+
+router/
+  Vue Router 路由定义；pywebview 统一使用 createWebHashHistory()
+
+Route View
+  页面级状态、页面级轮询与 DesktopAPI 调用
 
 components/
   纯展示与局部交互
@@ -172,6 +180,13 @@ lib/utils.ts
 ```
 
 组件不得绕过 `api/desktop.ts` 直接调用 Python。
+
+- 桌面 UI 页面导航统一使用 `vue-router`，禁止重新引入 `PageKey + v-if/v-else-if` 作为一级页面路由系统。
+- pywebview 下统一使用 `createWebHashHistory()`；当前 URL 形态为 `#/services`、`#/oauth`、`#/logs`、`#/about`。
+- 不使用 `createWebHistory()` 依赖服务端 SPA fallback；Hash 不参与 HTTP 资源路径，更适合 pywebview 本地入口和内置 HTTP Server。
+- Vite `base` 保持相对路径 `./`，确保 pywebview 打包资源和懒加载 route chunks 从 `index.html` 相对位置加载。
+- 页面级轮询必须跟随 Route View 生命周期：进入页面启动、离开页面停止；禁止把日志、更新检查等页面专属轮询长期堆在 `App.vue`。
+- `App.vue` 只保留跨路由全局职责，例如应用版本、全局 Permission Dialog；服务、OAuth、日志、更新等业务状态由对应 Route View 自己管理。
 
 ## 11. UnoCSS / Tailwind v4 兼容规范
 

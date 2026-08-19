@@ -89,6 +89,8 @@ class LaunchConfig:
     server_id: str = ""
     lifecycle: str = "persistent"
     permission_mode: str = "safe"
+    allow_network: bool = False
+    enable_view_image: bool = True
 
     def validated(self) -> "LaunchConfig":
         workspace = self.workspace.expanduser().resolve()
@@ -121,6 +123,8 @@ class LaunchConfig:
             server_id=server_id,
             lifecycle=lifecycle,
             permission_mode=permission_mode,
+            allow_network=bool(self.allow_network),
+            enable_view_image=bool(self.enable_view_image),
         )
 
     @classmethod
@@ -170,6 +174,14 @@ class LaunchConfig:
             host=host,
             port=port,
             permission_mode=env.get("CODING_TOOLS_MCP_PERMISSION_MODE", "safe"),
+            allow_network=env.get("CODING_TOOLS_MCP_ALLOW_NETWORK", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"},
+            enable_view_image=env.get("CODING_TOOLS_MCP_ENABLE_VIEW_IMAGE", "1")
+            .strip()
+            .lower()
+            not in {"0", "false", "no", "off"},
         ).validated()
 
 

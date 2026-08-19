@@ -4,8 +4,14 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .gateway_launcher import GatewayLaunchConfig, GatewayLaunchInfo, MCPGatewayLauncher
+from .gateway_launcher import (
+    GatewayDiagnosticReport,
+    GatewayLaunchConfig,
+    GatewayLaunchInfo,
+    MCPGatewayLauncher,
+)
 from .gateway_profiles import GatewayProfileStore, MCPGatewayProfile
+from .oauth_client_store import OAuthClientStore, OAuthClientSummary
 from .process_utils import LogCallback
 
 if TYPE_CHECKING:
@@ -18,6 +24,7 @@ class ManagedGatewayStatus:
     name: str
     running: bool
     info: GatewayLaunchInfo | None
+    diagnostic: GatewayDiagnosticReport | None
     exit_reason: str
 
 
@@ -82,6 +89,8 @@ class MCPGatewayManager:
             runtime_ids = [profile.server_id for profile in validated.profiles]
             if runtime_ids != saved_ids:
                 raise ValueError("Gateway runtime Profile 身份与已保存配置不一致。")
+            if validated.mode != gateway.mode:
+                raise ValueError("Service runtime mode 与已保存配置不一致。")
             if validated.host != gateway.host or validated.port != gateway.port:
                 raise ValueError("Gateway runtime 地址与已保存配置不一致。")
             return launcher.start(validated)
@@ -113,11 +122,101 @@ class MCPGatewayManager:
                 name=gateway.name,
                 running=bool(launcher and launcher.is_running),
                 info=launcher.info if launcher else None,
+                diagnostic=launcher.last_diagnostic if launcher else None,
                 exit_reason=launcher.exit_reason if launcher else "",
             )
 
     def statuses(self) -> list[ManagedGatewayStatus]:
         return [self.status(gateway.gateway_id) for gateway in self.store.list()]
+
+    def _member_is_running(
+        self,
+        gateway: MCPGatewayProfile,
+        server_id: str,
+    ) -> bool:
+        if not self.is_running(gateway.gateway_id):
+            return False
+        member = next(
+            (item for item in gateway.members if item.server_id == server_id.strip()),
+            None,
+        )
+        if member is None:
+            return False
+        return gateway.mode == "multi" or member.instance_path == ""
+
+    def diagnose(self, gateway_id: str) -> GatewayDiagnosticReport:
+        with self._lock:
+            gateway = self.store.get(gateway_id)
+            if gateway is None:
+                raise KeyError(f"找不到 Local MCP Gateway: {gateway_id}")
+            launcher = self._launchers.get(gateway_id)
+            if launcher is None or not launcher.is_running:
+                raise RuntimeError("请先启动 Local MCP Gateway，再执行公网自检。")
+        return launcher.diagnose()
+
+    def oauth_clients(
+        self,
+        gateway_id: str,
+        server_id: str,
+    ) -> list[OAuthClientSummary]:
+        with self._lock:
+            gateway = self.store.get(gateway_id)
+            if gateway is None:
+                raise KeyError(f"找不到 Local MCP Gateway: {gateway_id}")
+            member = next(
+                (item for item in gateway.members if item.server_id == server_id.strip()),
+                None,
+            )
+            if member is None:
+                raise KeyError(f"找不到 Gateway Profile: {server_id}")
+            if member.lifecycle == "ephemeral":
+                launcher = self._launchers.get(gateway.gateway_id)
+                if not launcher or not launcher.is_running:
+                    return []
+                registry_file = launcher.oauth_registry_file(member.server_id)
+                if registry_file is None:
+                    return []
+                return OAuthClientStore(member.server_id, path=registry_file).list()
+            return OAuthClientStore(member.server_id).list()
+
+    def remove_oauth_client(
+        self,
+        gateway_id: str,
+        server_id: str,
+        client_id: str,
+    ) -> bool:
+        with self._lock:
+            gateway = self.store.get(gateway_id)
+            if gateway is None:
+                raise KeyError(f"找不到 Local MCP Gateway: {gateway_id}")
+            member = next(
+                (item for item in gateway.members if item.server_id == server_id.strip()),
+                None,
+            )
+            if member is None:
+                raise KeyError(f"找不到 Gateway Profile: {server_id}")
+            if member.lifecycle == "ephemeral":
+                raise RuntimeError("临时 Gateway Profile 的 OAuth Client 随 Session 自动销毁。")
+            if self._member_is_running(gateway, member.server_id):
+                raise RuntimeError("请先停止当前 Workspace Runtime，再撤销 OAuth Client。")
+            return OAuthClientStore(member.server_id).remove(client_id)
+
+    def clear_oauth_clients(self, gateway_id: str, server_id: str) -> int:
+        with self._lock:
+            gateway = self.store.get(gateway_id)
+            if gateway is None:
+                raise KeyError(f"找不到 Local MCP Gateway: {gateway_id}")
+            member = next(
+                (item for item in gateway.members if item.server_id == server_id.strip()),
+                None,
+            )
+            if member is None:
+                raise KeyError(f"找不到 Gateway Profile: {server_id}")
+            if member.lifecycle == "ephemeral":
+                return 0
+            if self._member_is_running(gateway, member.server_id):
+                raise RuntimeError("请先停止当前 Workspace Runtime，再撤销 OAuth Client。")
+            return OAuthClientStore(member.server_id).clear()
 
     def delete_profile(self, gateway_id: str) -> bool:
         with self._lock:

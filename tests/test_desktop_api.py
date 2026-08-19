@@ -6,6 +6,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from coding_tools_launcher.desktop_api import DesktopAPI
+from coding_tools_launcher.gateway_launcher import (
+    GatewayDiagnosticReport,
+    GatewayProfileDiagnostic,
+)
 
 
 class DesktopAPITests(unittest.TestCase):
@@ -212,6 +216,51 @@ class DesktopAPITests(unittest.TestCase):
         self.assertEqual(len(bootstrap["gateways"]), 1)
         self.assertEqual(bootstrap["servers"], [])
 
+    def test_direct_service_can_be_promoted_with_root_workspace_identity_preserved(self) -> None:
+        direct = self.api.create_server(self.payload(name="Unified Service"))
+        payload = {
+            "name": "Unified Service",
+            "mode": "single",
+            "host": direct["host"],
+            "port": direct["port"],
+            "remember_secrets": True,
+            "network": direct["network"],
+            "members": [
+                {
+                    "server_id": direct["server_id"],
+                    "name": "主 Workspace",
+                    "workspace": direct["workspace"],
+                    "oauth_password": "password",
+                    "instance_path": "",
+                    "permission_mode": "safe",
+                },
+                {
+                    "name": "API",
+                    "workspace": str(self.base),
+                    "oauth_password": "api-password",
+                    "instance_path": "/api",
+                    "permission_mode": "trusted",
+                },
+            ],
+        }
+
+        promoted = self.api.promote_server_to_gateway(
+            str(direct["server_id"]),
+            payload,
+        )
+
+        self.assertEqual(promoted["gateway_id"], direct["server_id"])
+        self.assertEqual(promoted["mode"], "single")
+        self.assertIsNone(self.api.store.get(str(direct["server_id"])))
+        self.assertEqual(
+            [member["instance_path"] for member in promoted["members"]],
+            ["", "/api"],
+        )
+        self.assertEqual(
+            promoted["members"][0]["server_id"],
+            direct["server_id"],
+        )
+
     def test_gateway_and_direct_server_share_next_port_allocator(self) -> None:
         self.api.create_gateway(self.gateway_payload(port=8234))
         self.assertEqual(self.api.get_next_port(), 8235)
@@ -323,6 +372,55 @@ class DesktopAPITests(unittest.TestCase):
 
         delete_server.assert_called_once_with(removed["server_id"])
         delete_issuer.assert_called_once_with("https://mcp.example.com/home")
+
+    def test_gateway_diagnostic_is_serialized_for_desktop_bridge(self) -> None:
+        created = self.api.create_gateway(self.gateway_payload())
+        member = created["members"][0]
+        report = GatewayDiagnosticReport(
+            ok=True,
+            public_base_url="https://mcp.example.com",
+            checked_at=123,
+            profiles=(
+                GatewayProfileDiagnostic(
+                    server_id=str(member["server_id"]),
+                    name="Company",
+                    instance_path="/company",
+                    ok=True,
+                    checks=("public_path_runtime", "oauth_authorization_metadata"),
+                    errors=(),
+                ),
+            ),
+        )
+        with patch.object(self.api.gateway_manager, "diagnose", return_value=report):
+            payload = self.api.test_gateway(str(created["gateway_id"]))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["public_base_url"], "https://mcp.example.com")
+        self.assertEqual(payload["profiles"][0]["instance_path"], "/company")
+        self.assertEqual(
+            payload["profiles"][0]["checks"],
+            ["public_path_runtime", "oauth_authorization_metadata"],
+        )
+
+    def test_gateway_oauth_bridge_forwards_to_gateway_manager(self) -> None:
+        created = self.api.create_gateway(self.gateway_payload())
+        member = created["members"][0]
+        with patch.object(
+            self.api.gateway_manager,
+            "oauth_clients",
+            return_value=[],
+        ) as oauth_clients:
+            self.assertEqual(
+                self.api.list_gateway_oauth_clients(
+                    str(created["gateway_id"]),
+                    str(member["server_id"]),
+                ),
+                [],
+            )
+        oauth_clients.assert_called_once_with(
+            str(created["gateway_id"]),
+            str(member["server_id"]),
+        )
 
     def test_app_version_is_stable_and_available_without_bootstrap(self) -> None:
         self.api._close()

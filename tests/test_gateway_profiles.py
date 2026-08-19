@@ -13,6 +13,11 @@ from coding_tools_launcher.gateway_profiles import (
     MCPGatewayMember,
     MCPGatewayProfile,
 )
+from coding_tools_launcher.oauth_persistence import (
+    bind_server_oauth_issuer,
+    prepare_issuer_oauth_persistence,
+)
+from mcp_tools_server.oauth import OAuthClientRegistry
 
 
 class GatewayProfileStoreTests(unittest.TestCase):
@@ -64,6 +69,7 @@ class GatewayProfileStoreTests(unittest.TestCase):
             reloaded = store.get(gateway.gateway_id)
             self.assertIsNotNone(reloaded)
             assert reloaded is not None
+            self.assertEqual(reloaded.mode, "multi")
             self.assertEqual(
                 [member.server_id for member in reloaded.members],
                 ["company-id", "home-id"],
@@ -72,6 +78,45 @@ class GatewayProfileStoreTests(unittest.TestCase):
                 [member.instance_path for member in reloaded.members],
                 ["/company", "/home"],
             )
+
+    def test_single_mode_persists_child_profiles_without_enabling_them(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = GatewayProfileStore(root / "gateways.json")
+            root_member = self._member(
+                root,
+                server_id="root-id",
+                name="Root",
+                path="",
+            )
+            child = self._member(
+                root,
+                server_id="child-id",
+                name="Child",
+                path="/child",
+            )
+            gateway = store.create(
+                name="Service",
+                network=NetworkConfig(
+                    provider="external",
+                    public_url="https://mcp.example.com",
+                    options={},
+                ),
+                members=(root_member, child),
+                mode="single",
+            )
+
+            reloaded = store.get(gateway.gateway_id)
+            self.assertIsNotNone(reloaded)
+            assert reloaded is not None
+            self.assertEqual(reloaded.mode, "single")
+            self.assertEqual(
+                [member.instance_path for member in reloaded.members],
+                ["", "/child"],
+            )
+            launch = reloaded.to_launch_config()
+            self.assertEqual(launch.mode, "single")
+            self.assertEqual(len(launch.profiles), 2)
 
     def test_saved_member_may_omit_password_but_launch_requires_it(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -201,6 +246,136 @@ class GatewayManagerTests(unittest.TestCase):
 
             self.assertIs(info, fake_info)
             self.assertEqual(start.call_count, 1)
+
+    def test_manager_lists_and_revokes_persistent_member_oauth_clients(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            store = GatewayProfileStore(root / "gateways.json")
+            member = MCPGatewayMember(
+                server_id="member",
+                name="Member",
+                workspace=workspace,
+                oauth_password="password",
+                instance_path="/member",
+            )
+            gateway = store.create(
+                name="Gateway",
+                network=NetworkConfig(
+                    provider="cloudflare",
+                    public_url="https://mcp.example.com",
+                    options={"tunnel_token": "token"},
+                ),
+                members=(member,),
+            )
+            issuer = "https://mcp.example.com/member"
+
+            with patch(
+                "coding_tools_launcher.oauth_persistence.settings_dir",
+                return_value=root,
+            ):
+                bind_server_oauth_issuer(member.server_id, issuer)
+                persistence = prepare_issuer_oauth_persistence(issuer)
+                registry = OAuthClientRegistry(persistence.registry_file)
+                registered = registry.register(
+                    {
+                        "redirect_uris": ["https://chatgpt.com/connector/oauth/test"],
+                        "client_name": "ChatGPT",
+                    }
+                )
+
+                manager = MCPGatewayManager(store=store)
+                clients = manager.oauth_clients(gateway.gateway_id, member.server_id)
+                self.assertEqual(len(clients), 1)
+                self.assertEqual(clients[0].client_id, registered["client_id"])
+
+                removed = manager.remove_oauth_client(
+                    gateway.gateway_id,
+                    member.server_id,
+                    str(registered["client_id"]),
+                )
+                self.assertTrue(removed)
+                self.assertEqual(
+                    manager.oauth_clients(gateway.gateway_id, member.server_id),
+                    [],
+                )
+
+    def test_manager_rejects_oauth_mutation_while_gateway_is_running(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            store = GatewayProfileStore(root / "gateways.json")
+            member = MCPGatewayMember(
+                server_id="member",
+                name="Member",
+                workspace=workspace,
+                oauth_password="password",
+                instance_path="/member",
+            )
+            gateway = store.create(
+                name="Gateway",
+                network=NetworkConfig(
+                    provider="cloudflare",
+                    public_url="https://mcp.example.com",
+                    options={"tunnel_token": "token"},
+                ),
+                members=(member,),
+            )
+            manager = MCPGatewayManager(store=store)
+            with patch.object(manager, "is_running", return_value=True):
+                with self.assertRaisesRegex(RuntimeError, "先停止当前 Workspace Runtime"):
+                    manager.clear_oauth_clients(gateway.gateway_id, member.server_id)
+
+    def test_single_mode_running_service_does_not_lock_inactive_child_oauth_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = GatewayProfileStore(root / "gateways.json")
+            root_workspace = root / "root"
+            child_workspace = root / "child"
+            root_workspace.mkdir()
+            child_workspace.mkdir()
+            root_member = MCPGatewayMember(
+                server_id="root-id",
+                name="Root",
+                workspace=root_workspace,
+                oauth_password="root-password",
+                instance_path="",
+            ).validated()
+            child = MCPGatewayMember(
+                server_id="child-id",
+                name="Child",
+                workspace=child_workspace,
+                oauth_password="child-password",
+                instance_path="/child",
+            ).validated()
+            gateway = store.create(
+                name="Service",
+                network=NetworkConfig(
+                    provider="external",
+                    public_url="https://mcp.example.com",
+                    options={},
+                ),
+                members=(root_member, child),
+                mode="single",
+            )
+            manager = MCPGatewayManager(store=store)
+
+            with (
+                patch.object(manager, "is_running", return_value=True),
+                patch(
+                    "coding_tools_launcher.gateway_manager.OAuthClientStore.clear",
+                    return_value=2,
+                ) as clear,
+            ):
+                removed = manager.clear_oauth_clients(
+                    gateway.gateway_id,
+                    child.server_id,
+                )
+
+            self.assertEqual(removed, 2)
+            clear.assert_called_once()
 
 
 if __name__ == "__main__":

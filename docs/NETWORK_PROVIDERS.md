@@ -135,7 +135,7 @@ https://home.mcp.example.com/mcp    -> 家里电脑独立 Tunnel
 
 Cloudflare 中每个 hostname 的 Published Application 都直接指向对应电脑的 `http://127.0.0.1:<MCP端口>`，Path 保持为空，不需要 Worker 或 Path Router。
 
-桌面端仍保留 URL Path 能力，例如 `https://company.mcp.example.com/crm/mcp`。该能力不是用来选择不同 Cloudflare Tunnel，而是为后续 **Local MCP Gateway** 预留：未来同一台机器可由一个 Gateway 端口按 `/crm`、`/project-a` 等 Path 分发到多个本地 Server Profile。当前直连模式下，同一个 Public Hostname 只允许配置一个 Profile。
+桌面端仍保留 URL Path 能力，例如 `https://company.mcp.example.com/crm/mcp`。该能力不是用来选择不同 Cloudflare Tunnel，而是由服务内部的 **Local MCP Gateway** 在请求到达本机后按 `/crm`、`/project-a` 等 Path 分发到多个独立 Runtime。用户只需要在同一个服务中添加 Profile；是否启用 Gateway RuntimePool 由启动层自动决定。
 
 Cloudflare 当前仍是唯一默认随桌面包一起分发 helper 二进制的 Provider。
 

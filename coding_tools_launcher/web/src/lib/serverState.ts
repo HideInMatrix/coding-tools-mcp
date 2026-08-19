@@ -1,3 +1,5 @@
-export function isSelectedServerStarting(selectedId: string, startingId: string): boolean {
+export function isSelectedResourceStarting(selectedId: string, startingId: string): boolean {
   return Boolean(selectedId) && selectedId === startingId
 }
+
+export const isSelectedServerStarting = isSelectedResourceStarting

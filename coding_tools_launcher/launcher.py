@@ -244,6 +244,8 @@ class MCPLauncher:
                         "CODING_TOOLS_MCP_SERVER_URL": public_base_url,
                         OAUTH_TOKEN_SECRET_ENV: oauth_persistence.token_secret_hex,
                         OAUTH_REGISTRY_FILE_ENV: str(oauth_persistence.registry_file),
+                        "CODING_TOOLS_MCP_ALLOW_NETWORK": "1" if config.allow_network else "0",
+                        "CODING_TOOLS_MCP_ENABLE_VIEW_IMAGE": "1" if config.enable_view_image else "0",
                     }
                 )
                 if route_probe_token:

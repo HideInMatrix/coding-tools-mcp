@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from mcp_tools_server.gateway import (
     build_gateway_runtime_pool,
@@ -16,18 +18,39 @@ from mcp_tools_server.gateway import (
     normalize_instance_path,
 )
 from mcp_tools_server.oauth import OAuthConfig
+from mcp_tools_server.route_probe import (
+    ROUTE_PROBE_HEADER,
+    ROUTE_PROBE_PATH,
+    ROUTE_PROBE_TOKEN_ENV,
+    workspace_fingerprint,
+)
 from mcp_tools_server.runtime import Runtime
 from mcp_tools_server.server import MCPHTTPServer
 
 
 class GatewayFrameworkTests(unittest.TestCase):
     def test_instance_path_normalization_and_reserved_prefix(self) -> None:
+        self.assertEqual(normalize_instance_path(""), "")
+        self.assertEqual(normalize_instance_path("/"), "")
         self.assertEqual(normalize_instance_path(" company/ "), "/company")
         self.assertEqual(normalize_instance_path("/team/dev/"), "/team/dev")
         with self.assertRaises(ValueError):
-            normalize_instance_path("/")
-        with self.assertRaises(ValueError):
             normalize_instance_path("/.well-known/company")
+
+    def test_root_profile_is_gateway_fallback_without_changing_root_mcp_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            registry = GatewayProfileRegistry()
+            root_profile = registry.register(GatewayProfile("root", "", root / "root"))
+            child = registry.register(GatewayProfile("child", "/child", root / "child"))
+
+            self.assertEqual(registry.resolve("/mcp").profile, root_profile)
+            self.assertEqual(registry.resolve("/oauth/token").profile, root_profile)
+            self.assertEqual(registry.resolve("/child/mcp").profile, child)
+            self.assertEqual(
+                registry.resolve("/.well-known/oauth-authorization-server").profile,
+                root_profile,
+            )
 
     def test_registry_rejects_duplicate_profile_id_and_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -167,6 +190,33 @@ class GatewayFrameworkTests(unittest.TestCase):
                             f"https://mcp.example.com/{instance}",
                         )
                         connection.close()
+
+                        with patch.dict(
+                            os.environ,
+                            {ROUTE_PROBE_TOKEN_ENV: "gateway-probe-secret"},
+                        ):
+                            connection = http.client.HTTPConnection(
+                                "127.0.0.1",
+                                port,
+                            )
+                            connection.request(
+                                "GET",
+                                f"/{instance}{ROUTE_PROBE_PATH}",
+                                headers={
+                                    ROUTE_PROBE_HEADER: "gateway-probe-secret"
+                                },
+                            )
+                            response = connection.getresponse()
+                            probe = json.loads(response.read())
+                            self.assertEqual(response.status, 200)
+                            expected_root = (
+                                company_root if instance == "company" else home_root
+                            )
+                            self.assertEqual(
+                                probe["workspace_fingerprint"],
+                                workspace_fingerprint(expected_root),
+                            )
+                            connection.close()
 
                 connection = http.client.HTTPConnection("127.0.0.1", port)
                 connection.request("GET", "/unknown/mcp")

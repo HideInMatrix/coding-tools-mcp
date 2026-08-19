@@ -124,6 +124,7 @@ class PreparedGatewayConfig:
     config_file: Path
     temporary_dir: Path
     persistences: tuple[OAuthPersistence, ...]
+    registry_files: dict[str, Path]
 
     def remove_config_file(self) -> None:
         try:
@@ -150,6 +151,7 @@ def prepare_gateway_config(
             directory.chmod(0o700)
         profile_payloads: list[dict[str, object]] = []
         persistences: list[OAuthPersistence] = []
+        registry_files: dict[str, Path] = {}
         for profile in validated.profiles:
             issuer = f"{validated.public_base_url}{profile.instance_path}"
             if profile.lifecycle == "ephemeral":
@@ -159,6 +161,7 @@ def prepare_gateway_config(
                 persistence = prepare_issuer_oauth_persistence(issuer)
                 bind_server_oauth_issuer(profile.server_id, issuer)
             persistences.append(persistence)
+            registry_files[profile.server_id] = persistence.registry_file
             profile_payload: dict[str, object] = {
                     "profile_id": profile.server_id,
                     "instance_path": profile.instance_path,
@@ -209,6 +212,7 @@ def prepare_gateway_config(
             config_file=config_file,
             temporary_dir=directory,
             persistences=tuple(persistences),
+            registry_files=registry_files,
         )
     except Exception:
         shutil.rmtree(directory, ignore_errors=True)
@@ -284,4 +288,10 @@ class GatewayServerProcess:
         self._prepared = None
         if prepared is not None:
             prepared.cleanup()
+
+    def oauth_registry_file(self, server_id: str) -> Path | None:
+        prepared = self._prepared
+        if prepared is None:
+            return None
+        return prepared.registry_files.get(server_id.strip())
 

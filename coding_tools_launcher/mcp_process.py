@@ -19,7 +19,7 @@ INTERNAL_MCP_FLAG = "--internal-mcp-server"
 
 
 def _mcp_arguments(config: LaunchConfig) -> list[str]:
-    return [
+    arguments = [
         "--workspace",
         str(config.workspace),
         "--host",
@@ -30,6 +30,9 @@ def _mcp_arguments(config: LaunchConfig) -> list[str]:
         "--permission-mode",
         config.permission_mode,
     ]
+    if config.allow_network:
+        arguments.append("--allow-network")
+    return arguments
 
 
 def build_mcp_command(config: LaunchConfig) -> list[str]:

@@ -11,10 +11,10 @@ from ..permissions import PERMISSION_MODES
 def normalize_instance_path(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
-        raise ValueError("gateway instance_path is required")
+        return ""
     segments = [segment for segment in raw.strip("/").split("/") if segment]
     if not segments:
-        raise ValueError("gateway instance_path cannot be root")
+        return ""
     if any(segment in {".", ".."} for segment in segments):
         raise ValueError("gateway instance_path cannot contain dot segments")
     if segments[0] == ".well-known":

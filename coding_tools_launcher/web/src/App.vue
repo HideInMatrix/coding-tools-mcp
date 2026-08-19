@@ -1,169 +1,37 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ChevronDown } from '@lucide/vue'
+import { RouterView } from 'vue-router'
 import { desktopApi } from './api/desktop'
-import AboutView from './components/AboutView.vue'
 import AppSidebar from './components/AppSidebar.vue'
-import GatewayView from './components/GatewayView.vue'
-import LogPanel from './components/LogPanel.vue'
-import OAuthClientView from './components/OAuthClientView.vue'
-import ServerEditor from './components/ServerEditor.vue'
-import ServerList from './components/ServerList.vue'
-import { isSelectedServerStarting } from './lib/serverState'
-import type { LogEntryDto, OAuthClientDto, PageKey, PermissionRequestDto, ReleaseDto, ServerDraft, ServerDto, UpdateStatusDto } from './types'
+import type { PermissionRequestDto } from './types'
 
-const page = ref<PageKey>('servers')
 const version = ref('')
-const servers = ref<ServerDto[]>([])
-const selectedId = ref('')
-const draft = ref<ServerDraft>(emptyDraft(8234))
-const isNew = ref(true)
-const clients = ref<OAuthClientDto[]>([])
-const logs = ref<LogEntryDto[]>([])
-const logCursor = ref(0)
-const busy = ref(false)
 const errorMessage = ref('')
-const release = ref<ReleaseDto | null>(null)
-const checkingUpdate = ref(false)
-const updateProxyPrefix = ref('')
-const savingUpdateProxy = ref(false)
-const startingServerId = ref('')
 const permissionRequests = ref<PermissionRequestDto[]>([])
 const permissionResponding = ref(false)
 const permissionMenuOpen = ref(false)
-const updateStatus = ref<UpdateStatusDto>({
-  state: 'idle', version: '', progress: 0, downloaded_bytes: 0, total_bytes: 0, message: '',
-})
-let installRequested = false
 let pollTimer = 0
 
-const selected = computed(() => servers.value.find(item => item.server_id === selectedId.value) || null)
-const selectedIsStarting = computed(() => isSelectedServerStarting(selectedId.value, startingServerId.value))
 const activePermissionRequest = computed(() => permissionRequests.value[0] || null)
 const permissionArguments = computed(() => {
   const request = activePermissionRequest.value
   if (!request) return ''
-  try { return JSON.stringify(request.arguments, null, 2) } catch { return String(request.arguments) }
+  try {
+    return JSON.stringify(request.arguments, null, 2)
+  } catch {
+    return String(request.arguments)
+  }
 })
-const serverStats = computed(() => ({
-  total: servers.value.length,
-  running: servers.value.filter(item => item.running).length,
-  persistent: servers.value.filter(item => item.lifecycle === 'persistent').length,
-  oauth: servers.value.reduce((total, item) => total + item.oauth_client_count, 0),
-}))
 
-function emptyDraft(port: number): ServerDraft {
-  return {
-    name: '', workspace: '', oauth_password: '', host: '127.0.0.1', port,
-    remember_secrets: true,
-    permission_mode: 'safe',
-    network: { provider: 'cloudflare', public_url: '', options: {} },
+async function refreshPermissionRequests(surfaceError = false) {
+  try {
+    permissionRequests.value = await desktopApi.listPermissionRequests()
+    if (!permissionRequests.value.length) permissionMenuOpen.value = false
+    if (surfaceError) errorMessage.value = ''
+  } catch (error) {
+    if (surfaceError) errorMessage.value = error instanceof Error ? error.message : String(error)
   }
-}
-
-function draftFromServer(server: ServerDto): ServerDraft {
-  return {
-    name: server.name,
-    workspace: server.workspace,
-    oauth_password: server.oauth_password,
-    host: server.host,
-    port: server.port,
-    remember_secrets: server.has_saved_password || Object.keys(server.network.options).some(key => ['tunnel_token', 'authtoken'].includes(key)),
-    permission_mode: server.permission_mode,
-    network: {
-      provider: server.network.provider,
-      public_url: server.network.public_url,
-      options: { ...server.network.options },
-    },
-  }
-}
-
-async function run(action: () => Promise<void>) {
-  if (busy.value) return
-  busy.value = true
-  errorMessage.value = ''
-  try { await action() } catch (error) { errorMessage.value = error instanceof Error ? error.message : String(error) } finally { busy.value = false }
-}
-
-async function refreshServers(preserveDraft = false) {
-  servers.value = await desktopApi.listServers()
-  if (!preserveDraft && selectedId.value) {
-    const server = servers.value.find(item => item.server_id === selectedId.value)
-    if (server) draft.value = draftFromServer(server)
-  }
-}
-
-async function selectServer(serverId: string) {
-  selectedId.value = serverId
-  isNew.value = false
-  await desktopApi.selectServer(serverId)
-  const server = servers.value.find(item => item.server_id === serverId)
-  if (server) draft.value = draftFromServer(server)
-}
-
-async function createNew() {
-  selectedId.value = ''
-  isNew.value = true
-  draft.value = emptyDraft(await desktopApi.nextPort())
-}
-
-async function saveServer() {
-  await run(async () => {
-    const saved = isNew.value
-      ? await desktopApi.createServer(draft.value)
-      : await desktopApi.updateServer(selectedId.value, draft.value)
-    selectedId.value = saved.server_id
-    isNew.value = false
-    await refreshServers()
-  })
-}
-
-async function deleteServer() {
-  if (!selectedId.value || !confirm('确定删除这个 MCP Server 吗？该 Server 的持久化 OAuth Client 和 token secret 也会被删除。')) return
-  await run(async () => {
-    await desktopApi.deleteServer(selectedId.value)
-    await refreshServers()
-    if (servers.value.length) await selectServer(servers.value[0].server_id)
-    else await createNew()
-  })
-}
-
-async function toggleServer(server: ServerDto) {
-  await run(async () => {
-    const starting = !server.running
-    if (starting) startingServerId.value = server.server_id
-    try {
-      if (server.running) await desktopApi.stopServer(server.server_id)
-      else if (server.server_id === selectedId.value) {
-        await desktopApi.updateServer(server.server_id, draft.value)
-        await desktopApi.startServer(server.server_id, draft.value)
-      } else {
-        await desktopApi.startServer(server.server_id)
-      }
-      await refreshServers(true)
-    } finally {
-      if (startingServerId.value === server.server_id) startingServerId.value = ''
-    }
-  })
-}
-
-async function startSelected() {
-  if (!selected.value) return
-  await toggleServer(selected.value)
-}
-
-async function stopSelected() {
-  if (!selected.value) return
-  await toggleServer(selected.value)
-}
-
-async function refreshClients() {
-  clients.value = selectedId.value ? await desktopApi.listOAuthClients(selectedId.value) : []
-}
-
-async function refreshPermissionRequests() {
-  permissionRequests.value = await desktopApi.listPermissionRequests()
-  if (!permissionRequests.value.length) permissionMenuOpen.value = false
 }
 
 function permissionLabel(permission: string) {
@@ -173,21 +41,24 @@ function permissionLabel(permission: string) {
     git_metadata_write: '写入 Git 元数据',
     long_timeout: '延长执行时间',
     sensitive_env: '传入敏感环境变量',
+    sandbox_env_override: '覆盖沙箱环境变量',
     shell_expansion: '使用 Shell 展开',
     inline_script: '执行内联脚本',
     privileged_executable: '查询并运行用户工具',
+    write_generated_or_ignored: '写入生成或忽略文件',
   } as Record<string, string>)[permission] || permission
 }
 
 async function respondPermission(decision: 'deny' | 'once' | 'session') {
   const request = activePermissionRequest.value
   if (!request || permissionResponding.value) return
+
   permissionResponding.value = true
   permissionMenuOpen.value = false
   try {
     const accepted = await desktopApi.respondPermissionRequest(request.request_id, decision)
     if (!accepted) errorMessage.value = '授权请求已过期或不再有效。'
-    await refreshPermissionRequests()
+    await refreshPermissionRequests(false)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -195,228 +66,82 @@ async function respondPermission(decision: 'deny' | 'once' | 'session') {
   }
 }
 
-async function openClients(serverId: string) {
-  if (serverId) await selectServer(serverId)
-  page.value = 'clients'
-  await refreshClients()
-}
-
-async function changePage(value: PageKey) {
-  page.value = value
-  if (value === 'clients') await openClients(selectedId.value)
-}
-
-async function revokeClient(clientId: string) {
-  if (!confirm('撤销后该 AI/MCP 连接需要重新注册并授权。继续吗？')) return
-  await run(async () => { await desktopApi.revokeOAuthClient(selectedId.value, clientId); await refreshClients(); await refreshServers(true) })
-}
-
-async function revokeAll() {
-  if (!confirm('确定撤销当前 Server 的全部 OAuth Client 吗？')) return
-  await run(async () => { await desktopApi.revokeAllOAuthClients(selectedId.value); await refreshClients(); await refreshServers(true) })
-}
-
-async function checkUpdate() {
-  checkingUpdate.value = true
-  errorMessage.value = ''
-  try { release.value = await desktopApi.checkUpdate() } catch (error) { errorMessage.value = error instanceof Error ? error.message : String(error) } finally { checkingUpdate.value = false }
-}
-
-async function saveUpdateProxy(prefix: string) {
-  savingUpdateProxy.value = true
-  errorMessage.value = ''
-  try {
-    updateProxyPrefix.value = await desktopApi.saveUpdateDownloadProxy(prefix)
-    release.value = null
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : String(error)
-  } finally {
-    savingUpdateProxy.value = false
-  }
-}
-
-async function startUpdate() {
-  errorMessage.value = ''
-  installRequested = false
-  try {
-    updateStatus.value = await desktopApi.startUpdate()
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : String(error)
-  }
-}
-
-async function refreshUpdateStatus() {
-  if (!['downloading', 'verifying', 'ready', 'installing'].includes(updateStatus.value.state)) return
-  updateStatus.value = await desktopApi.updateStatus()
-  if (updateStatus.value.state === 'ready' && !installRequested) {
-    installRequested = true
-    try {
-      updateStatus.value = await desktopApi.installUpdate()
-    } catch (error) {
-      installRequested = false
-      errorMessage.value = error instanceof Error ? error.message : String(error)
-      updateStatus.value = await desktopApi.updateStatus()
-    }
-  }
-}
-
-async function poll() {
-  try {
-    await refreshServers(true)
-    const response = await desktopApi.logs(logCursor.value)
-    logCursor.value = response.cursor
-    logs.value.push(...response.entries)
-    if (logs.value.length > 600) logs.value.splice(0, logs.value.length - 600)
-    if (page.value === 'clients') await refreshClients()
-    await refreshPermissionRequests()
-    await refreshUpdateStatus()
-  } catch { /* transient polling failures are surfaced by explicit actions */ }
-}
-
 onMounted(async () => {
-  // Resolve the version independently so a version-only bridge issue cannot
-  // block the rest of the desktop UI from finishing its startup sequence.
   const versionRequest = desktopApi.appVersion()
     .then(value => { if (value) version.value = value })
     .catch(() => undefined)
 
-  try {
-    const [serverItems, persistedSelectedId, proxyPrefix] = await Promise.all([
-      desktopApi.listServers(),
-      desktopApi.selectedServerId(),
-      desktopApi.updateDownloadProxy(),
-    ])
-    servers.value = serverItems
-    updateProxyPrefix.value = proxyPrefix
-    if (persistedSelectedId && serverItems.some(item => item.server_id === persistedSelectedId)) {
-      await selectServer(persistedSelectedId)
-    }
-    else if (serverItems.length) await selectServer(serverItems[0].server_id)
-    else await createNew()
-    await refreshPermissionRequests()
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : String(error)
-  }
+  await refreshPermissionRequests(true)
   await versionRequest
-  pollTimer = window.setInterval(poll, 900)
+  pollTimer = window.setInterval(() => void refreshPermissionRequests(false), 900)
 })
 
 onBeforeUnmount(() => window.clearInterval(pollTimer))
 </script>
 
 <template>
-  <div class="app-shell">
-    <AppSidebar :active="page" :version="version" @select="changePage" />
-    <main class="main-area">
-      <div class="main-content">
-        <div v-if="errorMessage" class="error-banner"><span>{{ errorMessage }}</span><button @click="errorMessage = ''">×</button></div>
+  <div class="flex h-screen bg-background">
+    <AppSidebar :version="version" />
 
-        <template v-if="page === 'servers'">
-          <section class="page-stack">
-            <header class="page-header">
-              <div>
-                <h1>服务</h1>
-                <p>管理本机 MCP Server Profile、Workspace、网络入口和 OAuth Registry。</p>
-              </div>
-            </header>
+    <main class="min-w-0 flex-1 overflow-auto">
+      <div class="mx-auto min-h-full w-full max-w-[1280px] px-8 py-10 max-[1050px]:px-6 max-[1050px]:py-8">
+        <div
+          v-if="errorMessage"
+          class="sticky top-2 z-30 mb-4 flex items-center justify-between gap-3 rounded-[7px] border border-destructive/25 bg-destructive/10 px-3 py-2.5 text-xs text-destructive"
+        >
+          <span>{{ errorMessage }}</span>
+          <button class="border-0 bg-transparent text-lg leading-none text-inherit" @click="errorMessage = ''">×</button>
+        </div>
 
-            <div class="metric-grid">
-              <div class="metric-card">
-                <span>服务总数</span>
-                <strong>{{ serverStats.total }}</strong>
-                <small>已保存的 Server Profile</small>
-              </div>
-              <div class="metric-card">
-                <span>正在运行</span>
-                <strong>{{ serverStats.running }}</strong>
-                <small>{{ serverStats.total - serverStats.running }} 个已停止</small>
-              </div>
-              <div class="metric-card">
-                <span>持久服务</span>
-                <strong>{{ serverStats.persistent }}</strong>
-                <small>{{ serverStats.total - serverStats.persistent }} 个临时 Session</small>
-              </div>
-              <div class="metric-card">
-                <span>OAuth Clients</span>
-                <strong>{{ serverStats.oauth }}</strong>
-                <small>动态注册客户端总数</small>
-              </div>
-            </div>
-
-            <div class="server-workspace">
-              <ServerList
-                :servers="servers"
-                :selected-id="selectedId"
-                :starting-id="startingServerId"
-                @select="selectServer"
-                @toggle="toggleServer"
-                @create="createNew"
-              />
-              <ServerEditor
-                v-model="draft"
-                :is-new="isNew"
-                :running="selected?.running || false"
-                :starting="selectedIsStarting"
-                :public-mcp-url="selected?.public_mcp_url || ''"
-                @save="saveServer"
-                @delete="deleteServer"
-                @start="startSelected"
-                @stop="stopSelected"
-              />
-            </div>
-          </section>
-        </template>
-
-        <GatewayView v-else-if="page === 'gateways'" />
-        <OAuthClientView v-else-if="page === 'clients'" :servers="servers" :selected-id="selectedId" :clients="clients" @select="openClients" @refresh="refreshClients" @revoke="revokeClient" @revoke-all="revokeAll" />
-        <section v-else-if="page === 'logs'" class="content-page page-stack">
-          <header class="page-header">
-            <div><h1>运行日志</h1><p>查看 MCP Server 与网络提供商的实时运行输出。</p></div>
-          </header>
-          <LogPanel :logs="logs" />
-        </section>
-        <AboutView
-          v-else
-          :version="version"
-          :release="release"
-          :checking="checkingUpdate"
-          :update-status="updateStatus"
-          :update-proxy-prefix="updateProxyPrefix"
-          :saving-proxy="savingUpdateProxy"
-          @check="checkUpdate"
-          @update="startUpdate"
-          @save-proxy="saveUpdateProxy"
-          @open="desktopApi.openExternal"
-        />
+        <RouterView />
       </div>
     </main>
   </div>
 
-  <div v-if="activePermissionRequest" class="permission-overlay">
-    <section class="permission-dialog" role="dialog" aria-modal="true" aria-labelledby="permission-dialog-title">
-      <header class="permission-dialog-header">
+  <div
+    v-if="activePermissionRequest"
+    class="fixed inset-0 z-[1000] flex items-center justify-center bg-black/40 p-6 backdrop-blur-[2px]"
+  >
+    <section
+      class="max-h-[min(680px,calc(100vh-48px))] w-[min(560px,100%)] overflow-auto rounded-[10px] border border-border bg-background p-[18px] shadow-[0_18px_50px_rgb(0_0_0/0.2)]"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="permission-dialog-title"
+    >
+      <header class="flex items-start justify-between gap-4">
         <div>
-          <span class="permission-dialog-kicker">需要授权</span>
-          <h2 id="permission-dialog-title">{{ permissionLabel(activePermissionRequest.permission) }}</h2>
+          <span class="text-[10px] leading-[14px] font-semibold text-destructive">需要授权</span>
+          <h2 id="permission-dialog-title" class="mt-[3px] mb-0 text-[17px] leading-6">{{ permissionLabel(activePermissionRequest.permission) }}</h2>
         </div>
-        <span class="permission-server-badge">{{ activePermissionRequest.server_name }}</span>
+        <span class="max-w-[180px] flex-none overflow-hidden text-ellipsis whitespace-nowrap rounded-full bg-secondary px-[7px] py-[3px] text-[10px] leading-[15px] text-muted-foreground">{{ activePermissionRequest.server_name }}</span>
       </header>
-      <p class="permission-dialog-reason">{{ activePermissionRequest.reason }}</p>
-      <dl class="permission-dialog-meta">
-        <div><dt>工具</dt><dd>{{ activePermissionRequest.tool_name }}</dd></div>
-        <div><dt>权限</dt><dd>{{ activePermissionRequest.permission }}</dd></div>
+
+      <p class="mt-3.5 mb-0 text-xs leading-[18px] text-foreground">{{ activePermissionRequest.reason }}</p>
+
+      <dl class="mt-3.5 mb-0 grid grid-cols-2 gap-2">
+        <div class="min-w-0 rounded-[7px] border border-border bg-secondary px-2.5 py-2">
+          <dt class="text-[9px] leading-[13px] text-muted-foreground">工具</dt>
+          <dd class="mt-0.5 mb-0 font-mono text-[11px] leading-4 text-foreground [overflow-wrap:anywhere]">{{ activePermissionRequest.tool_name }}</dd>
+        </div>
+        <div class="min-w-0 rounded-[7px] border border-border bg-secondary px-2.5 py-2">
+          <dt class="text-[9px] leading-[13px] text-muted-foreground">权限</dt>
+          <dd class="mt-0.5 mb-0 font-mono text-[11px] leading-4 text-foreground [overflow-wrap:anywhere]">{{ activePermissionRequest.permission }}</dd>
+        </div>
       </dl>
-      <div class="permission-arguments">
-        <span>本次调用参数（敏感字段已脱敏）</span>
-        <pre>{{ permissionArguments }}</pre>
+
+      <div class="mt-3.5">
+        <span class="text-[10px] leading-[15px] text-muted-foreground">本次调用参数（敏感字段已脱敏）</span>
+        <pre class="mt-1.5 mb-0 max-h-[220px] overflow-auto whitespace-pre-wrap rounded-[7px] border border-border bg-secondary p-2.5 text-[10px] leading-4 text-foreground [overflow-wrap:anywhere]">{{ permissionArguments }}</pre>
       </div>
-      <p class="permission-dialog-note">“仅允许本次”只作用于当前调用；“本次服务会话全部允许”在当前 MCP Server 停止或重启前，对同一已认证客户端自动放行可临时授权的权限。Workspace 边界和不可临时提升的系统限制仍然生效。</p>
-      <footer class="permission-dialog-actions">
-        <button class="secondary-button" :disabled="permissionResponding" @click="respondPermission('deny')">拒绝</button>
-        <div class="permission-approve-split">
-          <button class="primary-button permission-approve-main" :disabled="permissionResponding" @click="respondPermission('once')">仅允许本次</button>
+
+      <p class="mt-3 mb-0 text-[10px] leading-[15px] text-muted-foreground">“仅允许本次”只作用于当前调用；“本次服务会话全部允许”在当前 MCP Server 停止或重启前，对同一已认证客户端自动放行可临时授权的权限。Workspace 边界和不可临时提升的系统限制仍然生效。</p>
+
+      <footer class="mt-4 flex justify-end gap-2">
+        <button class="secondary-button min-w-[88px]" :disabled="permissionResponding" @click="respondPermission('deny')">拒绝</button>
+        <div class="relative inline-flex">
+          <button class="primary-button min-w-[104px] !rounded-r-none !rounded-l-[7px]" :disabled="permissionResponding" @click="respondPermission('once')">仅允许本次</button>
           <button
-            class="primary-button permission-approve-menu-button"
+            class="primary-button w-[34px] min-w-0 !rounded-l-none !rounded-r-[7px] border-l border-l-white/20 px-0"
             :disabled="permissionResponding"
             title="更多授权方式"
             aria-label="更多授权方式"
@@ -424,10 +149,14 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
           >
             <ChevronDown :size="16" />
           </button>
-          <div v-if="permissionMenuOpen" class="permission-approve-menu">
-            <button type="button" @click="respondPermission('session')">
-              <strong>本次服务会话全部允许</strong>
-              <span>直到当前 MCP Server 停止或重启</span>
+          <div v-if="permissionMenuOpen" class="absolute right-0 bottom-[calc(100%+8px)] z-40 w-[250px] rounded-lg border border-border bg-background p-[5px] shadow-[0_14px_36px_rgb(0_0_0/0.18)]">
+            <button
+              class="flex w-full min-w-0 flex-col items-start gap-0.5 rounded-md border-0 bg-transparent px-2.5 py-[9px] text-left text-foreground hover:bg-secondary"
+              type="button"
+              @click="respondPermission('session')"
+            >
+              <strong class="text-[11px] leading-4 font-semibold">本次服务会话全部允许</strong>
+              <span class="text-[9px] leading-[14px] text-muted-foreground">直到当前 MCP Server 停止或重启</span>
             </button>
           </div>
         </div>

@@ -164,7 +164,7 @@ PermissionSession
     └── Desktop Permission Broker adapter
 ```
 
-因此权限状态不是全局状态，也不属于 Tool Handler。未来 Local Gateway 同时挂载多个 Profile 时，每个 Profile 必须使用自己的 `PermissionSession`，禁止跨 Profile 共享 requestState、grant 或 session-all approval。
+因此权限状态不是全局状态，也不属于 Tool Handler。Local MCP Gateway 同时挂载多个 Profile 时，每个 Profile 都使用自己的 `PermissionSession`，禁止跨 Profile 共享 requestState、grant 或 session-all approval。
 
 `runtime.local_permission_broker` 目前仅作为历史兼容 facade 保留，实际 Broker client 由 `PermissionSession` 持有。
 

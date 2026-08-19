@@ -25,6 +25,7 @@ from .user_settings import settings_dir
 
 GATEWAY_PROFILE_SCHEMA_VERSION = 1
 GATEWAY_MEMBER_LIFECYCLES = {"persistent", "ephemeral"}
+SERVICE_MODES = {"single", "multi"}
 
 
 def _timestamp() -> int:
@@ -151,6 +152,7 @@ class MCPGatewayProfile:
     name: str
     network: NetworkConfig
     members: tuple[MCPGatewayMember, ...]
+    mode: str = "multi"
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     created_at: int = field(default_factory=_timestamp)
@@ -163,6 +165,7 @@ class MCPGatewayProfile:
         name: str,
         network: NetworkConfig,
         members: tuple[MCPGatewayMember, ...],
+        mode: str = "multi",
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
     ) -> "MCPGatewayProfile":
@@ -172,6 +175,7 @@ class MCPGatewayProfile:
             name=name,
             network=network,
             members=members,
+            mode=mode,
             host=host,
             port=port,
             created_at=now,
@@ -189,6 +193,13 @@ class MCPGatewayProfile:
         members = tuple(member.validated() for member in self.members)
         if not members:
             raise ValueError("Gateway 至少需要一个 Member。")
+        mode = self.mode.strip().lower() or "multi"
+        if mode not in SERVICE_MODES:
+            raise ValueError(f"不支持的 Service mode: {mode}")
+        if mode == "single" and not any(
+            member.instance_path == "" for member in members
+        ):
+            raise ValueError("单 Workspace 模式必须包含一个根 Workspace Profile。")
         host = self.host.strip() or DEFAULT_HOST
         port = int(self.port)
         if not 1 <= port <= 65535:
@@ -213,6 +224,7 @@ class MCPGatewayProfile:
             name=name,
             network=network,
             members=members,
+            mode=mode,
             host=host,
             port=port,
             created_at=int(self.created_at),
@@ -224,6 +236,7 @@ class MCPGatewayProfile:
         return GatewayLaunchConfig(
             network=value.network,
             profiles=tuple(member.to_child_profile() for member in value.members),
+            mode=value.mode,
             host=value.host,
             port=value.port,
         ).validated()
@@ -242,6 +255,7 @@ class MCPGatewayProfile:
                 "public_url": value.network.public_url,
                 "options": dict(value.network.options),
             },
+            "mode": value.mode,
             "members": [member.to_dict() for member in value.members],
         }
 
@@ -263,6 +277,7 @@ class MCPGatewayProfile:
                 public_url=str(network_raw.get("public_url") or ""),
                 options={str(key): str(item) for key, item in options.items()},
             ),
+            mode=str(value.get("mode") or "multi"),
             members=tuple(
                 MCPGatewayMember.from_dict(item)
                 for item in members_raw
@@ -316,6 +331,7 @@ class GatewayProfileStore:
         name: str,
         network: NetworkConfig,
         members: tuple[MCPGatewayMember, ...],
+        mode: str = "multi",
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
     ) -> MCPGatewayProfile:
@@ -323,6 +339,7 @@ class GatewayProfileStore:
             name=name,
             network=network,
             members=members,
+            mode=mode,
             host=host,
             port=port,
         )
@@ -338,6 +355,7 @@ class GatewayProfileStore:
             name=validated.name,
             network=validated.network,
             members=validated.members,
+            mode=validated.mode,
             host=validated.host,
             port=validated.port,
             created_at=validated.created_at,

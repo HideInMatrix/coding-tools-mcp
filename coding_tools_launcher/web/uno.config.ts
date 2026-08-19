@@ -29,6 +29,12 @@ export default defineConfig({
       border: 'var(--border)',
       input: 'var(--input)',
       ring: 'var(--ring)',
+      sidebar: 'var(--sidebar)',
+      'sidebar-foreground': 'var(--sidebar-foreground)',
+      'sidebar-accent': 'var(--sidebar-accent)',
+      'sidebar-border': 'var(--sidebar-border)',
+      success: 'var(--success)',
+      warning: 'var(--warning)',
     },
     radius: {
       sm: 'calc(var(--radius) - 4px)',

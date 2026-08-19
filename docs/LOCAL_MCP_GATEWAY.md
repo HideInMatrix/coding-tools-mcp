@@ -48,16 +48,20 @@ company.mcp.example.com → Company Computer → MCP Server
 home.mcp.example.com    → Home Computer    → MCP Server
 ```
 
-一个直连 Server 拥有：
+从产品模型看，用户只管理一个 `Service`。服务至少包含一个 Workspace Profile：
 
-- 一个本地端口
-- 一个 Network Provider
-- 一个 Tunnel/Public Hostname
-- 一个 Workspace
-- 一个 PermissionSession
-- 一个 OAuth Registry
+```text
+Service
+├── Network / Hostname / Port
+└── Profiles[]
+    ├── path=""        -> 主 Workspace -> /mcp
+    ├── path="/api"    -> API Workspace -> /api/mcp
+    └── path="/web"    -> Web Workspace -> /web/mcp
+```
 
-### Local Gateway
+Service 持久化一个显式运行模式：`single` 或 `multi`。Profile 数量本身不决定运行模式。用户可以提前配置多个子 Profile，再切回 `single`；这些配置继续保留，但本次只启动根 Workspace。只有显式选择 `multi` 时，启动层才使用 Local Gateway / RuntimePool。
+
+### Local Gateway 内部实现
 
 适合同一台电脑：
 
@@ -66,7 +70,7 @@ mcp.example.com/company/mcp
 mcp.example.com/home/mcp
 ```
 
-一个 Gateway 拥有：
+内部 Gateway 拥有：
 
 - 一个本地端口
 - 一个 Network Provider
@@ -197,6 +201,16 @@ mkstemp
 
 单 Profile Launcher 原有环境变量仍兼容，但旧 monkeypatch 在新版 Server 上成为 no-op。
 
+桌面端“OAuth 授权”页面按 Service/Profile 统一展示授权目标：
+
+```text
+服务 · Company / 主 Workspace
+服务 · Company / API
+服务 · Company / Web
+```
+
+服务运行期间允许实时查看各 Profile 的 DCR Client，但不直接修改运行中的 Registry。persistent Profile 需要先停止服务后再撤销 Client；ephemeral Profile 的 Client 会随 Session 停止自动销毁。
+
 ## 7. Gateway 启动链路
 
 桌面端链路：
@@ -250,11 +264,9 @@ https://random.trycloudflare.com/home/mcp
 
 固定 Named Tunnel hostname 则保持 persistent issuer storage。
 
-## 9. Desktop Profile Model
+## 9. Desktop Service Model
 
-桌面端不复用 `MCPServerProfile` 表示 Gateway。
-
-当前持久化资源分为：
+产品层使用统一 Service/Profile 模型。当前为了兼容已有安装，磁盘层暂时仍可读取两种历史存储：
 
 ```text
 servers.json
@@ -265,45 +277,83 @@ gateways.json
         └── members[]
 ```
 
-这样可以保持两种模式的约束清晰。
+新 UI 不暴露这两种存储差异。旧 Direct Server 自动映射成一个 `path=""` 的主 Profile；旧 Gateway 自动映射成多个已有 Profile。
 
-### Direct 约束
+当旧 Direct Service 第一次添加子 Profile 时，DesktopAPI 会无损提升其内部运行模型：
 
-- 不同机器/Server 使用独立 Public Hostname
-- 一个 Profile 一个本地端口
-- Cloudflare Path 不参与跨 Tunnel 路由
+```text
+原 server_id -> 根 Profile server_id 保持不变
+https://host/mcp -> 保持不变
+OAuth issuer https://host -> 保持不变
+新增 /api -> https://host/api/mcp
+```
 
-### Gateway 约束
-
-- 一个 Gateway 一个 Public Hostname
-- 一个 Gateway 一个本地端口
-- Member Path 在 Gateway 内必须唯一
-- Member `server_id` 全局稳定且唯一
-
-DesktopAPI 会同时检查 Direct Server 与 Gateway 的本地端口和固定 Public Hostname，防止两种模式争抢同一资源。
+因此增加子 Profile 不需要重新创建原来的 Connector。
 
 ## 10. Desktop UI
 
-左侧导航包含独立的 `Gateway` 页面。
+桌面端只保留一个一级“服务”入口，也不再要求用户选择运行模式：
 
-Gateway 页面负责：
+```text
+服务
+├── 主 Workspace -> /mcp
+├── [添加 Profile] -> /api/mcp
+└── [添加 Profile] -> /web/mcp
+```
 
-- 创建/删除 Gateway
+服务页面统一负责：
+
+- 创建/删除服务
 - Network Provider
 - Public Hostname
 - Tunnel Token
 - 本地端口
-- Member 增删
-- Member Path
-- Member Workspace
-- Member OAuth Password
-- Member Permission Profile
-- 启动/停止 Gateway
+- Profile 增删
+- Profile Path
+- Profile Workspace
+- Profile OAuth Password
+- Profile Permission Profile
+- 启动/停止服务
 - 显示并复制每个最终 `/path/mcp` 地址
+- 触发公网 E2E 自检并展示每个 Profile 的检查结果
 
-直连 Server 页面仍保持独立。“实例 Path（高级）”只用于兼容已有 Path-aware Server；同一机器真正的多 Profile 场景应使用 Gateway 页面。
+主 Workspace 不需要填写 Path，固定使用 `/mcp`。子 Profile 才配置 `/api`、`/web` 等 Path。服务页顶部使用“单 Workspace / 多 Workspace”分段滑块显式保存运行模式：`single` 走 `MCPLauncher` 单 Runtime，`multi` 才走 Gateway RuntimePool。切换模式不会删除任何 Profile 配置。
 
-## 11. 当前安全边界
+## 11. 公网 E2E 自检
+
+Gateway 使用现有内部 route-probe 机制验证真正的请求归属。probe 需要随机 Session Token，不接受匿名访问，并且只返回 Workspace 路径的 SHA-256 截断指纹，不暴露真实本地路径。
+
+对每个 Member，诊断器检查：
+
+```text
+local_path_runtime
+public_path_runtime
+server_card
+oauth_authorization_metadata
+oauth_protected_resource
+mcp_auth_challenge
+```
+
+其中最关键的 `public_path_runtime` 会请求：
+
+```text
+https://mcp.example.com/company/.well-known/coding-tools-mcp-route-probe
+https://mcp.example.com/home/.well-known/coding-tools-mcp-route-probe
+```
+
+并将返回的 Workspace fingerprint 与桌面端当前 Member Workspace 的 fingerprint 比较，因此可以区分“公网确实到了 Gateway”与“公网 Path 确实到了正确 Runtime”。
+
+固定 Cloudflare Named Tunnel 的多 Profile 服务启动成功后会自动后台执行公网 E2E 自检。自检失败只记录警告，不会把健康的服务/Tunnel 强制停止。“服务”页面中也提供手动“开始自检”按钮。
+
+OAuth 部分同时验证：
+
+- Server Card 的 `/path/mcp` endpoint
+- Authorization Server issuer
+- authorization/token endpoint 是否带正确 Profile Path
+- RFC 9728 protected resource 是否为 `/path/mcp`
+- 未授权访问 `/path/mcp` 时 `WWW-Authenticate` 的 `resource_metadata` 是否指向当前 Profile
+
+## 12. 当前安全边界
 
 Gateway 解决的是**单机多 Profile 本地分流**，不是跨电脑路由。
 
