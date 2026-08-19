@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import os
+import secrets
+import ssl
 import threading
 import time
+import urllib.error
+import urllib.request
 from typing import TYPE_CHECKING
+
+try:
+    import certifi
+except ImportError:  # pragma: no cover - desktop requirements normally include it
+    certifi = None
 
 from .config import LaunchConfig, LaunchInfo
 from .mcp_process import MCPServerProcess
@@ -19,6 +28,11 @@ from .oauth_persistence import (
     prepare_issuer_oauth_persistence,
 )
 from .process_utils import LogCallback, check_port_available
+from mcp_tools_server.route_probe import (
+    ROUTE_PROBE_HEADER,
+    ROUTE_PROBE_PATH,
+    ROUTE_PROBE_TOKEN_ENV,
+)
 
 if TYPE_CHECKING:
     from .permission_broker import DesktopPermissionBroker
@@ -42,6 +56,90 @@ class MCPLauncher:
 
     def _log(self, message: str) -> None:
         self._log_callback(message)
+
+    def _verify_named_tunnel_route(
+        self,
+        public_base_url: str,
+        route_probe_token: str,
+        *,
+        attempts: int = 6,
+    ) -> None:
+        """Verify that a Named Tunnel public instance path routes to this process.
+
+        Multiple computers may share one public hostname when a Cloudflare
+        path router directs each instance path to a separate Named Tunnel.
+        The per-process probe verifies that the configured public base URL
+        reaches this exact MCP process without exposing the Tunnel token or
+        OAuth password.
+        """
+
+        context = ssl.create_default_context()
+        if certifi is not None:
+            try:
+                context.load_verify_locations(cafile=certifi.where())
+            except OSError:
+                pass
+
+        base = public_base_url.rstrip("/")
+        last_error = ""
+        successful_probes = 0
+        required_successes = 3
+        for attempt in range(1, attempts + 1):
+            nonce = secrets.token_urlsafe(8)
+            request = urllib.request.Request(
+                f"{base}{ROUTE_PROBE_PATH}?nonce={nonce}",
+                headers={
+                    ROUTE_PROBE_HEADER: route_probe_token,
+                    "Cache-Control": "no-cache",
+                    "Connection": "close",
+                },
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=4.0, context=context) as response:
+                    if response.status == 200:
+                        successful_probes += 1
+                        if successful_probes >= required_successes:
+                            self._log("Cloudflare Named Tunnel 公网路由校验通过，域名已回源到当前 MCP 进程。")
+                            return
+                    else:
+                        last_error = f"HTTP {response.status}"
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    raise RuntimeError(
+                        "Cloudflare Named Tunnel 公网路由没有回到当前 MCP 进程。"
+                        "请检查实例 Path 的 Cloudflare Path Router 规则是否指向当前电脑的独立 Tunnel，"
+                        "并确认该电脑没有与其他电脑复用同一个 Tunnel Token。"
+                    ) from exc
+                if exc.code in {502, 503, 504}:
+                    last_error = f"HTTP {exc.code} Bad Gateway"
+                else:
+                    last_error = f"HTTP {exc.code}"
+            except urllib.error.URLError as exc:
+                reason = exc.reason
+                if isinstance(reason, ssl.SSLCertVerificationError):
+                    raise RuntimeError(
+                        "Cloudflare Named Tunnel Public URL 的 TLS 证书校验失败。"
+                        "请检查该域名的 Cloudflare Edge Certificate、DNS 和证书链。"
+                    ) from exc
+                last_error = str(reason or exc)
+            except TimeoutError as exc:
+                last_error = str(exc)
+
+            if attempt < attempts:
+                time.sleep(0.4)
+
+        if successful_probes:
+            raise RuntimeError(
+                "Cloudflare Named Tunnel 路由校验结果不稳定：部分请求回到了当前 MCP 进程，"
+                "但无法连续确认。请检查 Path Router、Tunnel Origin 和是否存在 Token 复用。"
+            )
+        raise RuntimeError(
+            "Cloudflare Named Tunnel 已连接 Edge，但 Public URL 无法回源到当前 MCP Server"
+            f"（{last_error or '未知错误'}）。请确认当前实例 Path 已由 Cloudflare Path Router 定向到"
+            "这台电脑的独立 Tunnel，且该 Tunnel 的 Published Application 指向"
+            " http://127.0.0.1:<MCP端口>。"
+        )
 
     @property
     def info(self) -> LaunchInfo | None:
@@ -78,6 +176,11 @@ class MCPLauncher:
             if self.is_running:
                 raise RuntimeError("MCP 服务已经在运行。")
             config = config.validated()
+            named_cloudflare = (
+                config.network.provider == "cloudflare"
+                and bool(config.network.public_url)
+            )
+            route_probe_token = secrets.token_urlsafe(32) if named_cloudflare else ""
             self._stopping = False
             self._exit_reason = ""
             check_port_available(config.host, config.port)
@@ -115,6 +218,8 @@ class MCPLauncher:
                         OAUTH_REGISTRY_FILE_ENV: str(oauth_persistence.registry_file),
                     }
                 )
+                if route_probe_token:
+                    env[ROUTE_PROBE_TOKEN_ENV] = route_probe_token
                 if self._permission_broker is not None:
                     env.update(
                         self._permission_broker.child_environment(config.server_id)
@@ -134,6 +239,11 @@ class MCPLauncher:
                         "OAuth 状态持久化已启用：DCR client_id 与 token secret 按 issuer 跨重启保留。"
                     )
                 self._mcp.start(config, env)
+                if named_cloudflare:
+                    self._verify_named_tunnel_route(
+                        public_base_url,
+                        route_probe_token,
+                    )
                 self._info = LaunchInfo(
                     workspace=config.workspace,
                     local_mcp_url=f"http://{config.host}:{config.port}/mcp",

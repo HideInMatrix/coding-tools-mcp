@@ -91,8 +91,8 @@ class DesktopAPI:
             self._permission_attention_id = ""
         return payload
 
-    def respond_permission_request(self, request_id: str, approved: bool) -> bool:
-        return self.permission_broker.respond(str(request_id), bool(approved))
+    def respond_permission_request(self, request_id: str, decision: str | bool) -> bool:
+        return self.permission_broker.respond(str(request_id), decision)
 
     def _append_log(self, message: str) -> None:
         with self._log_lock:

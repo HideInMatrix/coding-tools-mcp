@@ -74,8 +74,14 @@ class DesktopPermissionBroker:
             )
         return result
 
-    def respond(self, request_id: str, approved: bool) -> bool:
+    def respond(self, request_id: str, decision: str | bool) -> bool:
         if not request_id or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for character in request_id):
+            return False
+        if isinstance(decision, bool):
+            normalized_decision = "once" if decision else "deny"
+        else:
+            normalized_decision = str(decision or "").strip().lower()
+        if normalized_decision not in {"deny", "once", "session"}:
             return False
         request_path = self.directory / f"{request_id}.request.json"
         response_path = self.directory / f"{request_id}.response.json"
@@ -90,7 +96,8 @@ class DesktopPermissionBroker:
         payload: dict[str, Any] = {
             "version": BROKER_VERSION,
             "request_id": request_id,
-            "approved": bool(approved),
+            "approved": normalized_decision != "deny",
+            "scope": "session" if normalized_decision == "session" else "once",
             "responded_at": int(time.time()),
         }
         payload["signature"] = sign_payload(self.secret, payload)

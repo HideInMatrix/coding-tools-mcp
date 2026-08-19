@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { ChevronDown } from '@lucide/vue'
 import { desktopApi } from './api/desktop'
 import AboutView from './components/AboutView.vue'
 import AppSidebar from './components/AppSidebar.vue'
@@ -28,6 +29,7 @@ const savingUpdateProxy = ref(false)
 const startingServerId = ref('')
 const permissionRequests = ref<PermissionRequestDto[]>([])
 const permissionResponding = ref(false)
+const permissionMenuOpen = ref(false)
 const updateStatus = ref<UpdateStatusDto>({
   state: 'idle', version: '', progress: 0, downloaded_bytes: 0, total_bytes: 0, message: '',
 })
@@ -160,6 +162,7 @@ async function refreshClients() {
 
 async function refreshPermissionRequests() {
   permissionRequests.value = await desktopApi.listPermissionRequests()
+  if (!permissionRequests.value.length) permissionMenuOpen.value = false
 }
 
 function permissionLabel(permission: string) {
@@ -175,12 +178,13 @@ function permissionLabel(permission: string) {
   } as Record<string, string>)[permission] || permission
 }
 
-async function respondPermission(approved: boolean) {
+async function respondPermission(decision: 'deny' | 'once' | 'session') {
   const request = activePermissionRequest.value
   if (!request || permissionResponding.value) return
   permissionResponding.value = true
+  permissionMenuOpen.value = false
   try {
-    const accepted = await desktopApi.respondPermissionRequest(request.request_id, approved)
+    const accepted = await desktopApi.respondPermissionRequest(request.request_id, decision)
     if (!accepted) errorMessage.value = '授权请求已过期或不再有效。'
     await refreshPermissionRequests()
   } catch (error) {
@@ -404,10 +408,27 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
         <span>本次调用参数（敏感字段已脱敏）</span>
         <pre>{{ permissionArguments }}</pre>
       </div>
-      <p class="permission-dialog-note">批准只放行这一次完全相同的调用，其他 Safe 沙箱限制继续生效。</p>
+      <p class="permission-dialog-note">“仅允许本次”只作用于当前调用；“本次服务会话全部允许”在当前 MCP Server 停止或重启前，对同一已认证客户端自动放行可临时授权的权限。Workspace 边界和不可临时提升的系统限制仍然生效。</p>
       <footer class="permission-dialog-actions">
-        <button class="secondary-button" :disabled="permissionResponding" @click="respondPermission(false)">拒绝</button>
-        <button class="primary-button" :disabled="permissionResponding" @click="respondPermission(true)">仅允许本次</button>
+        <button class="secondary-button" :disabled="permissionResponding" @click="respondPermission('deny')">拒绝</button>
+        <div class="permission-approve-split">
+          <button class="primary-button permission-approve-main" :disabled="permissionResponding" @click="respondPermission('once')">仅允许本次</button>
+          <button
+            class="primary-button permission-approve-menu-button"
+            :disabled="permissionResponding"
+            title="更多授权方式"
+            aria-label="更多授权方式"
+            @click="permissionMenuOpen = !permissionMenuOpen"
+          >
+            <ChevronDown :size="16" />
+          </button>
+          <div v-if="permissionMenuOpen" class="permission-approve-menu">
+            <button type="button" @click="respondPermission('session')">
+              <strong>本次服务会话全部允许</strong>
+              <span>直到当前 MCP Server 停止或重启</span>
+            </button>
+          </div>
+        </div>
       </footer>
     </section>
   </div>

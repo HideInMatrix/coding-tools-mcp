@@ -30,6 +30,7 @@ from .local_permission_broker import (
     BROKER_DIR_ENV,
     BROKER_SECRET_ENV,
     BROKER_SERVER_ID_ENV,
+    LocalPermissionDecision,
     LocalPermissionBrokerClient,
     redact_for_display,
 )
@@ -43,6 +44,7 @@ from .processes import (
 from .project_context import ProjectContext, load_project_context
 from .protocol import KNOWN_PROTOCOL_VERSIONS, RequestContext
 from .results import make_tool_result
+from .route_probe import ROUTE_PROBE_TOKEN_ENV
 from .sandbox import build_sandbox_profile, create_process_sandbox
 from .schemas import TOOL_SPECS, exposed_specs, validate_value
 from .toolchains import ToolchainResolver
@@ -195,6 +197,9 @@ class Runtime:
         self._consumed_permission_states: dict[str, float] = {}
         self._permission_grants_lock = threading.RLock()
         self._permission_grants: dict[str, dict[str, Any]] = {}
+        self._session_permission_principals: set[str] = set()
+        self._privileged_program_misses: set[str] = set()
+        self._privileged_toolchain_misses: set[str] = set()
         self.safe_exec_path = ToolchainResolver.default_search_path(self.workspace.root)
         self.toolchain_read_roots: list[Path] = []
         sandbox_readable_roots = self._platform_read_roots()
@@ -550,6 +555,21 @@ class Runtime:
                 self._permission_grants.pop(grant_id, None)
         return frozenset(granted)
 
+    def _session_permissions_for_call(
+        self,
+        context: RequestContext | None,
+    ) -> frozenset[str]:
+        principal = context.principal if context and context.principal else "anonymous"
+        with self._permission_grants_lock:
+            if principal in self._session_permission_principals:
+                return ELICITABLE_PERMISSIONS
+        return frozenset()
+
+    def _grant_session_permissions(self, context: RequestContext | None) -> None:
+        principal = context.principal if context and context.principal else "anonymous"
+        with self._permission_grants_lock:
+            self._session_permission_principals.add(principal)
+
     def _permission_round(
         self,
         name: str,
@@ -705,17 +725,17 @@ class Runtime:
         permission: str,
         message: str,
         context: RequestContext | None,
-    ) -> str:
+    ) -> LocalPermissionDecision:
         broker = self.local_permission_broker
         if broker is None or permission not in ELICITABLE_PERMISSIONS:
-            return "unavailable"
+            return LocalPermissionDecision("unavailable")
         return broker.request(
             tool_name=name,
             arguments=arguments,
             permission=permission,
             reason=message,
             principal=context.principal if context else "anonymous",
-        ).status
+        )
 
     def call_tool(
         self,
@@ -749,7 +769,16 @@ class Runtime:
                 },
             )
         stored_granted = self._stored_permissions_for_call(name, arguments, context)
-        granted = frozenset({*round_granted, *stored_granted})
+        inherited_granted = ACTIVE_PERMISSIONS.get()
+        session_granted = self._session_permissions_for_call(context)
+        granted = frozenset(
+            {
+                *inherited_granted,
+                *round_granted,
+                *stored_granted,
+                *session_granted,
+            }
+        )
         if name == "request_permissions":
             requested_permission = str(arguments.get("permission") or "")
             if requested_permission in round_granted:
@@ -811,14 +840,21 @@ class Runtime:
                     )
                     if input_required is not None:
                         return input_required
-                    local_status = self._request_local_permission(
+                    local_decision = self._request_local_permission(
                         name=name,
                         arguments=arguments,
                         permission=permission,
                         message=exc.message,
                         context=context,
                     )
+                    local_status = str(getattr(local_decision, "status", "unavailable"))
+                    local_session = (
+                        local_status == "approved"
+                        and str(getattr(local_decision, "scope", "once")) == "session"
+                    )
                     if local_status == "approved":
+                        if local_session:
+                            self._grant_session_permissions(context)
                         if name == "request_permissions":
                             target_tool = str(arguments.get("tool_name") or "")
                             target_arguments_raw = arguments.get("arguments")
@@ -832,8 +868,16 @@ class Runtime:
                                 arguments=target_arguments,
                                 permission=permission,
                                 principal=context.principal if context else "anonymous",
-                                scope=str(arguments.get("scope") or "once"),
-                                ttl_seconds=int(arguments.get("ttl_seconds", 300)),
+                                scope=(
+                                    "session"
+                                    if local_session
+                                    else str(arguments.get("scope") or "once")
+                                ),
+                                ttl_seconds=(
+                                    3_600
+                                    if local_session
+                                    else int(arguments.get("ttl_seconds", 300))
+                                ),
                             )
                             return make_tool_result(
                                 name,
@@ -849,20 +893,25 @@ class Runtime:
                                             target_arguments,
                                         ),
                                         "permission": permission,
-                                        "scope": str(arguments.get("scope") or "once"),
+                                        "scope": (
+                                            "session_all"
+                                            if local_session
+                                            else str(arguments.get("scope") or "once")
+                                        ),
                                         "via": "desktop_permission_broker",
                                     },
                                 },
                             )
-                        self._store_permission_grant(
-                            tool_name=name,
-                            arguments=arguments,
-                            permission=permission,
-                            principal=context.principal if context else "anonymous",
-                            scope="once",
-                            ttl_seconds=60,
+                        retry_permissions = (
+                            ELICITABLE_PERMISSIONS
+                            if local_session
+                            else frozenset({*granted, permission})
                         )
-                        return self.call_tool(name, arguments, context=context)
+                        retry_token = ACTIVE_PERMISSIONS.set(retry_permissions)
+                        try:
+                            return self.call_tool(name, arguments, context=context)
+                        finally:
+                            ACTIVE_PERMISSIONS.reset(retry_token)
                     if local_status == "denied":
                         payload = {
                             "ok": False,
@@ -1023,7 +1072,17 @@ class Runtime:
             or not isinstance(toolchains.get(kind), dict)
             or toolchains[kind].get("selected") is None
         ]
-        if missing and not privileged:
+        if privileged:
+            for kind in kinds:
+                if kind in missing:
+                    self._privileged_toolchain_misses.add(kind)
+                else:
+                    self._privileged_toolchain_misses.discard(kind)
+
+        unresolved_without_host_retry = [
+            kind for kind in missing if kind not in self._privileged_toolchain_misses
+        ]
+        if unresolved_without_host_retry and not privileged:
             raise ToolError(
                 "PERMISSION_REQUIRED",
                 "沙箱环境中未找到请求的工具链；需要读取用户登录环境后重试。",
@@ -1031,7 +1090,7 @@ class Runtime:
                 False,
                 {
                     "permission": "privileged_executable",
-                    "missing": missing,
+                    "missing": unresolved_without_host_retry,
                     "sandbox_path": list(self.safe_exec_path),
                 },
             )
@@ -1040,6 +1099,9 @@ class Runtime:
             "shell_startup_files_evaluated": privileged and os.name != "nt",
             "home_scanned_recursively": False,
             "elevated_user_environment_queried": privileged,
+            "host_lookup_exhausted": sorted(
+                kind for kind in missing if kind in self._privileged_toolchain_misses
+            ),
         }
 
     # ------------------------------------------------------------------
@@ -1342,6 +1404,7 @@ class Runtime:
             BROKER_DIR_ENV,
             BROKER_SECRET_ENV,
             BROKER_SERVER_ID_ENV,
+            ROUTE_PROBE_TOKEN_ENV,
         ):
             env.pop(internal_name, None)
         if (
@@ -1449,6 +1512,21 @@ class Runtime:
         privileged = self.permission_mode == "dangerous" or self._permission_granted(
             "privileged_executable"
         )
+        program_key = os.path.normcase(program.strip())
+        if not privileged and program_key in self._privileged_program_misses:
+            raise ToolError(
+                "EXECUTABLE_NOT_FOUND",
+                f"宿主机用户环境已查询过，仍未找到 {program}；本次 MCP Server 会话不再重复请求环境权限。",
+                "process",
+                False,
+                {
+                    "program": program,
+                    "safe_path": list(self.safe_exec_path),
+                    "elevated_lookup": True,
+                    "cached_miss": True,
+                    "hint": "安装或调整工具环境后，请重启当前 MCP Server 再重新检测。",
+                },
+            )
         resolved = self.toolchains.resolve_program(program, privileged=privileged)
         if resolved is None:
             if not privileged:
@@ -1463,6 +1541,7 @@ class Runtime:
                         "sandbox_path": list(self.safe_exec_path),
                     },
                 )
+            self._privileged_program_misses.add(program_key)
             raise ToolError(
                 "EXECUTABLE_NOT_FOUND",
                 f"program is not available in either the sandbox or elevated user environment: {program}",
@@ -1474,6 +1553,8 @@ class Runtime:
                     "elevated_lookup": True,
                 },
             )
+        if privileged:
+            self._privileged_program_misses.discard(program_key)
         return resolved
 
     def exec_process(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1529,8 +1610,15 @@ class Runtime:
         )
         process_env = self._command_env(env_overrides)
         if privileged_execution:
+            # User tool-manager shims often resolve their selected runtime from
+            # files below HOME (for example a manager-owned version file).
+            # Keep the real HOME value only after privileged_executable was
+            # approved. The OS sandbox still exposes only the validated
+            # toolchain root as an extra read-only root; this does not make the
+            # rest of Home readable to the child process.
+            process_env["HOME"] = str(self.toolchains.home)
             process_env["PATH"] = os.pathsep.join(
-                [str(Path(resolved_program).resolve().parent), process_env.get("PATH", "")]
+                [str(Path(resolved_program).parent.resolve()), process_env.get("PATH", "")]
             )
         managed = self.commands.start(
             command,
@@ -1605,6 +1693,20 @@ class Runtime:
         command_roots: list[Path] = []
         command_bins: list[Path] = []
         for program in self._shell_program_names(cmd):
+            program_key = os.path.normcase(program.strip())
+            if not privileged and program_key in self._privileged_program_misses:
+                raise ToolError(
+                    "EXECUTABLE_NOT_FOUND",
+                    f"宿主机用户环境已查询过，仍未找到 {program}；本次 MCP Server 会话不再重复请求环境权限。",
+                    "process",
+                    False,
+                    {
+                        "program": program,
+                        "elevated_lookup": True,
+                        "cached_miss": True,
+                        "hint": "安装或调整工具环境后，请重启当前 MCP Server 再重新检测。",
+                    },
+                )
             resolved = self.toolchains.resolve_program(program, privileged=privileged)
             if resolved is None:
                 if not privileged:
@@ -1619,6 +1721,7 @@ class Runtime:
                             "sandbox_path": list(self.safe_exec_path),
                         },
                     )
+                self._privileged_program_misses.add(program_key)
                 raise ToolError(
                     "EXECUTABLE_NOT_FOUND",
                     f"program is not available in either the sandbox or elevated user environment: {program}",
@@ -1627,6 +1730,7 @@ class Runtime:
                     {"program": program, "elevated_lookup": True},
                 )
             if privileged:
+                self._privileged_program_misses.discard(program_key)
                 root = self.toolchains.readable_root_for_program(
                     program,
                     resolved,
@@ -1634,7 +1738,7 @@ class Runtime:
                 )
                 if root not in command_roots:
                     command_roots.append(root)
-                bin_dir = Path(resolved).resolve().parent
+                bin_dir = Path(resolved).parent.resolve()
                 if bin_dir not in command_bins:
                     command_bins.append(bin_dir)
         if self.permission_mode == "dangerous":
@@ -1656,6 +1760,7 @@ class Runtime:
             )
         command_env = self._command_env(env_overrides)
         if privileged and command_bins:
+            command_env["HOME"] = str(self.toolchains.home)
             command_env["PATH"] = os.pathsep.join(
                 [
                     *(str(path) for path in command_bins),

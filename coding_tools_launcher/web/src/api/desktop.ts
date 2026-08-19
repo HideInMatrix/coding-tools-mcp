@@ -88,8 +88,8 @@ export const desktopApi = {
   async listPermissionRequests(): Promise<PermissionRequestDto[]> {
     return (await bridge()).list_permission_requests()
   },
-  async respondPermissionRequest(requestId: string, approved: boolean): Promise<boolean> {
-    return (await bridge()).respond_permission_request(requestId, approved)
+  async respondPermissionRequest(requestId: string, decision: 'deny' | 'once' | 'session'): Promise<boolean> {
+    return (await bridge()).respond_permission_request(requestId, decision)
   },
   async logs(after = 0): Promise<{ cursor: number; entries: LogEntryDto[] }> {
     return (await bridge()).get_logs(after)

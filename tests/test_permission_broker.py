@@ -34,6 +34,7 @@ class PermissionBrokerTests(unittest.TestCase):
                     timeout_seconds=5,
                 )
                 result["status"] = decision.status
+                result["scope"] = decision.scope
 
             thread = threading.Thread(target=request_permission)
             thread.start()
@@ -61,6 +62,49 @@ class PermissionBrokerTests(unittest.TestCase):
             thread.join(timeout=2)
             self.assertFalse(thread.is_alive())
             self.assertEqual(result["status"], "approved")
+            self.assertEqual(result["scope"], "once")
+        finally:
+            broker.cleanup()
+
+    def test_signed_request_can_approve_all_permissions_for_server_session(self) -> None:
+        broker = DesktopPermissionBroker()
+        try:
+            env = broker.child_environment("server-a")
+            with patch.dict(os.environ, env, clear=False):
+                client = LocalPermissionBrokerClient.from_env()
+            self.assertIsNotNone(client)
+            assert client is not None
+            result: dict[str, str] = {}
+
+            def request_permission() -> None:
+                decision = client.request(
+                    tool_name="exec_process",
+                    arguments={"program": "pnpm", "args": ["build"]},
+                    permission="privileged_executable",
+                    reason="Need the user tool environment",
+                    principal="principal-a",
+                    timeout_seconds=5,
+                )
+                result["status"] = decision.status
+                result["scope"] = decision.scope
+
+            thread = threading.Thread(target=request_permission)
+            thread.start()
+            pending: list[dict[str, object]] = []
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                pending = broker.pending()
+                if pending:
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(len(pending), 1)
+            request_id = str(pending[0]["request_id"])
+            self.assertTrue(broker.respond(request_id, "session"))
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(result["status"], "approved")
+            self.assertEqual(result["scope"], "session")
         finally:
             broker.cleanup()
 

@@ -87,6 +87,7 @@ def redact_for_display(value: Any, *, key: str = "") -> Any:
 @dataclass(frozen=True, slots=True)
 class LocalPermissionDecision:
     status: str
+    scope: str = "once"
 
     @property
     def approved(self) -> bool:
@@ -95,6 +96,10 @@ class LocalPermissionDecision:
     @property
     def denied(self) -> bool:
         return self.status == "denied"
+
+    @property
+    def session(self) -> bool:
+        return self.approved and self.scope == "session"
 
 
 class LocalPermissionBrokerClient:
@@ -171,8 +176,11 @@ class LocalPermissionBrokerClient:
                     return LocalPermissionDecision("unavailable")
                 if raw.get("request_id") != request_id:
                     return LocalPermissionDecision("unavailable")
+                approved = raw.get("approved") is True
+                scope = "session" if raw.get("scope") == "session" else "once"
                 return LocalPermissionDecision(
-                    "approved" if raw.get("approved") is True else "denied"
+                    "approved" if approved else "denied",
+                    scope=scope if approved else "once",
                 )
             return LocalPermissionDecision("timeout")
         finally:

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from coding_tools_launcher.config import LaunchConfig, NetworkConfig
+from coding_tools_launcher.launcher import MCPLauncher
 from coding_tools_launcher.network.external import ExternalUrlProvider
 from coding_tools_launcher.network.factory import create_network_provider
 from coding_tools_launcher.network.frp import FrpProvider
@@ -81,6 +83,20 @@ class NetworkConfigTests(unittest.TestCase):
             )
         self.assertFalse(hasattr(config, "oauth_client_id"))
         self.assertFalse(hasattr(config, "oauth_client_secret"))
+    def test_from_env_keeps_cloudflare_instance_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = LaunchConfig.from_env(
+                workspace=Path(temporary),
+                env={
+                    "CODING_TOOLS_MCP_OAUTH_PASSWORD": "password",
+                    "CODING_TOOLS_MCP_NETWORK_PROVIDER": "cloudflare",
+                    "CODING_TOOLS_MCP_SERVER_URL": "https://mcp.example.com/company/mcp",
+                    "CODING_TOOLS_MCP_TUNNEL_TOKEN": "company-token",
+                },
+            )
+
+        self.assertEqual(config.network.public_url, "https://mcp.example.com/company")
+        self.assertEqual(config.network.options["tunnel_token"], "company-token")
 
 
 class ProviderTests(unittest.TestCase):
@@ -127,6 +143,51 @@ class ProviderTests(unittest.TestCase):
             provider._extract_url("started tunnel https://demo.ngrok.app -> localhost"),
             "https://demo.ngrok.app",
         )
+
+    def test_named_tunnel_probe_preserves_instance_path(self) -> None:
+        launcher = MCPLauncher()
+        response = MagicMock()
+        response.status = 200
+        response.__enter__.return_value = response
+        with (
+            patch(
+                "coding_tools_launcher.launcher.urllib.request.urlopen",
+                return_value=response,
+            ) as urlopen,
+            patch("coding_tools_launcher.launcher.time.sleep"),
+        ):
+            launcher._verify_named_tunnel_route(
+                "https://mcp.example.com/company",
+                "probe-token",
+                attempts=3,
+            )
+
+        request = urlopen.call_args_list[0].args[0]
+        self.assertTrue(
+            request.full_url.startswith(
+                "https://mcp.example.com/company/.well-known/coding-tools-mcp-route-probe?nonce="
+            )
+        )
+
+    def test_named_tunnel_probe_reports_path_router_mismatch(self) -> None:
+        launcher = MCPLauncher()
+        error = urllib.error.HTTPError(
+            "https://mcp.example.com/company/.well-known/coding-tools-mcp-route-probe",
+            404,
+            "Not Found",
+            None,
+            None,
+        )
+        with patch(
+            "coding_tools_launcher.launcher.urllib.request.urlopen",
+            side_effect=error,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Path Router"):
+                launcher._verify_named_tunnel_route(
+                    "https://mcp.example.com/company",
+                    "probe-token",
+                    attempts=1,
+                )
 
 
 if __name__ == "__main__":

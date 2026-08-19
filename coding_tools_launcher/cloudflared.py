@@ -108,9 +108,13 @@ class CloudflaredTunnel:
             tunnel_token,
         ]
         self._log(f"启动 Cloudflare Named Tunnel: {self.binary_path}")
-        self._log(f"固定 Public URL: {public_url}")
+        self._log(f"对外 Public Base URL: {public_url}")
         self._log(
-            "Cloudflare Published Application 应指向: "
+            "Named Tunnel Token 只标识当前 Tunnel；多电脑共用公网域名时，"
+            "请由 Cloudflare Path Router 将实例 Path 定向到该 Tunnel。"
+        )
+        self._log(
+            "当前 Tunnel 的 Published Application / Origin 应指向: "
             f"http://{host}:{port}"
         )
         self.process = subprocess.Popen(

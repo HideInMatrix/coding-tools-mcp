@@ -110,6 +110,8 @@ Tunnel Token = 留空
 
 ### Named Tunnel
 
+单电脑固定域名仍可直接使用：
+
 ```text
 网络方案 = Cloudflare Tunnel
 Public URL = https://mcp.example.com
@@ -121,6 +123,21 @@ Cloudflare Published Application 应指向本机 MCP：
 ```text
 http://127.0.0.1:8234
 ```
+
+多电脑共用同一个公网 hostname 时，不要在多台电脑复用同一个 Tunnel Token。推荐使用：
+
+```text
+统一公网域名 + 唯一实例 Path + 每台电脑独立 Named Tunnel/Token + Cloudflare Path Router
+```
+
+例如：
+
+```text
+https://mcp.example.com/company/mcp -> 公司电脑独立 Tunnel
+https://mcp.example.com/home/mcp    -> 家里电脑独立 Tunnel
+```
+
+桌面端 Cloudflare 表单会把统一公网域名与实例 Path 分开编辑，内部仍保存 canonical Public Base URL，例如 `https://mcp.example.com/company`。完整 Worker 路由和 OAuth well-known 规则见 `docs/multi-mcp-server-manager/11-CLOUDFLARE-PATH-ROUTING.md`。
 
 Cloudflare 当前仍是唯一默认随桌面包一起分发 helper 二进制的 Provider。
 

@@ -112,7 +112,7 @@ export interface DesktopBridge {
   revoke_oauth_client(serverId: string, clientId: string): Promise<boolean>
   revoke_all_oauth_clients(serverId: string): Promise<number>
   list_permission_requests(): Promise<PermissionRequestDto[]>
-  respond_permission_request(requestId: string, approved: boolean): Promise<boolean>
+  respond_permission_request(requestId: string, decision: 'deny' | 'once' | 'session'): Promise<boolean>
   get_logs(after?: number): Promise<{ cursor: number; entries: LogEntryDto[] }>
   detect_executable(product: string, configured?: string): Promise<{ path: string; source: string; version: string }>
   choose_workspace(initial?: string): Promise<string>

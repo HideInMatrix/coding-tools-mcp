@@ -16,6 +16,7 @@ from .config import (
     LaunchConfig,
     NetworkConfig,
 )
+from .oauth_persistence import canonical_oauth_issuer
 from .user_settings import settings_dir
 
 
@@ -34,6 +35,11 @@ def default_lifecycle(network: NetworkConfig) -> str:
     if validated.provider in {"cloudflare", "ngrok"} and not validated.public_url:
         return "ephemeral"
     return "persistent"
+
+
+def _public_url_identity(value: str) -> str:
+    raw = value.strip().rstrip("/")
+    return canonical_oauth_issuer(raw) if raw else ""
 
 
 @dataclass(slots=True)
@@ -286,6 +292,7 @@ class ServerProfileStore:
     def _save(self, profiles: list[MCPServerProfile]) -> None:
         ids: set[str] = set()
         endpoints: set[tuple[str, int]] = set()
+        public_urls: set[str] = set()
         validated_profiles: list[MCPServerProfile] = []
         for profile in profiles:
             validated = profile.validated()
@@ -298,6 +305,14 @@ class ServerProfileStore:
                     f"多个 Server Profile 不能配置相同地址: {validated.host}:{validated.port}"
                 )
             endpoints.add(endpoint)
+            public_url = _public_url_identity(validated.network.public_url)
+            if public_url:
+                if public_url in public_urls:
+                    raise ValueError(
+                        "多个 Server Profile 不能配置相同 Public URL；"
+                        "共用域名时请为每个实例使用不同 Path。"
+                    )
+                public_urls.add(public_url)
             validated_profiles.append(validated)
 
         payload = {

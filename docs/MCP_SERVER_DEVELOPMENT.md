@@ -570,7 +570,11 @@ tools/call
   -> 校验通过后仅对该调用临时放行
 ```
 
-服务器本身不能强制远端 MCP 客户端显示协议级弹窗。桌面版因此提供本地 Permission Broker fallback：客户端未声明 elicitation capability 时，MCP Server 会把签名授权请求投递给 Coding Tools MCP 桌面主进程，由桌面 UI 显示“拒绝 / 仅允许本次”。用户批准后，原调用通过精确一次性 grant 自动重试；拒绝则返回 `PERMISSION_DENIED`。
+服务器本身不能强制远端 MCP 客户端显示协议级弹窗。桌面版因此提供本地 Permission Broker fallback：客户端未声明 elicitation capability 时，MCP Server 会把签名授权请求投递给 Coding Tools MCP 桌面主进程，由桌面 UI 显示“拒绝 / 仅允许本次”，并在“仅允许本次”右侧提供“本次服务会话全部允许”。
+
+“仅允许本次”不是提前写入并立刻消费的单权限 grant，而是沿着同一次逻辑工具调用的重试链累积 permission。例如一次 `pnpm build` 先触发 `long_timeout`、后触发 `privileged_executable` 时，第二轮重试会同时携带前两项批准，不会在两个弹窗之间循环。
+
+“本次服务会话全部允许”以当前 Runtime + OAuth principal 为边界，将 `ELICITABLE_PERMISSIONS` 在该 Runtime 生命周期内视为已批准；Server 停止/重启即清空。由于当前 Streamable HTTP 实现不创建 `Mcp-Session-Id`，这个范围不能宣称为“单个 ChatGPT 对话”，同一 OAuth principal 在该 Server 运行期间会共享该授权。
 
 如果以 headless/CLI 方式运行、没有桌面 Permission Broker，则仍然 fail-closed：原操作保持阻止，显式 `request_permissions` 返回 `ELICITATION_UNSUPPORTED`，不会伪造 grant。
 
@@ -620,7 +624,13 @@ network
 
 其他 SandboxProfile 限制继续保留；授权不会把整个 Server 临时切成 `dangerous`。
 
-`request_permissions` 也可以主动请求一次或 Session TTL 内授权，但 grant 仍绑定目标 tool + 完整 arguments + principal，不能作为通用“关闭沙箱”开关。
+`request_permissions` 也可以主动请求一次或 Session TTL 内授权；协议侧 grant 仍绑定目标 tool + 完整 arguments + principal。本地桌面 Broker 的“本次服务会话全部允许”是单独的 Runtime 级便利策略，但仍不会放开不可 elicitation 的沙箱根边界。
+
+工具环境解析遵循两阶段策略：先仅查询 Safe 沙箱 PATH；若缺失，则在用户批准 `privileged_executable` 后查询一次用户登录环境。最高权限查询仍未找到时，会在当前 Runtime 缓存该 program/toolchain 的负结果，后续相同查询直接返回不可用，不再重复要求用户批准。用户安装工具或修改 shell 环境后，应重启对应 MCP Server 以刷新环境快照。
+
+工具管理器的 shim/symlink 必须保留调用路径。实现会对真实 target 做 executable/权限校验，但运行时使用原始 `node`、`pnpm`、`npm` 等 shim 路径，不能将 `/path/bin/pnpm -> manager` 解引用后再以 `manager build` 执行；这一规则对 nvmd、Corepack、asdf、mise 等多调用入口统一适用，不依赖管理器名称硬编码。
+
+批准 `privileged_executable` 后，子进程允许保留真实 `HOME` 值，使用户工具管理器能够读取自身的版本选择配置；这不代表整个 Home 被加入可读范围。OS sandbox 仍只把经过验证的 toolchain root 作为额外只读目录传给该次命令，Workspace 与其他 Home 内容继续受原沙箱规则约束。
 
 `dangerous` 模式属于显式逃生口：继承完整用户环境并绕过 OS process sandbox，不应作为“让 npm 可见”的常规解决方案。
 

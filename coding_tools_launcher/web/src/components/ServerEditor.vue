@@ -33,6 +33,36 @@ function withMcpSuffix(value: string): string {
   return base ? `${base}/mcp` : ''
 }
 
+function splitPublicBase(value: string): { origin: string; instancePath: string } {
+  const normalized = stripMcpSuffix(value)
+  if (!normalized) return { origin: '', instancePath: '' }
+  try {
+    const parsed = new URL(normalized)
+    return {
+      origin: `${parsed.protocol}//${parsed.host}`,
+      instancePath: parsed.pathname.replace(/^\/+|\/+$/g, ''),
+    }
+  } catch {
+    return { origin: normalized, instancePath: '' }
+  }
+}
+
+function joinPublicBase(origin: string, instancePath: string): string {
+  const normalizedOrigin = origin.trim().replace(/\/+$/, '')
+  const normalizedPath = instancePath.trim().replace(/^\/+|\/+$/g, '')
+  if (!normalizedOrigin) return ''
+  return normalizedPath ? `${normalizedOrigin}/${normalizedPath}` : normalizedOrigin
+}
+
+function normalizeInstancePath(value: string): string {
+  return value
+    .trim()
+    .replace(/^\/+|\/+$/g, '')
+    .split('/', 1)[0]
+    .replace(/[^A-Za-z0-9._~-]/g, '-')
+    .replace(/-+/g, '-')
+}
+
 const publicUrlBase = computed({
   get() {
     if (props.publicMcpUrl) return stripMcpSuffix(props.publicMcpUrl)
@@ -44,13 +74,50 @@ const publicUrlBase = computed({
   },
 })
 
+const cloudflarePublicOrigin = computed({
+  get() {
+    if (props.publicMcpUrl) return splitPublicBase(props.publicMcpUrl).origin
+    return splitPublicBase(model.value.network.public_url).origin
+  },
+  set(value: string) {
+    if (locked.value) return
+    const current = splitPublicBase(model.value.network.public_url)
+    model.value.network.public_url = joinPublicBase(value, current.instancePath)
+  },
+})
+
+const cloudflareInstancePath = computed({
+  get() {
+    if (props.publicMcpUrl) return splitPublicBase(props.publicMcpUrl).instancePath
+    return splitPublicBase(model.value.network.public_url).instancePath
+  },
+  set(value: string) {
+    if (locked.value || !cloudflarePublicOrigin.value) return
+    model.value.network.public_url = joinPublicBase(
+      cloudflarePublicOrigin.value,
+      normalizeInstancePath(value),
+    )
+  },
+})
+
+const cloudflareRouteHint = computed(() => {
+  const origin = cloudflarePublicOrigin.value
+  const instance = cloudflareInstancePath.value
+  if (!origin || !instance) return ''
+  try {
+    const hostname = new URL(origin).host
+    return `${hostname}/${instance}/*`
+  } catch {
+    return ''
+  }
+})
+
 const resolvedPublicMcpUrl = computed(() => {
   if (props.publicMcpUrl) return withMcpSuffix(props.publicMcpUrl)
   return withMcpSuffix(model.value.network.public_url)
 })
 
 const publicUrlPlaceholder = computed(() => {
-  if (provider.value === 'cloudflare') return '留空使用 Quick Tunnel；固定域名例如 https://mcp.example.com'
   if (provider.value === 'ngrok') return '可选固定域名；留空由 ngrok 启动后生成'
   if (provider.value === 'tailscale') return '启动后自动显示 Tailscale Funnel URL'
   return '例如 https://mcp.example.com'
@@ -150,16 +217,55 @@ async function autoDetect(product: string, option = 'executable') {
       <label class="field span-2">
         <span>权限模式</span>
         <select v-model="model.permission_mode" :disabled="locked">
-          <option value="safe">安全 Safe（推荐）</option>
-          <option value="trusted">信任 Trusted</option>
-          <option value="dangerous">危险 Dangerous</option>
+          <option value="safe">请求批准（Safe，推荐）</option>
+          <option value="trusted">帮我批准（Trusted）</option>
+          <option value="dangerous">完全访问权限（Dangerous）</option>
         </select>
-        <span v-if="model.permission_mode === 'safe'" class="field-help">启用最严格的 Workspace、环境变量和 OS 沙箱限制；客户端支持授权交互时，可对受限操作申请临时权限。</span>
-        <span v-else-if="model.permission_mode === 'trusted'" class="field-help">允许网络等常用开发能力，但仍保留 Workspace 与 OS 沙箱边界。</span>
-        <span v-else class="permission-warning">危险模式会关闭 OS 进程沙箱并继承完整用户环境，仅在你明确需要完整终端权限时使用。</span>
+        <span v-if="model.permission_mode === 'safe'" class="field-help">在 Workspace 与 OS 沙箱内自动执行低风险操作；访问网络、用户工具环境、Git 元数据或其他越界能力时请求批准。</span>
+        <span v-else-if="model.permission_mode === 'trusted'" class="field-help">自动放行网络、较长任务和常用开发脚本，仍保留 Workspace 与 OS 沙箱；破坏性操作、Git 元数据和宿主机工具环境仍按需批准。</span>
+        <span v-else class="permission-warning">关闭 MCP 的安全门和 OS 进程沙箱，继承完整用户环境；相当于普通终端级访问，只在你明确需要时使用。</span>
       </label>
 
-      <label class="field span-2">
+      <template v-if="provider === 'cloudflare'">
+        <label class="field span-2">
+          <span>统一公网域名</span>
+          <input
+            v-model="cloudflarePublicOrigin"
+            :disabled="locked"
+            placeholder="例如 https://mcp.example.com；留空使用 Quick Tunnel"
+          />
+        </label>
+        <label class="field span-2">
+          <span>MCP 实例 Path</span>
+          <InputGroup>
+            <InputGroupAddon>/</InputGroupAddon>
+            <InputGroupInput
+              v-model="cloudflareInstancePath"
+              :disabled="locked || !cloudflarePublicOrigin"
+              placeholder="例如 company、home；单实例可留空"
+            />
+            <InputGroupAddon>/mcp</InputGroupAddon>
+            <InputGroupButton
+              v-if="running && resolvedPublicMcpUrl"
+              :title="copied ? '已复制 MCP 地址' : `复制 ${resolvedPublicMcpUrl}`"
+              :aria-label="copied ? '已复制 MCP 地址' : '复制 MCP 地址'"
+              @click="copyMcpUrl"
+            >
+              <Check v-if="copied" :size="14" />
+              <Copy v-else :size="14" />
+            </InputGroupButton>
+          </InputGroup>
+          <span v-if="resolvedPublicMcpUrl" class="field-help">当前 MCP URL：{{ resolvedPublicMcpUrl }}</span>
+          <span v-if="cloudflareRouteHint" class="field-help">Cloudflare 路由键：{{ cloudflareRouteHint }}；OAuth `.well-known` 路径也必须按同一实例键路由。</span>
+        </label>
+        <label class="field span-2">
+          <span>Tunnel Token</span>
+          <input v-model="model.network.options.tunnel_token" :disabled="locked" type="password" placeholder="每台电脑使用独立 Named Tunnel Token" />
+        </label>
+        <p class="form-note span-2">多电脑可以共用同一个公网域名，但每台电脑必须使用不同实例 Path 和独立 Tunnel Token，再由 Cloudflare Path Router 将该 Path 定向到对应 Tunnel。域名和 Token 都留空时使用临时 Quick Tunnel。</p>
+      </template>
+
+      <label v-else class="field span-2">
         <span>Public URL</span>
         <InputGroup>
           <InputGroupInput
@@ -181,15 +287,7 @@ async function autoDetect(product: string, option = 'executable') {
         <span v-if="running && resolvedPublicMcpUrl" class="field-help">复制后可直接粘贴到 ChatGPT / Claude 的 MCP Server URL。</span>
       </label>
 
-      <template v-if="provider === 'cloudflare'">
-        <label class="field span-2">
-          <span>Tunnel Token</span>
-          <input v-model="model.network.options.tunnel_token" :disabled="locked" type="password" placeholder="固定 Public URL 时填写 Named Tunnel Token" />
-        </label>
-        <p class="form-note span-2">Public URL 和 Tunnel Token 都留空时，本次运行使用临时 Quick Tunnel，停止后公网域名和 OAuth Session 一并销毁。</p>
-      </template>
-
-      <template v-else-if="provider === 'frp'">
+      <template v-if="provider === 'frp'">
         <label class="field span-2">
           <span>frpc</span>
           <div class="input-action"><input v-model.trim="model.network.options.executable" :disabled="locked" /><button type="button" :disabled="locked" @click="autoDetect('frpc')">检测</button></div>

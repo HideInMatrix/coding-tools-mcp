@@ -52,6 +52,7 @@ from .protocol import (
     validate_mirror_headers,
 )
 from .runtime import ENDPOINT_PATH, PERMISSION_MODES, Runtime
+from .route_probe import ROUTE_PROBE_HEADER, ROUTE_PROBE_PATH, ROUTE_PROBE_TOKEN_ENV
 from .transport_stdio import serve_stdio
 
 
@@ -290,6 +291,28 @@ def _normalize_public_server_url(value: str | None) -> str | None:
     ).rstrip("/")
 
 
+def _url_path(value: str | None) -> str:
+    """Return a normalized URL path without a trailing slash."""
+
+    if not value:
+        return ""
+    path = urllib.parse.urlsplit(value).path.rstrip("/")
+    return path if path != "/" else ""
+
+
+def _protected_resource_metadata_url(resource: str) -> str:
+    """Build the RFC 9728 well-known URL for a concrete resource URI."""
+
+    parsed = urllib.parse.urlsplit(resource)
+    resource_path = parsed.path.rstrip("/")
+    metadata_path = "/.well-known/oauth-protected-resource"
+    if resource_path:
+        metadata_path += resource_path
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, metadata_path, "", "")
+    )
+
+
 def _allowed_origin(origin: str) -> bool:
     try:
         parsed = urllib.parse.urlparse(origin)
@@ -335,6 +358,36 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             server_host, server_port = self.server.server_address[:2]  # type: ignore[attr-defined]
             host = f"{server_host}:{server_port}"
         return f"{scheme}://{host}".rstrip("/")
+
+    def _instance_prefix(self) -> str:
+        config = self.runtime.oauth_config
+        return _url_path(config.server_url if config else None)
+
+    def _route_path(self, raw_path: str) -> str:
+        prefix = self._instance_prefix()
+        if prefix and raw_path == prefix:
+            return "/"
+        if prefix and raw_path.startswith(f"{prefix}/"):
+            return raw_path[len(prefix) :]
+        return raw_path
+
+    def _resource_metadata_path(self) -> str:
+        config = self.runtime.oauth_config
+        resource = config.resource if config and config.resource else None
+        return f"/.well-known/oauth-protected-resource{_url_path(resource)}"
+
+    def _authorization_metadata_paths(self) -> set[str]:
+        prefix = self._instance_prefix()
+        if not prefix:
+            return {
+                "/.well-known/oauth-authorization-server",
+                "/.well-known/openid-configuration",
+            }
+        return {
+            f"/.well-known/oauth-authorization-server{prefix}",
+            f"/.well-known/openid-configuration{prefix}",
+            f"{prefix}/.well-known/openid-configuration",
+        }
 
     def _json(self, status: int, payload: Any, headers: dict[str, str] | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -403,7 +456,9 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
 
     def _unauthorized(self, *, invalid_token: bool = False) -> None:
         base = self._base_url()
-        metadata = f'{base}/.well-known/oauth-protected-resource'
+        config = self.runtime.oauth_config
+        resource = config.resource if config and config.resource else f"{base}{ENDPOINT_PATH}"
+        metadata = _protected_resource_metadata_url(resource)
         challenge = (
             'Bearer realm="coding-tools-mcp", '
             f'resource_metadata="{metadata}"'
@@ -446,10 +501,12 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         else:
             auth = {"type": "none"}
         tools = self.runtime.list_tools()["tools"]
+        config = self.runtime.oauth_config
+        endpoint = _url_path(config.resource if config and config.resource else None) or ENDPOINT_PATH
         return {
             "server": self.runtime.server_identity(),
             "supportedProtocolVersions": list(KNOWN_PROTOCOL_VERSIONS),
-            "transport": {"type": "streamable_http", "endpoint": ENDPOINT_PATH, "methods": ["POST", "OPTIONS"]},
+            "transport": {"type": "streamable_http", "endpoint": endpoint, "methods": ["POST", "OPTIONS"]},
             "auth": auth,
             "capabilities": {"tools": {"listChanged": False}},
             "tools": {"count": len(tools), "names": [tool["name"] for tool in tools]},
@@ -496,23 +553,32 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
-        path = urllib.parse.urlparse(self.path).path
+        raw_path = urllib.parse.urlparse(self.path).path
+        path = self._route_path(raw_path)
+        if path == ROUTE_PROBE_PATH:
+            expected = os.environ.get(ROUTE_PROBE_TOKEN_ENV, "").strip()
+            provided = self.headers.get(ROUTE_PROBE_HEADER, "").strip()
+            if not expected or not provided or not secrets.compare_digest(expected, provided):
+                self._json(404, {"error": "not_found"}, {"Cache-Control": "no-store"})
+                return
+            self._json(200, {"ok": True}, {"Cache-Control": "no-store"})
+            return
         if path == "/":
             self._json(200, self._server_card())
             return
         if path in {"/.well-known/mcp.json", "/.well-known/mcp/server-card.json"}:
             self._json(200, self._server_card())
             return
-        if path in {"/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"}:
+        if raw_path in self._authorization_metadata_paths():
             if not self.runtime.oauth_config:
                 self._json(404, {"error": "oauth_not_enabled"})
                 return
             self._json(200, self._oauth_metadata())
             return
-        if path in {
-            "/.well-known/oauth-protected-resource",
-            f"/.well-known/oauth-protected-resource{ENDPOINT_PATH}",
-        }:
+        if raw_path == self._resource_metadata_path() or (
+            not self._instance_prefix()
+            and raw_path == "/.well-known/oauth-protected-resource"
+        ):
             self._json(200, self._protected_resource_metadata())
             return
         if path == "/oauth/authorize":
@@ -539,7 +605,7 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         self._json(404, {"error": "not_found"})
 
     def do_DELETE(self) -> None:  # noqa: N802
-        path = urllib.parse.urlparse(self.path).path
+        path = self._route_path(urllib.parse.urlparse(self.path).path)
         if path != ENDPOINT_PATH:
             self._json(404, {"error": "not_found"})
             return
@@ -567,7 +633,7 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         return None
 
     def do_POST(self) -> None:  # noqa: N802
-        path = urllib.parse.urlparse(self.path).path
+        path = self._route_path(urllib.parse.urlparse(self.path).path)
         if path == ENDPOINT_PATH:
             self._mcp_post()
             return
@@ -780,12 +846,16 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             if key != "password"
         )
         error_html = f'<p style="color:#b42318">{html.escape(error)}</p>' if error else ""
+        authorize_action = html.escape(
+            f"{self._base_url()}/oauth/authorize",
+            quote=True,
+        )
         return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Authorize Coding Tools MCP</title>
 <style>body{{font-family:system-ui,sans-serif;max-width:520px;margin:60px auto;padding:0 20px}}input,button{{box-sizing:border-box;width:100%;padding:12px;margin:8px 0}}small{{color:#666}}</style></head>
 <body><h1>Authorize Coding Tools MCP</h1><p>A client is requesting access to the configured workspace.</p>{error_html}
-<form method="post" action="/oauth/authorize">{hidden}<label>Password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Authorize</button></form>
+<form method="post" action="{authorize_action}">{hidden}<label>Password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Authorize</button></form>
 <small>Only authorize clients you trust. MCP tools may read files, modify source code, and execute commands according to the configured permission mode.</small></body></html>"""
 
     def _authorize_get(self) -> None:

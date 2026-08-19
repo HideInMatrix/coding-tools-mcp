@@ -88,20 +88,26 @@ Password
 每个 Server Profile 都可以独立选择：
 
 ```text
-安全 Safe（推荐）
-信任 Trusted
-危险 Dangerous
+请求批准（Safe，推荐）
+帮我批准（Trusted）
+完全访问权限（Dangerous）
 ```
 
-普通开发建议保持 `Safe`。它会启用 Workspace 边界、净化后的环境变量和当前平台可用的 OS 沙箱。
+普通开发建议保持 `Safe`。它会启用 Workspace 边界、净化后的环境变量和当前平台可用的 OS 沙箱；低风险操作直接执行，访问网络、用户工具环境、Git 元数据等越界能力时再请求批准。
 
-`Trusted` 适合明确需要网络访问等常用开发能力的项目，但仍保留沙箱边界。
+`Trusted` 适合明确需要网络、较长任务和常用开发脚本的项目，这些能力会减少询问，但仍保留 Workspace 与 OS 沙箱边界；破坏性命令、Git 元数据写入和宿主机用户工具环境等能力仍按需批准。
 
 `Dangerous` 会关闭 OS 进程沙箱并继承完整用户环境，只应在你明确需要普通终端级权限时使用。
 
 如果 AI 在 `Safe` 模式请求执行 `git add`、`git commit`、联网命令等受限操作，优先使用 MCP 客户端自己的授权交互。批准后只对对应的工具调用临时放行，不需要把整个 Server 切换成 `Dangerous`。
 
-如果当前客户端不支持 MCP elicitation，桌面版会自动显示 Coding Tools MCP 自己的本地授权框。选择“仅允许本次”后，原工具调用继续执行；选择“拒绝”则不会执行。只有不经过桌面程序启动的 headless/CLI Server 才会在客户端不支持授权时继续保持阻止。
+如果当前客户端不支持 MCP elicitation，桌面版会自动显示 Coding Tools MCP 自己的本地授权框。选择“仅允许本次”后，授权会在同一次逻辑工具调用中持续累积，避免一个命令先申请 `long_timeout`、随后申请 `privileged_executable` 时来回重复弹窗。
+
+“仅允许本次”右侧的下拉菜单还提供“本次服务会话全部允许”：它会对同一个已认证 MCP Client，在当前 MCP Server 进程停止或重启前自动放行所有可临时授权的权限。它不会关闭 Workspace 边界，也不会提升 `sandbox_env_override` 等不可临时授权的系统限制；真正的普通终端级完全访问仍然必须显式选择 `Dangerous`。
+
+当前 MCP HTTP 传输是无状态的，因此桌面端无法可靠识别 ChatGPT 的“某一个聊天线程”。这里的“服务会话”指当前 MCP Server 运行进程 + 已认证 OAuth Client，而不是单个 ChatGPT 对话。停止或重启该 Server 后，会话级授权自动清空。
+
+对于本地工具查找，程序先使用沙箱可见 PATH；找不到时只申请一次读取用户登录环境的权限。若在最高可用权限下仍然找不到目标程序或工具链，本次 MCP Server 会话会缓存该失败结果，不再重复弹出同样的环境权限请求。安装或调整工具环境后，重启当前 MCP Server 即可重新检测。
 
 ## 4. 设置 OAuth Password
 
@@ -153,6 +159,15 @@ Tailscale Funnel
 | 想临时快速得到公网 URL | ngrok |
 | 已经使用 Tailscale | Tailscale Funnel |
 | 已有 Nginx/Caddy/反向代理 | 自定义公网 URL |
+
+如果需要让多台电脑共用同一个 Cloudflare 公网域名，推荐不要复用同一个 Tunnel Token，而是为每台电脑创建独立 Named Tunnel，并使用不同实例 Path：
+
+```text
+https://mcp.example.com/company/mcp
+https://mcp.example.com/home/mcp
+```
+
+桌面端 Cloudflare 配置中分别填写“统一公网域名”和“MCP 实例 Path”。Cloudflare Edge 再通过 Path Router 将 `company`、`home` 分别转发到对应电脑的独立 Tunnel。完整配置见 `multi-mcp-server-manager/11-CLOUDFLARE-PATH-ROUTING.md`。
 
 完整部署步骤见：
 
@@ -399,6 +414,10 @@ macOS 的 `.dmg` 用于首次手动安装，`.zip` 专供应用内更新。每�
 ### 多个 MCP Server 应该怎么分配端口
 
 第一个服务默认使用 `8234`。新建服务时可以点击“自动”选择下一个未被 Profile 使用的端口，也可以手工填写。固定 Cloudflare hostname 的 Published Application 必须指向对应服务实际配置的 `127.0.0.1:<port>`。
+
+### 多台电脑可以共用同一个 MCP 域名吗
+
+可以，但不要让多台独立 MCP Server 复用同一个 Tunnel Token。推荐每台电脑使用独立 Named Tunnel/Token，并用唯一实例 Path 区分，例如 `/company`、`/home`。同一 hostname 下的不同 Path 会形成不同 OAuth issuer/resource，并保存到不同 OAuth Registry。
 
 ### Quick Tunnel 为什么重启后 OAuth Client 不见了
 

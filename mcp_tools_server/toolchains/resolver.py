@@ -83,6 +83,7 @@ class ToolchainResolver:
         )
         self._probe_runner = probe_runner or self._run_probe_direct
         self._cache: dict[tuple[str, bool], dict[str, object]] = {}
+        self._program_cache: dict[tuple[str, bool], Path | None] = {}
 
     @classmethod
     def default_search_path(cls, workspace: Path) -> list[str]:
@@ -386,6 +387,9 @@ class ToolchainResolver:
     def _query_program(self, name: str, *, privileged: bool) -> Path | None:
         if not _PROGRAM_RE.fullmatch(name):
             return None
+        cache_key = (name, privileged)
+        if cache_key in self._program_cache:
+            return self._program_cache[cache_key]
         env = self._probe_env(privileged=privileged)
         if os.name == "nt":
             system_root = Path(os.environ.get("SYSTEMROOT", "C:/Windows"))
@@ -411,8 +415,10 @@ class ToolchainResolver:
                 argv, env, 5.0, privileged, [self.home] if privileged else [],
             )
         except (OSError, subprocess.SubprocessError):
+            self._program_cache[cache_key] = None
             return None
         if completed.returncode != 0:
+            self._program_cache[cache_key] = None
             return None
         for raw_line in reversed(completed.stdout.splitlines()):
             raw = raw_line.strip().strip('"')
@@ -421,7 +427,9 @@ class ToolchainResolver:
                 if path.is_absolute():
                     validated = self._validated_executable(path)
                     if validated is not None:
+                        self._program_cache[cache_key] = validated
                         return validated
+        self._program_cache[cache_key] = None
         return None
 
     def _read_version(
@@ -496,22 +504,37 @@ class ToolchainResolver:
 
     @staticmethod
     def _trusted_executable(executable: Path, bin_dir: Path, root: Path) -> bool:
-        if not _within(executable, root) and not _within(executable, bin_dir):
-            return False
         try:
-            return not any(path.stat().st_mode & stat.S_IWOTH for path in (executable, bin_dir))
+            invocation_dir = executable.parent.resolve()
+            target = executable.resolve()
+            if not _within(invocation_dir, root) and invocation_dir != bin_dir:
+                return False
+            if not _within(target, root) and not _within(target, bin_dir):
+                return False
+            return not any(
+                path.stat().st_mode & stat.S_IWOTH
+                for path in (target, invocation_dir)
+            )
         except OSError:
             return False
 
     @staticmethod
     def _validated_executable(path: Path) -> Path | None:
         try:
-            if not path.is_file() or (os.name != "nt" and not os.access(path, os.X_OK)):
+            candidate = path.expanduser()
+            if not candidate.is_absolute():
+                candidate = Path(os.path.abspath(candidate))
+            if not candidate.is_file() or (os.name != "nt" and not os.access(candidate, os.X_OK)):
                 return None
-            resolved = path.resolve()
-            if resolved.stat().st_mode & stat.S_IWOTH:
+            # Validate the real target for safety, but preserve the invocation
+            # path. Tool managers commonly expose multi-call shims/symlinks
+            # (pnpm -> manager binary, node -> manager binary, etc.) whose
+            # basename/argv[0] selects the actual tool. Executing the resolved
+            # target would silently turn `pnpm build` into `manager build`.
+            target = candidate.resolve()
+            if target.stat().st_mode & stat.S_IWOTH:
                 return None
-            return resolved
+            return candidate
         except OSError:
             return None
 

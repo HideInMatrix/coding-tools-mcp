@@ -86,6 +86,20 @@ class OAuthPersistenceTests(unittest.TestCase):
             self.assertNotEqual(first.registry_file, second.registry_file)
             self.assertNotEqual(first.token_secret_hex, second.token_secret_hex)
 
+    def test_same_host_different_instance_paths_have_independent_oauth_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            with patch.object(oauth_persistence, "settings_dir", return_value=base):
+                company = oauth_persistence.prepare_issuer_oauth_persistence(
+                    "https://mcp.example.com/company"
+                )
+                home = oauth_persistence.prepare_issuer_oauth_persistence(
+                    "https://mcp.example.com/home"
+                )
+
+            self.assertNotEqual(company.registry_file, home.registry_file)
+            self.assertNotEqual(company.token_secret_hex, home.token_secret_hex)
+
     def test_ephemeral_storage_is_new_for_every_session_and_can_be_cleaned(self) -> None:
         first = oauth_persistence.prepare_ephemeral_oauth_persistence("server-a")
         second = oauth_persistence.prepare_ephemeral_oauth_persistence("server-a")

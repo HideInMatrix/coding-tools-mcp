@@ -22,6 +22,7 @@ from mcp_tools_server.local_permission_broker import (
     BROKER_SECRET_ENV,
     BROKER_SERVER_ID_ENV,
 )
+from mcp_tools_server.route_probe import ROUTE_PROBE_TOKEN_ENV
 from mcp_tools_server.oauth import (
     OAUTH_TOKEN_TTL_SECONDS,
     OAuthConfig,
@@ -41,8 +42,9 @@ from mcp_tools_server.sandbox.backend import (
     MacSeatbeltBackend,
     WindowsRestrictedTokenBackend,
 )
-from mcp_tools_server.server import MCPHTTPServer
+from mcp_tools_server.server import MCPHandler, MCPHTTPServer
 from mcp_tools_server.server import _normalize_public_server_url
+from mcp_tools_server.server import _protected_resource_metadata_url
 from mcp_tools_server.server import _public_ip_for_host
 from mcp_tools_server.server import _resolve_oauth_client
 from mcp_tools_server.toolchains import ToolchainResolver
@@ -211,6 +213,45 @@ class CustomMCPServerContractTests(unittest.TestCase):
             _normalize_public_server_url("https://mcp.example.com/mcp/"),
             "https://mcp.example.com",
         )
+        self.assertEqual(
+            _normalize_public_server_url("https://mcp.example.com/company/mcp"),
+            "https://mcp.example.com/company",
+        )
+
+    def test_protected_resource_metadata_url_preserves_instance_path(self) -> None:
+        self.assertEqual(
+            _protected_resource_metadata_url("https://mcp.example.com/company/mcp"),
+            "https://mcp.example.com/.well-known/oauth-protected-resource/company/mcp",
+        )
+
+    def test_handler_instance_path_helpers_are_path_aware(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = OAuthConfig(
+                password="password",
+                server_url="https://mcp.example.com/company",
+                token_secret=b"h" * 32,
+            )
+            runtime = Runtime(Path(temporary), oauth_config=config)
+            handler = object.__new__(MCPHandler)
+            handler.server = type("FakeServer", (), {"runtime": runtime})()
+            try:
+                self.assertEqual(handler._instance_prefix(), "/company")
+                self.assertEqual(handler._route_path("/company/mcp"), "/mcp")
+                self.assertEqual(handler._route_path("/mcp"), "/mcp")
+                self.assertEqual(
+                    handler._resource_metadata_path(),
+                    "/.well-known/oauth-protected-resource/company/mcp",
+                )
+                self.assertIn(
+                    "/.well-known/oauth-authorization-server/company",
+                    handler._authorization_metadata_paths(),
+                )
+                self.assertIn(
+                    'action="https://mcp.example.com/company/oauth/authorize"',
+                    handler._authorize_page({}),
+                )
+            finally:
+                runtime.close()
 
     def test_every_exposed_tool_has_input_and_output_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -466,6 +507,79 @@ class RuntimeSafetyTests(unittest.TestCase):
             any(privileged and resolver.home in roots for privileged, roots in calls)
         )
 
+    @unittest.skipIf(os.name == "nt", "POSIX fixture uses symlinks")
+    def test_toolchain_shims_preserve_invocation_name_instead_of_resolving_manager_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            workspace = base / "workspace"
+            home = base / "home"
+            bin_dir = home / ".tool-manager" / "bin"
+            workspace.mkdir()
+            bin_dir.mkdir(parents=True)
+            manager = bin_dir / "manager"
+            manager.write_text(
+                "#!/bin/sh\n"
+                "name=$(basename \"$0\")\n"
+                "case \"$name\" in\n"
+                "  node) echo v25.7.0 ;;\n"
+                "  pnpm) echo pnpm-ok \"$@\" ;;\n"
+                "  *) echo manager-4.3.2 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            manager.chmod(0o755)
+            node = bin_dir / "node"
+            pnpm = bin_dir / "pnpm"
+            node.symlink_to(manager.name)
+            pnpm.symlink_to(manager.name)
+
+            self.assertEqual(ToolchainResolver._validated_executable(node), node)
+            self.assertTrue(
+                ToolchainResolver._trusted_executable(
+                    node,
+                    bin_dir.resolve(),
+                    bin_dir.parent.resolve(),
+                )
+            )
+
+            def probe(
+                argv: list[str],
+                env: object,
+                timeout: float,
+                privileged: bool,
+                readable_roots: object,
+            ) -> subprocess.CompletedProcess[str]:
+                if privileged and argv[-1] == "node":
+                    return subprocess.CompletedProcess(argv, 0, f"{node}\n", "")
+                return subprocess.run(
+                    argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=timeout,
+                    shell=False,
+                    env=dict(env),  # type: ignore[arg-type]
+                )
+
+            resolver = ToolchainResolver(
+                workspace,
+                home=home,
+                safe_path=["/usr/bin", "/bin"],
+                probe_runner=probe,  # type: ignore[arg-type]
+            )
+            discovered = resolver.discover(["node"], privileged=True)
+            selected = discovered["toolchains"]["node"]["selected"]
+            resolved_pnpm = resolver.resolve_program("pnpm", privileged=True)
+
+        self.assertEqual(selected["version"], "25.7.0")
+        selected_node = Path(selected["executables"]["node"])
+        selected_pnpm = Path(selected["executables"]["pnpm"])
+        self.assertEqual(selected_node.name, "node")
+        self.assertEqual(selected_pnpm.name, "pnpm")
+        assert resolved_pnpm is not None
+        self.assertEqual(Path(resolved_pnpm).name, "pnpm")
+
     def test_safe_exec_path_does_not_globally_trust_workspace_bin_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -531,6 +645,7 @@ class RuntimeSafetyTests(unittest.TestCase):
                             {
                             "program": "npm",
                             "args": ["run", "build"],
+                            "timeout_ms": 180_000,
                             "yield_time_ms": 2_000,
                             },
                             elicitation=False,
@@ -552,11 +667,262 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertFalse(payload["shell"])
         self.assertNotIn(str(bin_dir.resolve()), environment["effective_path"])
         self.assertIn("process.execute", environment["sandbox"]["capabilities"])
-        self.assertEqual(len(ApproveOnceBroker.calls), 1)
         self.assertEqual(
-            ApproveOnceBroker.calls[0]["permission"],
-            "privileged_executable",
+            [call["permission"] for call in ApproveOnceBroker.calls],
+            ["long_timeout", "privileged_executable"],
         )
+
+    @unittest.skipIf(os.name == "nt", "POSIX fixture uses tool-manager symlinks")
+    def test_privileged_tool_manager_execution_keeps_real_home_for_manager_config(self) -> None:
+        class ApproveOnceBroker:
+            calls = 0
+
+            @classmethod
+            def request(cls, **kwargs: object) -> object:
+                cls.calls += 1
+                self.assertEqual(kwargs["permission"], "privileged_executable")
+                return type("Decision", (), {"status": "approved"})()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            workspace = base / "workspace"
+            home = base / "home"
+            bin_dir = home / ".tool-manager" / "bin"
+            workspace.mkdir()
+            bin_dir.mkdir(parents=True)
+            (home / ".tool-manager" / "default").write_text("25.7.0\n", encoding="utf-8")
+            manager = bin_dir / "manager"
+            manager.write_text(
+                "#!/bin/sh\n"
+                "[ -f \"$HOME/.tool-manager/default\" ] || { echo missing-manager-home; exit 42; }\n"
+                "name=$(basename \"$0\")\n"
+                "case \"$name\" in\n"
+                "  node) echo v25.7.0 ;;\n"
+                "  pnpm) echo pnpm-ok \"$@\" ;;\n"
+                "  *) exit 43 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            manager.chmod(0o755)
+            node = bin_dir / "node"
+            pnpm = bin_dir / "pnpm"
+            node.symlink_to(manager.name)
+            pnpm.symlink_to(manager.name)
+            shell = base / "lookup-shell"
+            shell.write_text(
+                '#!/bin/sh\nname="$4"\nprintf "%s/%s\\n" "$TEST_TOOL_BIN" "$name"\n',
+                encoding="utf-8",
+            )
+            shell.chmod(0o755)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODING_TOOLS_MCP_OS_SANDBOX": "off",
+                    "HOME": str(home),
+                    "PATH": "/usr/bin:/bin",
+                    "SHELL": str(shell),
+                    "TEST_TOOL_BIN": str(bin_dir),
+                },
+                clear=False,
+            ):
+                runtime = Runtime(workspace, permission_mode="safe")
+                runtime.local_permission_broker = ApproveOnceBroker()  # type: ignore[assignment]
+                try:
+                    response = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            1,
+                            "exec_process",
+                            {
+                                "program": "pnpm",
+                                "args": ["build"],
+                                "yield_time_ms": 2_000,
+                            },
+                            elicitation=False,
+                        ),
+                        principal="principal-a",
+                    )
+                finally:
+                    runtime.close()
+
+        assert response is not None
+        result = response["result"]
+        self.assertFalse(result["isError"])
+        self.assertIn("pnpm-ok build", result["structuredContent"]["stdout"])
+        self.assertEqual(ApproveOnceBroker.calls, 1)
+
+    @unittest.skipIf(os.name == "nt", "POSIX fixture uses /bin/echo")
+    def test_local_session_approval_applies_to_later_calls_for_same_principal(self) -> None:
+        class ApproveSessionBroker:
+            calls = 0
+
+            @classmethod
+            def request(cls, **_kwargs: object) -> object:
+                cls.calls += 1
+                return type(
+                    "Decision",
+                    (),
+                    {"status": "approved", "scope": "session"},
+                )()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            with patch.dict(
+                os.environ,
+                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                clear=False,
+            ):
+                runtime = Runtime(workspace, permission_mode="safe")
+                runtime.local_permission_broker = ApproveSessionBroker()  # type: ignore[assignment]
+                try:
+                    first = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            1,
+                            "exec_process",
+                            {
+                                "program": "/bin/echo",
+                                "args": ["first"],
+                                "timeout_ms": 180_000,
+                            },
+                            elicitation=False,
+                        ),
+                        principal="principal-session",
+                    )
+                    second = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            2,
+                            "exec_process",
+                            {
+                                "program": "/bin/echo",
+                                "args": ["second"],
+                                "timeout_ms": 180_000,
+                            },
+                            elicitation=False,
+                        ),
+                        principal="principal-session",
+                    )
+                finally:
+                    runtime.close()
+
+        assert first is not None and second is not None
+        self.assertFalse(first["result"]["isError"])
+        self.assertFalse(second["result"]["isError"])
+        self.assertEqual(ApproveSessionBroker.calls, 1)
+
+    def test_privileged_program_miss_is_not_re_requested_in_same_runtime(self) -> None:
+        class ApproveOnceBroker:
+            calls = 0
+
+            @classmethod
+            def request(cls, **_kwargs: object) -> object:
+                cls.calls += 1
+                return type("Decision", (), {"status": "approved"})()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            with patch.dict(
+                os.environ,
+                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                clear=False,
+            ):
+                runtime = Runtime(workspace, permission_mode="safe")
+                runtime.local_permission_broker = ApproveOnceBroker()  # type: ignore[assignment]
+                try:
+                    first = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            1,
+                            "exec_process",
+                            {"program": "coding-tools-no-such-program-xyz"},
+                            elicitation=False,
+                        ),
+                        principal="principal-a",
+                    )
+                    second = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            2,
+                            "exec_process",
+                            {"program": "coding-tools-no-such-program-xyz"},
+                            elicitation=False,
+                        ),
+                        principal="principal-a",
+                    )
+                finally:
+                    runtime.close()
+
+        assert first is not None and second is not None
+        first_error = first["result"]["structuredContent"]["error"]
+        second_error = second["result"]["structuredContent"]["error"]
+        self.assertEqual(first_error["code"], "EXECUTABLE_NOT_FOUND")
+        self.assertEqual(second_error["code"], "EXECUTABLE_NOT_FOUND")
+        self.assertTrue(second_error["details"]["cached_miss"])
+        self.assertEqual(ApproveOnceBroker.calls, 1)
+
+    def test_missing_toolchain_host_lookup_is_not_re_requested_in_same_runtime(self) -> None:
+        class ApproveOnceBroker:
+            calls = 0
+
+            @classmethod
+            def request(cls, **_kwargs: object) -> object:
+                cls.calls += 1
+                return type("Decision", (), {"status": "approved"})()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary), permission_mode="safe")
+            runtime.local_permission_broker = ApproveOnceBroker()  # type: ignore[assignment]
+
+            def fake_discover(kinds: list[str], *, privileged: bool = False) -> dict[str, object]:
+                return {
+                    "toolchains": {
+                        kind: {
+                            "hint": "",
+                            "selected": None,
+                            "candidates": [],
+                            "lookup_scope": "elevated" if privileged else "sandbox",
+                        }
+                        for kind in kinds
+                    },
+                    "safe_path": [],
+                    "privileged_lookup": privileged,
+                }
+
+            with patch.object(runtime.toolchains, "discover", side_effect=fake_discover):
+                try:
+                    first = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            1,
+                            "discover_toolchains",
+                            {"kinds": ["node"]},
+                            elicitation=False,
+                        ),
+                        principal="principal-a",
+                    )
+                    second = dispatch(
+                        runtime,
+                        self._modern_tool_request(
+                            2,
+                            "discover_toolchains",
+                            {"kinds": ["node"]},
+                            elicitation=False,
+                        ),
+                        principal="principal-a",
+                    )
+                finally:
+                    runtime.close()
+
+        assert first is not None and second is not None
+        self.assertFalse(first["result"]["isError"])
+        self.assertFalse(second["result"]["isError"])
+        first_payload = first["result"]["structuredContent"]
+        second_payload = second["result"]["structuredContent"]
+        self.assertEqual(first_payload["host_lookup_exhausted"], ["node"])
+        self.assertEqual(second_payload["host_lookup_exhausted"], ["node"])
+        self.assertEqual(ApproveOnceBroker.calls, 1)
 
     @unittest.skipIf(os.name == "nt", "POSIX fixture uses executable shell scripts")
     def test_exec_command_uses_the_same_privileged_lookup_flow(self) -> None:
@@ -662,6 +1028,7 @@ class RuntimeSafetyTests(unittest.TestCase):
                     BROKER_DIR_ENV: "/tmp/broker",
                     BROKER_SECRET_ENV: "11" * 32,
                     BROKER_SERVER_ID_ENV: "server-a",
+                    ROUTE_PROBE_TOKEN_ENV: "route-probe-secret",
                 },
                 clear=False,
             ):
@@ -674,6 +1041,7 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertNotIn(BROKER_DIR_ENV, environment)
         self.assertNotIn(BROKER_SECRET_ENV, environment)
         self.assertNotIn(BROKER_SERVER_ID_ENV, environment)
+        self.assertNotIn(ROUTE_PROBE_TOKEN_ENV, environment)
 
     def test_sandbox_environment_protection_is_case_insensitive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1767,7 +2135,7 @@ class HTTPTransportTests(unittest.TestCase):
                     unauthorized.getheader("WWW-Authenticate", ""),
                 )
                 self.assertIn(
-                    'resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"',
+                    'resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp"',
                     unauthorized.getheader("WWW-Authenticate", ""),
                 )
 
@@ -1784,6 +2152,75 @@ class HTTPTransportTests(unittest.TestCase):
                         metadata["authorization_servers"],
                         ["https://mcp.example.com"],
                     )
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                runtime.close()
+                thread.join(timeout=2)
+
+    def test_instance_path_routes_mcp_oauth_and_well_known_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = OAuthConfig(
+                password="password",
+                server_url="https://mcp.example.com/company",
+                token_secret=b"i" * 32,
+            )
+            runtime = Runtime(Path(temporary), oauth_config=config)
+            server = MCPHTTPServer(("127.0.0.1", 0), runtime)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address[:2]
+                connection = http.client.HTTPConnection(host, port, timeout=5)
+
+                connection.request(
+                    "POST",
+                    "/company/mcp",
+                    body=json.dumps(
+                        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+                    ),
+                    headers={"Content-Type": "application/json"},
+                )
+                unauthorized = connection.getresponse()
+                unauthorized.read()
+                self.assertEqual(unauthorized.status, 401)
+                self.assertIn(
+                    'resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/company/mcp"',
+                    unauthorized.getheader("WWW-Authenticate", ""),
+                )
+
+                connection.request(
+                    "GET",
+                    "/.well-known/oauth-protected-resource/company/mcp",
+                )
+                protected_response = connection.getresponse()
+                protected = json.loads(protected_response.read())
+                self.assertEqual(protected_response.status, 200)
+                self.assertEqual(protected["resource"], "https://mcp.example.com/company/mcp")
+                self.assertEqual(
+                    protected["authorization_servers"],
+                    ["https://mcp.example.com/company"],
+                )
+
+                connection.request(
+                    "GET",
+                    "/.well-known/oauth-authorization-server/company",
+                )
+                oauth_response = connection.getresponse()
+                oauth_metadata = json.loads(oauth_response.read())
+                self.assertEqual(oauth_response.status, 200)
+                self.assertEqual(oauth_metadata["issuer"], "https://mcp.example.com/company")
+                self.assertEqual(
+                    oauth_metadata["authorization_endpoint"],
+                    "https://mcp.example.com/company/oauth/authorize",
+                )
+
+                connection.request("GET", "/company/")
+                card_response = connection.getresponse()
+                card = json.loads(card_response.read())
+                self.assertEqual(card_response.status, 200)
+                self.assertEqual(card["transport"]["endpoint"], "/company/mcp")
                 connection.close()
             finally:
                 server.shutdown()
