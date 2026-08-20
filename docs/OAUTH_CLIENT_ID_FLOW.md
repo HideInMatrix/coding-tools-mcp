@@ -1,6 +1,6 @@
 # OAuth client_id 生命周期与多 MCP Server 存储流程
 
-本文说明 Coding Tools MCP 桌面端中 `server_id`、OAuth `issuer`、MCP `resource`、`client_id`、OAuth Registry、固定域名和临时 Tunnel 之间的关系。
+本文说明 MicroMatrix Workbench 桌面端中 `server_id`、OAuth `issuer`、MCP `resource`、`client_id`、OAuth Registry、固定域名和临时 Tunnel 之间的关系。
 
 ## 1. 先区分两个 ID
 
@@ -193,7 +193,7 @@ A1
 
 用户停止桌面程序，然后在 AI 中删除 MCP-A。
 
-删除 AI 侧连接不会自动通知 Coding Tools MCP 删除 A1，因此磁盘 Registry 中 A1 仍可能存在。
+删除 AI 侧连接不会自动通知 MicroMatrix Workbench 删除 A1，因此磁盘 Registry 中 A1 仍可能存在。
 
 这不是错误。
 
@@ -470,7 +470,7 @@ Cloudflare Tunnel Token
 ## 12. 最终关系图
 
 ```text
-Coding Tools MCP Desktop
+MicroMatrix Workbench Desktop
 │
 ├── Server A
 │   server_id = SERVER-A

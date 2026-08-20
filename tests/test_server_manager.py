@@ -5,9 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from coding_tools_launcher.config import LaunchInfo
-from coding_tools_launcher.server_manager import MCPServerManager
-from coding_tools_launcher.server_profiles import ServerProfileStore
+from agent_workbench.config import LaunchInfo
+from agent_workbench.server_manager import MCPServerManager
+from agent_workbench.server_profiles import ServerProfileStore
 
 
 class MCPServerManagerTests(unittest.TestCase):
@@ -66,7 +66,7 @@ class MCPServerManagerTests(unittest.TestCase):
                 launchers.append(launcher)
                 return launcher
 
-            with patch("coding_tools_launcher.server_manager.MCPLauncher", side_effect=fake_launcher):
+            with patch("agent_workbench.server_manager.MCPLauncher", side_effect=fake_launcher):
                 manager.start(first.server_id)
                 manager.start(second.server_id)
 
@@ -106,7 +106,7 @@ class MCPServerManagerTests(unittest.TestCase):
             manager = MCPServerManager(store=store)
 
             with patch(
-                "coding_tools_launcher.server_manager.delete_server_oauth_storage"
+                "agent_workbench.server_manager.delete_server_oauth_storage"
             ) as delete_oauth:
                 self.assertTrue(manager.delete_profile(profile.server_id))
 

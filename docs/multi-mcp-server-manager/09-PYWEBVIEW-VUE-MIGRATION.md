@@ -63,9 +63,9 @@ Manager / Store / Service
 ## 5. 静态资源与构建
 
 ```text
-coding_tools_launcher/web
+agent_workbench/web
     ↓ npm run build
-coding_tools_launcher/web/dist
+agent_workbench/web/dist
     ↓
 build_desktop.py
     ↓

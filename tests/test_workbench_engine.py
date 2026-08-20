@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mcp_tools_server.runtime import Runtime
-from mcp_tools_server.workbench import (
+from agent_runtime.runtime import Runtime
+from agent_runtime.workbench import (
     WorkflowDefinition,
     WorkflowEngine,
     evaluate_condition,

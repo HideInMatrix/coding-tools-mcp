@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1080" viewBox="0 0 1440 1080" role="img" aria-labelledby="title desc">
+  <title id="title">MicroMatrix Workbench 基础运行逻辑</title>
+  <desc id="desc">展示本地 Workspace、MicroMatrix Workbench Agent Runtime、受控 MCP 工具、MCP 协议、OAuth 授权与 AI 客户端之间的基础运行逻辑。</desc>
+  <rect width="1440" height="1080" fill="#ffffff"/>
+  <text x="720" y="78" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="52" font-weight="700" fill="#0f172a">MicroMatrix Workbench 基础运行逻辑</text>
+
+  <rect x="30" y="130" width="550" height="730" rx="22" fill="#fbfdff" stroke="#2563eb" stroke-width="3"/>
+  <text x="305" y="190" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700" fill="#2563eb">本地电脑 / 开发环境</text>
+
+  <rect x="65" y="230" width="480" height="105" rx="16" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
+  <text x="305" y="270" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700" fill="#111827">Workspace</text>
+  <text x="305" y="305" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#374151">指定的项目目录 / 代码目录</text>
+
+  <line x1="305" y1="335" x2="305" y2="385" stroke="#2563eb" stroke-width="4"/>
+  <polygon points="305,395 295,378 315,378" fill="#2563eb"/>
+
+  <rect x="65" y="400" width="480" height="105" rx="16" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
+  <text x="305" y="442" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700" fill="#111827">Agent Runtime</text>
+  <text x="305" y="478" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#374151">本地 MCP 服务</text>
+
+  <line x1="305" y1="505" x2="305" y2="555" stroke="#2563eb" stroke-width="4"/>
+  <polygon points="305,565 295,548 315,548" fill="#2563eb"/>
+
+  <rect x="65" y="570" width="480" height="170" rx="16" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
+  <text x="305" y="608" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700" fill="#111827">受控 MCP 工具</text>
+
+  <g font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#1f2937" text-anchor="middle">
+    <rect x="105" y="635" width="120" height="38" rx="9" fill="#dbeafe"/><text x="165" y="660">read_file</text>
+    <rect x="245" y="635" width="120" height="38" rx="9" fill="#dbeafe"/><text x="305" y="660">list_dir</text>
+    <rect x="385" y="635" width="120" height="38" rx="9" fill="#dbeafe"/><text x="445" y="660">search_text</text>
+    <rect x="105" y="690" width="120" height="38" rx="9" fill="#dbeafe"/><text x="165" y="715">apply_patch</text>
+    <rect x="245" y="690" width="120" height="38" rx="9" fill="#dbeafe"/><text x="305" y="715">exec_command</text>
+    <rect x="385" y="690" width="120" height="38" rx="9" fill="#dbeafe"/><text x="445" y="715">git_status</text>
+  </g>
+
+  <path d="M 545 655 L 575 655 L 575 282 L 545 282" fill="none" stroke="#16a34a" stroke-width="4"/>
+  <polygon points="545,282 561,272 561,292" fill="#16a34a"/>
+
+  <rect x="85" y="770" width="440" height="65" rx="14" fill="#ffffff" stroke="#60a5fa" stroke-width="2" stroke-dasharray="9 8"/>
+  <text x="305" y="797" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" fill="#1f2937">本地地址</text>
+  <text x="305" y="824" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="17" fill="#1f2937">http://127.0.0.1:8234/mcp</text>
+
+  <rect x="630" y="130" width="315" height="730" rx="22" fill="#fbfffe" stroke="#0f9f92" stroke-width="3"/>
+  <text x="787" y="190" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700" fill="#0f9f92">协议与授权</text>
+
+  <rect x="660" y="245" width="255" height="250" rx="18" fill="#f7fffd" stroke="#23b7aa" stroke-width="2"/>
+  <text x="787" y="305" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700" fill="#111827">MCP 协议</text>
+  <line x1="700" y1="335" x2="875" y2="335" stroke="#23b7aa" stroke-width="2" stroke-dasharray="5 5"/>
+  <text x="787" y="390" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#1f2937">AI 通过协议调用工具</text>
+  <text x="787" y="430" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#1f2937">而不是直接访问文件系统</text>
+
+  <rect x="660" y="560" width="255" height="220" rx="18" fill="#f7fffd" stroke="#23b7aa" stroke-width="2"/>
+  <text x="787" y="625" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700" fill="#111827">OAuth 授权</text>
+  <line x1="700" y1="655" x2="875" y2="655" stroke="#23b7aa" stroke-width="2" stroke-dasharray="5 5"/>
+  <text x="787" y="710" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#1f2937">AI 通过授权</text>
+  <text x="787" y="747" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#1f2937">获得受控访问权限</text>
+
+  <line x1="660" y1="420" x2="555" y2="420" stroke="#0f9f92" stroke-width="4"/>
+  <polygon points="545,420 562,410 562,430" fill="#0f9f92"/>
+
+  <rect x="995" y="130" width="415" height="730" rx="22" fill="#fbfffb" stroke="#16a34a" stroke-width="3"/>
+  <text x="1202" y="190" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700" fill="#16a34a">AI / ChatGPT</text>
+
+  <rect x="1030" y="245" width="345" height="135" rx="18" fill="#f6fff5" stroke="#22c55e" stroke-width="2"/>
+  <text x="1202" y="325" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" fill="#111827">AI 客户端</text>
+
+  <rect x="1030" y="500" width="345" height="285" rx="18" fill="#f6fff5" stroke="#22c55e" stroke-width="2"/>
+  <text x="1202" y="555" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700" fill="#111827">可执行的操作</text>
+  <line x1="1080" y1="585" x2="1325" y2="585" stroke="#94a3b8" stroke-width="2" stroke-dasharray="5 5"/>
+  <g font-family="Arial, Helvetica, sans-serif" font-size="21" fill="#1f2937" text-anchor="middle">
+    <text x="1202" y="630">读取文件</text>
+    <text x="1202" y="670">搜索代码</text>
+    <text x="1202" y="710">查看 Git</text>
+    <text x="1202" y="750">修改文件 / 执行受限命令</text>
+  </g>
+
+  <line x1="915" y1="312" x2="1025" y2="312" stroke="#0f9f92" stroke-width="4"/>
+  <polygon points="1018,302 1035,312 1018,322" fill="#0f9f92"/>
+  <polygon points="922,302 905,312 922,322" fill="#0f9f92"/>
+  <line x1="915" y1="665" x2="1025" y2="665" stroke="#0f9f92" stroke-width="4"/>
+  <polygon points="1018,655 1035,665 1018,675" fill="#0f9f92"/>
+  <polygon points="922,655 905,665 922,675" fill="#0f9f92"/>
+
+  <rect x="30" y="905" width="1380" height="120" rx="20" fill="#f8fbff" stroke="#2563eb" stroke-width="3"/>
+  <text x="720" y="975" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700" fill="#1d4ed8">核心原则：AI 不能直接访问整个本地文件系统，只能通过受控 MCP 工具访问你指定的 Workspace。</text>
+</svg>

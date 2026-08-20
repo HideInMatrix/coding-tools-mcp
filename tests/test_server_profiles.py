@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from coding_tools_launcher.config import NetworkConfig
-from coding_tools_launcher.mcp_process import _mcp_arguments
-from coding_tools_launcher.server_profiles import (
+from agent_workbench.config import NetworkConfig
+from agent_workbench.mcp_process import _mcp_arguments
+from agent_workbench.server_profiles import (
     MCPServerProfile,
     ServerProfileStore,
     default_lifecycle,

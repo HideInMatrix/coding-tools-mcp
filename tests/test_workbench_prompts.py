@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mcp_tools_server.protocol import dispatch
-from mcp_tools_server.runtime import Runtime
-from mcp_tools_server.workbench import ResourceScope, build_prompt_registry
+from agent_runtime.protocol import dispatch
+from agent_runtime.runtime import Runtime
+from agent_runtime.workbench import ResourceScope, build_prompt_registry
 
 
 class PromptRegistryTests(unittest.TestCase):

@@ -13,10 +13,13 @@ import tempfile
 import time
 from pathlib import Path
 
+from agent_workbench.version import current_version
+
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST_DIR = ROOT / "dist"
-APP_NAME = "Coding Tools MCP"
+APP_NAME = "MicroMatrix Workbench"
+INNO_SCRIPT = ROOT / "deploy" / "windows" / "MicroMatrixWorkbench.iss"
 HDIUTIL_CREATE_ATTEMPTS = 4
 HDIUTIL_RETRY_BASE_SECONDS = 2.0
 
@@ -64,7 +67,7 @@ def platform_label() -> str:
 
 
 def release_base_name() -> str:
-    return f"Coding-Tools-MCP-{platform_label()}"
+    return f"MicroMatrix-Workbench-{platform_label()}"
 
 
 def write_sha256(path: Path) -> Path:
@@ -81,32 +84,70 @@ def write_sha256(path: Path) -> Path:
     return checksum
 
 
-def package_windows(output_base: Path) -> list[Path]:
-    source = DIST_DIR / f"{APP_NAME}.exe"
-    if not source.is_file():
-        raise SystemExit(f"PyInstaller executable not found: {source}")
+def _resolve_inno_compiler() -> Path:
+    for command in ("ISCC.exe", "ISCC"):
+        executable = shutil.which(command)
+        if executable:
+            return Path(executable)
 
-    executable = Path(f"{output_base}.exe")
-    executable.unlink(missing_ok=True)
-    shutil.copy2(source, executable)
+    roots = [
+        os.environ.get("ProgramFiles(x86)", ""),
+        os.environ.get("ProgramFiles", ""),
+    ]
+    for raw_root in roots:
+        if not raw_root:
+            continue
+        root = Path(raw_root)
+        for directory in ("Inno Setup 7", "Inno Setup 6"):
+            candidate = root / directory / "ISCC.exe"
+            if candidate.is_file():
+                return candidate
+    raise SystemExit(
+        "Windows release packaging requires Inno Setup (ISCC.exe)."
+    )
 
-    # Compatibility bridge for releases installed before the Windows onefile
-    # migration. Those clients still request a .zip and their updater expects
-    # one top-level ``Coding Tools MCP`` directory. Put the new single exe into
-    # that legacy shape so one successful update migrates them to onefile.
-    with tempfile.TemporaryDirectory(prefix="coding-tools-mcp-windows-legacy-") as raw_temp:
-        staging = Path(raw_temp) / APP_NAME
-        staging.mkdir()
-        shutil.copy2(source, staging / source.name)
-        legacy_archive = Path(
-            shutil.make_archive(
-                str(output_base),
-                "zip",
-                root_dir=Path(raw_temp),
-                base_dir=APP_NAME,
-            )
-        )
-    return [executable, legacy_archive]
+
+def _inno_architecture(value: str | None = None) -> str:
+    arch = value or architecture()
+    if arch == "x64":
+        return "x64compatible"
+    if arch == "arm64":
+        return "arm64"
+    if arch == "x86":
+        return "x86compatible"
+    raise SystemExit(f"Unsupported Windows installer architecture: {arch}")
+
+
+def package_windows(output_base: Path, *, version: str | None = None) -> list[Path]:
+    source = DIST_DIR / APP_NAME
+    executable = source / f"{APP_NAME}.exe"
+    if not source.is_dir() or not executable.is_file():
+        raise SystemExit(f"PyInstaller onedir output not found: {source}")
+    if not INNO_SCRIPT.is_file():
+        raise SystemExit(f"Inno Setup script not found: {INNO_SCRIPT}")
+
+    installer = Path(f"{output_base}.exe")
+    installer.unlink(missing_ok=True)
+    output_base.parent.mkdir(parents=True, exist_ok=True)
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "MICROMATRIX_WORKBENCH_INSTALLER_VERSION": version or current_version(),
+            "MICROMATRIX_WORKBENCH_INSTALLER_SOURCE": str(source.resolve()),
+            "MICROMATRIX_WORKBENCH_INSTALLER_OUTPUT_DIR": str(output_base.parent.resolve()),
+            "MICROMATRIX_WORKBENCH_INSTALLER_OUTPUT_BASE": output_base.name,
+            "MICROMATRIX_WORKBENCH_INSTALLER_ARCH": _inno_architecture(),
+        }
+    )
+    subprocess.run(
+        [str(_resolve_inno_compiler()), str(INNO_SCRIPT)],
+        check=True,
+        env=environment,
+    )
+    if not installer.is_file() or installer.stat().st_size <= 0:
+        raise RuntimeError(f"Inno Setup did not produce installer: {installer}")
+    return [installer]
 
 
 def package_linux(output_base: Path) -> Path:
@@ -141,7 +182,7 @@ def _create_macos_dmg(
     if hasattr(os, "sync"):
         os.sync()
 
-    with tempfile.TemporaryDirectory(prefix="coding-tools-mcp-hdiutil-") as raw_temp:
+    with tempfile.TemporaryDirectory(prefix="micromatrix-workbench-hdiutil-") as raw_temp:
         temp_root = Path(raw_temp)
         for attempt in range(1, retry_count + 1):
             attempt_dir = temp_root / f"attempt-{attempt}"
@@ -204,7 +245,7 @@ def package_macos(output_base: Path) -> list[Path]:
         raise SystemExit(f"PyInstaller app bundle not found: {source}")
 
     image = Path(f"{output_base}.dmg")
-    with tempfile.TemporaryDirectory(prefix="coding-tools-mcp-dmg-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="micromatrix-workbench-dmg-") as temp_dir:
         staging = Path(temp_dir) / APP_NAME
         staging.mkdir()
         shutil.copytree(source, staging / source.name, symlinks=True)

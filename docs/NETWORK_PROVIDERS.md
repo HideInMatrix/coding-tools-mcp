@@ -1,13 +1,13 @@
 # 网络提供方案
 
-Coding Tools MCP 的核心职责是把指定 Workspace 通过受控 MCP 工具提供给 AI。
+MicroMatrix Workbench 的核心职责是把指定 Workspace 通过受控 MCP 工具提供给 AI。
 
 公网连接只是传输层，因此桌面启动器把它抽象为独立的 `NetworkProvider`：
 
 ```text
 Workspace
     ↓
-coding-tools-mcp
+Agent Runtime
     ↓
 http://127.0.0.1:8234/mcp
     ↓
@@ -29,7 +29,7 @@ Tailscale Funnel
 ## 1. 模块结构
 
 ```text
-coding_tools_launcher/network/
+agent_workbench/network/
 ├── __init__.py
 ├── base.py
 ├── process.py
@@ -44,7 +44,7 @@ coding_tools_launcher/network/
 Provider 使用的外部客户端统一由另一个模块发现和验证：
 
 ```text
-coding_tools_launcher/executables/
+agent_workbench/executables/
 ├── models.py
 ├── specs.py
 ├── discovery.py

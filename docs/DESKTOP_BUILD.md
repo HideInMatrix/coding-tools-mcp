@@ -2,7 +2,7 @@
 
 ## 1. 原则
 
-Vue/Vite 生成的 `coding_tools_launcher/web/dist/` 是平台无关的静态资源。
+Vue/Vite 生成的 `agent_workbench/web/dist/` 是平台无关的静态资源。
 
 因此 Release 构建必须拆成两个阶段：
 
@@ -32,7 +32,7 @@ python build_desktop.py
 需要重新构建前端时：
 
 ```bash
-cd coding_tools_launcher/web
+cd agent_workbench/web
 npm install --no-package-lock --no-audit --no-fund
 cd ../..
 python build_desktop.py --build-web
@@ -53,7 +53,7 @@ python build_desktop.py --web-dist /path/to/web-dist
 PyInstaller 会把该目录统一打入：
 
 ```text
-coding_tools_launcher/web/dist
+agent_workbench/web/dist
 ```
 
 所以 Python Runtime 不需要知道 CI Artifact 的真实来源路径。
@@ -69,11 +69,11 @@ coding_tools_launcher/web/dist
 - 后续可能加入的签名、公证、安装器资源。
 
 Windows Release 使用 PyInstaller `--onefile`，直接发布
-`Coding-Tools-MCP-windows-<arch>.exe`。应用内更新下载新的 `.exe`，在主进程退出后
+`MicroMatrix-Workbench-windows-<arch>.exe`。应用内更新下载新的 `.exe`，在主进程退出后
 由独立 PowerShell helper 原子替换当前可执行文件并重新启动；替换或重启失败时回滚旧 `.exe`。
 
 过渡期 Release 还会额外生成同名 `.zip`。这个 ZIP 只用于兼容旧版 `onedir` updater，
-内部仅包含 `Coding Tools MCP/Coding Tools MCP.exe`。新版本不会再消费该 ZIP；待旧版迁移窗口结束后可以移除。
+内部仅包含 `MicroMatrix Workbench/MicroMatrix Workbench.exe`。新版本不会再消费该 ZIP；待旧版迁移窗口结束后可以移除。
 
 macOS 与 Linux 继续使用目录型 bundle，因为 `.app` / Linux bundle 本身包含平台目录结构。
 

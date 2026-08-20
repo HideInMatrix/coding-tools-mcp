@@ -5,9 +5,9 @@ import threading
 import unittest
 from pathlib import Path
 
-from mcp_tools_server.runtime import Runtime
-from mcp_tools_server.server import MCPHTTPServer
-from mcp_tools_server.workbench import (
+from agent_runtime.runtime import Runtime
+from agent_runtime.server import MCPHTTPServer
+from agent_runtime.workbench import (
     CapabilityAssetService,
     WorkflowDefinition,
     WorkflowStore,

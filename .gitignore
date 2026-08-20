@@ -21,7 +21,7 @@ dist/
 
 # Desktop web frontend
 node_modules/
-coding_tools_launcher/web/dist/
+agent_workbench/web/dist/
 
 # Test / coverage
 .pytest_cache/
@@ -54,7 +54,7 @@ credentials/
 
 
 # ==========================================
-# coding-tools-mcp local files
+# micromatrix-workbench local files
 # ==========================================
 
 # Local MCP configuration

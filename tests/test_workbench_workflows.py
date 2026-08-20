@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mcp_tools_server.workbench import (
+from agent_runtime.workbench import (
     ResourceScope,
     WorkflowDefinition,
     WorkflowStore,

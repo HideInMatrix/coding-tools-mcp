@@ -39,7 +39,7 @@ git_diff
 Tool Provider：
 
 ```text
-system  Coding Tools MCP 自身实现
+system  MicroMatrix Workbench 自身实现
 mcp     外部 MCP Connection discover 出来的 Tool
 ```
 

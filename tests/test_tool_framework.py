@@ -4,18 +4,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mcp_tools_server.core import ToolAnnotations, ToolDefinition, ToolDispatcher, ToolRegistry
-from mcp_tools_server.errors import RpcError
-from mcp_tools_server.permissions import Capability, OperationPermission, permission_profile
-from mcp_tools_server.runtime import Runtime
-from mcp_tools_server.schemas import obj
-from mcp_tools_server.tools import build_tool_registry
-from mcp_tools_server.tools.filesystem import FilesystemHandlers
-from mcp_tools_server.tools.git import GitHandlers
-from mcp_tools_server.tools.process import ProcessHandlers
-from mcp_tools_server.tools.system import SystemHandlers
-from mcp_tools_server.tools.toolchains import ToolchainHandlers
-from mcp_tools_server.tools.workbench import WorkbenchHandlers
+from agent_runtime.core import ToolAnnotations, ToolDefinition, ToolDispatcher, ToolRegistry
+from agent_runtime.errors import RpcError
+from agent_runtime.permissions import Capability, OperationPermission, permission_profile
+from agent_runtime.runtime import Runtime
+from agent_runtime.schemas import obj
+from agent_runtime.tools import build_tool_registry
+from agent_runtime.tools.filesystem import FilesystemHandlers
+from agent_runtime.tools.git import GitHandlers
+from agent_runtime.tools.process import ProcessHandlers
+from agent_runtime.tools.system import SystemHandlers
+from agent_runtime.tools.toolchains import ToolchainHandlers
+from agent_runtime.tools.workbench import WorkbenchHandlers
 
 
 class _Handlers:

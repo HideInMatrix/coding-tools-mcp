@@ -65,7 +65,7 @@ OK
 Python 编译：
 
 ```text
-python -m compileall -q mcp_tools_server coding_tools_launcher
+python -m compileall -q agent_runtime agent_workbench
 OK
 ```
 
@@ -141,7 +141,7 @@ test_cimd_https_connection_loads_certifi_ca_bundle
 当前环境中：
 
 ```text
-mcp_tools_server.server.certifi is None
+agent_runtime.server.certifi is None
 ```
 
 源码最小环境允许 `certifi` 不安装，而桌面发布依赖通过 `requirements-desktop.txt` 提供。测试不再依赖当前解释器实际安装 certifi，而是注入 fake certifi 对象，仍然真实验证“存在 certifi 时加载 CA bundle”的产品行为。

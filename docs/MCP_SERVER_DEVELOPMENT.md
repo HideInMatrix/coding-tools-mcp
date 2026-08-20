@@ -1,17 +1,17 @@
-# Coding Tools MCP 自研服务端开发文档
+# MicroMatrix Workbench 自研服务端开发文档
 
 框架分层、ToolRegistry、Capability 与 PermissionProfile 的当前设计见
 `MCP_SERVER_FRAMEWORK.md`。新工具和后续 Local MCP Gateway 都应建立在该框架上，
 不要重新把工具按权限等级拆分。
 
-`mcp_tools_server` 是本仓库独立维护的 MCP Server 实现。MCP 协议、工具 Schema、OAuth、Workspace 隔离、Patch、进程管理、HTTP Server、权限 Broker 与沙箱能力都由本项目定义、实现和测试。
+`agent_runtime` 是本仓库独立维护的 MCP Server 实现。MCP 协议、工具 Schema、OAuth、Workspace 隔离、Patch、进程管理、HTTP Server、权限 Broker 与沙箱能力都由本项目定义、实现和测试。
 
-项目不再以任何第三方 `coding-tools-mcp` 实现或版本作为技术兼容基线。实现正确性由 MCP/OAuth 等公开协议规范、本项目 Server Contract、安全设计和回归测试共同约束。
+项目不以任何第三方 MCP Server 实现或版本作为技术兼容基线。实现正确性由 MCP/OAuth 等公开协议规范、本项目 Server Contract、安全设计和回归测试共同约束。
 
 当前自研服务端版本：
 
 ```text
-coding-tools-mcp 0.1.0
+agent-runtime 0.1.0
 ```
 
 ### 项目版本与 Server Contract
@@ -59,7 +59,7 @@ OAuth resource:   https://mcp.example.com/mcp
 `https://mcp.example.com/mcp`。新 access token 使用 `iss=issuer`、`aud=resource`。
 其他域名或其他路径不能因为“看起来相似”而绕过 resource/audience 校验。
 
-`CODING_TOOLS_MCP_SERVER_URL` 同样允许填写 base URL 或完整 `/mcp` URL，服务端
+`AGENT_RUNTIME_SERVER_URL` 同样允许填写 base URL 或完整 `/mcp` URL，服务端
 必须规范化，禁止产生 `.../mcp/mcp`。
 
 Protected Resource Metadata 同时兼容：
@@ -83,7 +83,7 @@ Protected Resource Metadata 同时兼容：
 当前核心 Contract 包括：
 
 ```text
-20 个 Coding Tools
+20 个 Agent Runtime Tools
 MCP legacy initialize
 MCP 2026-07-28 modern request
 tools/list
@@ -106,7 +106,7 @@ view_image
 ## 2. 当前源码结构
 
 ```text
-mcp_tools_server/
+agent_runtime/
 ├── __init__.py
 ├── __main__.py
 ├── core/
@@ -174,11 +174,11 @@ MCPLauncher
     ↓
 MCPServerProcess
     ↓
-coding_tools_launcher.mcp_worker
+agent_workbench.mcp_worker
     ↓
-coding_tools_launcher.mcp_process.run_internal_mcp_server()
+agent_workbench.mcp_process.run_internal_mcp_server()
     ↓
-mcp_tools_server.server.main()
+agent_runtime.server.main()
 ```
 
 网络提供层与 MCP Server 本身完全解耦。Provider 只负责把本机
@@ -237,15 +237,15 @@ ChatGPT 安装 MCP 时会读取 `tools/list`。
 公共 Schema helper 与参数校验位于：
 
 ```text
-mcp_tools_server/schemas.py
+agent_runtime/schemas.py
 ```
 
 每个 Tool 的具体 input Schema 与 `ToolDefinition` 则跟随功能领域维护，例如：
 
 ```text
-mcp_tools_server/tools/filesystem/definitions.py
-mcp_tools_server/tools/process/definitions.py
-mcp_tools_server/tools/git/definitions.py
+agent_runtime/tools/filesystem/definitions.py
+agent_runtime/tools/process/definitions.py
+agent_runtime/tools/git/definitions.py
 ```
 
 这样新增工具时，Schema、Capability、annotations 与 Handler 能在同一功能领域内演进，
@@ -256,7 +256,7 @@ mcp_tools_server/tools/git/definitions.py
 工具调用由：
 
 ```text
-mcp_tools_server/results.py
+agent_runtime/results.py
 ```
 
 统一编码成：
@@ -324,13 +324,13 @@ view_image
 工具元数据、参数 Schema 与 annotations 位于：
 
 ```text
-mcp_tools_server/schemas.py
+agent_runtime/schemas.py
 ```
 
 真实 handler 位于：
 
 ```text
-mcp_tools_server/runtime.py
+agent_runtime/runtime.py
 ```
 
 两边以工具名一一对应。
@@ -340,7 +340,7 @@ mcp_tools_server/runtime.py
 协议实现位于：
 
 ```text
-mcp_tools_server/protocol.py
+agent_runtime/protocol.py
 ```
 
 支持：
@@ -388,7 +388,7 @@ cacheScope = private
 路径隔离集中在：
 
 ```text
-mcp_tools_server/workspace.py
+agent_runtime/workspace.py
 ```
 
 任何用户路径都会转换为绝对真实路径，然后检查它仍然处于 Workspace 根目录内部。
@@ -414,7 +414,7 @@ PATH_OUTSIDE_WORKSPACE
 代码：
 
 ```text
-mcp_tools_server/patching.py
+agent_runtime/patching.py
 ```
 
 支持：
@@ -497,7 +497,7 @@ eval "$(...)"
 进程生命周期由：
 
 ```text
-mcp_tools_server/processes.py
+agent_runtime/processes.py
 ```
 
 管理。
@@ -584,7 +584,7 @@ Windows  Restricted Token + Job Object（进程权限降级/进程树约束）
 各 OS backend 在 Runtime 初始化时会先执行最小自检。默认 `auto` 模式下，自检失败会明确回退到 application-policy；如果要求 fail-closed，可设置：
 
 ```text
-CODING_TOOLS_MCP_OS_SANDBOX=require
+AGENT_RUNTIME_OS_SANDBOX=require
 ```
 
 可选值：
@@ -611,7 +611,7 @@ tools/call
   -> 校验通过后仅对该调用临时放行
 ```
 
-服务器本身不能强制远端 MCP 客户端显示协议级弹窗。桌面版因此提供本地 Permission Broker fallback：客户端未声明 elicitation capability 时，MCP Server 会把签名授权请求投递给 Coding Tools MCP 桌面主进程，由桌面 UI 显示“拒绝 / 仅允许本次”，并在“仅允许本次”右侧提供“本次服务会话全部允许”。
+服务器本身不能强制远端 MCP 客户端显示协议级弹窗。桌面版因此提供本地 Permission Broker fallback：客户端未声明 elicitation capability 时，MCP Server 会把签名授权请求投递给 MicroMatrix Workbench 桌面主进程，由桌面 UI 显示“拒绝 / 仅允许本次”，并在“仅允许本次”右侧提供“本次服务会话全部允许”。
 
 “仅允许本次”不是提前写入并立刻消费的单权限 grant，而是沿着同一次逻辑工具调用的重试链累积 permission。例如一次 `pnpm build` 先触发 `long_timeout`、后触发 `privileged_executable` 时，第二轮重试会同时携带前两项批准，不会在两个弹窗之间循环。
 
@@ -734,7 +734,7 @@ Pillow>=10.0
 OAuth 实现：
 
 ```text
-mcp_tools_server/oauth.py
+agent_runtime/oauth.py
 ```
 
 支持：
@@ -761,7 +761,7 @@ ctm1.<payload>.<signature>
 桌面启动器已有：
 
 ```text
-coding_tools_launcher/oauth_persistence.py
+agent_workbench/oauth_persistence.py
 ```
 
 它会持久化：
@@ -794,7 +794,7 @@ OAuth Client 管理区分两类来源：
 代码：
 
 ```text
-mcp_tools_server/server.py
+agent_runtime/server.py
 ```
 
 主要路由：
@@ -836,7 +836,7 @@ Cloudflare Tunnel
 OAuth 固定公网地址通过：
 
 ```text
-CODING_TOOLS_MCP_SERVER_URL
+AGENT_RUNTIME_SERVER_URL
 ```
 
 传入服务端，因此生成的 authorize/token/registration 地址不会误用 localhost。
@@ -894,7 +894,7 @@ token secret 持久化
 第一步，在：
 
 ```text
-mcp_tools_server/schemas.py
+agent_runtime/schemas.py
 ```
 
 新增 `ToolSpec` 与 inputSchema。
@@ -902,7 +902,7 @@ mcp_tools_server/schemas.py
 第二步，在：
 
 ```text
-mcp_tools_server/runtime.py
+agent_runtime/runtime.py
 ```
 
 新增同名：
@@ -929,7 +929,7 @@ ok = true
 至少执行：
 
 ```bash
-python -m compileall -q mcp_tools_server coding_tools_launcher
+python -m compileall -q agent_runtime agent_workbench
 python -m unittest discover -s tests -v
 python scripts/verify_build_environment.py --expected-arch arm64
 python build_desktop.py

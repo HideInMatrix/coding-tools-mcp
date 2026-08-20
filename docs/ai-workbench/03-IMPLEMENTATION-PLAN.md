@@ -44,7 +44,7 @@
 
 任务：
 
-1. 新增 `mcp_tools_server/workbench/`；
+1. 新增 `agent_runtime/workbench/`；
 2. 定义通用 Scope：Built-in / Global / Workspace；
 3. 实现 PromptDefinition；
 4. 实现 PromptRegistry；

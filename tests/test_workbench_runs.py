@@ -5,9 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mcp_tools_server.protocol import RequestContext
-from mcp_tools_server.runtime import Runtime
-from mcp_tools_server.workbench import WorkflowDefinition
+from agent_runtime.protocol import RequestContext
+from agent_runtime.runtime import Runtime
+from agent_runtime.workbench import WorkflowDefinition
 
 
 def tool_then_approval_workflow() -> WorkflowDefinition:

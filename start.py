@@ -29,7 +29,7 @@ TUNNEL_URL_PATTERN = re.compile(
 )
 
 REQUIRED_ENV = (
-    "CODING_TOOLS_MCP_OAUTH_PASSWORD",
+    "AGENT_RUNTIME_OAUTH_PASSWORD",
 )
 
 
@@ -47,7 +47,7 @@ mcp_process: subprocess.Popen[str] | None = None
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="启动 coding-tools-mcp + Cloudflare Quick Tunnel"
+        description="启动 MicroMatrix Workbench Agent Runtime + Cloudflare Quick Tunnel"
     )
 
     parser.add_argument(
@@ -361,7 +361,9 @@ def start_mcp(
     env: dict[str, str],
 ) -> subprocess.Popen[str]:
     command = [
-        "coding-tools-mcp",
+        sys.executable,
+        "-m",
+        "agent_runtime",
         "--workspace",
         str(workspace),
         "--host",
@@ -372,7 +374,7 @@ def start_mcp(
     ]
 
     print()
-    print("启动 coding-tools-mcp ...")
+    print("启动 Agent Runtime ...")
     print(
         "Workspace:",
         workspace,
@@ -392,7 +394,7 @@ def start_mcp(
 
     if process.poll() is not None:
         raise RuntimeError(
-            "coding-tools-mcp 启动失败，"
+            "Agent Runtime 启动失败，"
             f"退出码: {process.returncode}"
         )
 
@@ -450,7 +452,7 @@ def handle_signal(
 
     stop_process(
         mcp_process,
-        "coding-tools-mcp",
+        "agent-runtime",
     )
 
     stop_process(
@@ -546,10 +548,6 @@ def main() -> int:
         "cloudflared"
     )
 
-    check_command(
-        "coding-tools-mcp"
-    )
-
     # --------------------------------------------------------
     # 4. 读取 .env
     # --------------------------------------------------------
@@ -579,8 +577,8 @@ def main() -> int:
 
     env = os.environ.copy()
     env.update(config)
-    env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_ID", None)
-    env.pop("CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET", None)
+    env.pop("AGENT_RUNTIME_OAUTH_CLIENT_ID", None)
+    env.pop("AGENT_RUNTIME_OAUTH_CLIENT_SECRET", None)
 
     # --------------------------------------------------------
     # 6. 先启动 Cloudflare Tunnel
@@ -599,7 +597,7 @@ def main() -> int:
     # --------------------------------------------------------
 
     env[
-        "CODING_TOOLS_MCP_SERVER_URL"
+        "AGENT_RUNTIME_SERVER_URL"
     ] = tunnel_url
 
     # --------------------------------------------------------
@@ -635,7 +633,7 @@ def main() -> int:
 
     print()
     print("=" * 70)
-    print("coding-tools-mcp 已启动")
+    print("Agent Runtime 已启动")
     print("=" * 70)
 
     print(
@@ -681,7 +679,7 @@ def main() -> int:
     while True:
         if mcp_process.poll() is not None:
             print(
-                "coding-tools-mcp 已退出，"
+                "Agent Runtime 已退出，"
                 f"退出码: {mcp_process.returncode}"
             )
             break
@@ -727,7 +725,7 @@ if __name__ == "__main__":
 
         stop_process(
             mcp_process,
-            "coding-tools-mcp",
+            "agent-runtime",
         )
 
         stop_process(
@@ -748,7 +746,7 @@ if __name__ == "__main__":
 
         stop_process(
             mcp_process,
-            "coding-tools-mcp",
+            "agent-runtime",
         )
 
         stop_process(

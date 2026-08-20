@@ -9,18 +9,10 @@ import build_desktop
 
 
 class DesktopBuildFrontendArtifactTests(unittest.TestCase):
-    def test_windows_desktop_bundle_is_single_executable(self) -> None:
-        self.assertEqual(build_desktop.pyinstaller_bundle_mode("win32"), "--onefile")
+    def test_desktop_bundles_use_onedir(self) -> None:
+        self.assertEqual(build_desktop.pyinstaller_bundle_mode("win32"), "--onedir")
         self.assertEqual(build_desktop.pyinstaller_bundle_mode("cygwin"), "--onedir")
         self.assertEqual(build_desktop.pyinstaller_bundle_mode("darwin"), "--onedir")
-
-    def test_windows_onefile_uses_per_user_runtime_tmpdir(self) -> None:
-        self.assertEqual(
-            build_desktop.pyinstaller_runtime_tmpdir("win32"),
-            r"%LOCALAPPDATA%\Micromatrix\Coding Tools MCP\runtime",
-        )
-        self.assertIsNone(build_desktop.pyinstaller_runtime_tmpdir("darwin"))
-        self.assertIsNone(build_desktop.pyinstaller_runtime_tmpdir("linux"))
 
     def test_release_web_build_is_standardized_on_npm(self) -> None:
         with (

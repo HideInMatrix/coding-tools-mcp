@@ -5,19 +5,19 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from coding_tools_launcher.config import NetworkConfig
-from coding_tools_launcher.gateway_launcher import GatewayLaunchInfo
-from coding_tools_launcher.gateway_manager import MCPGatewayManager
-from coding_tools_launcher.gateway_profiles import (
+from agent_workbench.config import NetworkConfig
+from agent_workbench.gateway_launcher import GatewayLaunchInfo
+from agent_workbench.gateway_manager import MCPGatewayManager
+from agent_workbench.gateway_profiles import (
     GatewayProfileStore,
     MCPGatewayMember,
     MCPGatewayProfile,
 )
-from coding_tools_launcher.oauth_persistence import (
+from agent_workbench.oauth_persistence import (
     bind_server_oauth_issuer,
     prepare_issuer_oauth_persistence,
 )
-from mcp_tools_server.oauth import OAuthClientRegistry
+from agent_runtime.oauth import OAuthClientRegistry
 
 
 class GatewayProfileStoreTests(unittest.TestCase):
@@ -239,7 +239,7 @@ class GatewayManagerTests(unittest.TestCase):
             )
 
             with patch(
-                "coding_tools_launcher.gateway_manager.MCPGatewayLauncher.start",
+                "agent_workbench.gateway_manager.MCPGatewayLauncher.start",
                 return_value=fake_info,
             ) as start:
                 info = manager.start(gateway.gateway_id)
@@ -272,7 +272,7 @@ class GatewayManagerTests(unittest.TestCase):
             issuer = "https://mcp.example.com/member"
 
             with patch(
-                "coding_tools_launcher.oauth_persistence.settings_dir",
+                "agent_workbench.oauth_persistence.settings_dir",
                 return_value=root,
             ):
                 bind_server_oauth_issuer(member.server_id, issuer)
@@ -365,7 +365,7 @@ class GatewayManagerTests(unittest.TestCase):
             with (
                 patch.object(manager, "is_running", return_value=True),
                 patch(
-                    "coding_tools_launcher.gateway_manager.OAuthClientStore.clear",
+                    "agent_workbench.gateway_manager.OAuthClientStore.clear",
                     return_value=2,
                 ) as clear,
             ):

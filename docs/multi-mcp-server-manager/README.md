@@ -1,6 +1,6 @@
 # Multi MCP Server Manager 重构文档
 
-本目录用于保存 Coding Tools MCP 桌面端从“单 MCP Server 启动器”升级为“多 MCP Server 管理器”的需求分析、架构设计、实施计划、代码规范和验收标准。
+本目录用于保存 MicroMatrix Workbench 桌面端从“单 MCP Server 启动器”升级为“多 MCP Server 管理器”的需求分析、架构设计、实施计划、代码规范和验收标准。
 
 本目录只存放研发阶段文档，不替代 `docs/` 下的最终用户手册。
 

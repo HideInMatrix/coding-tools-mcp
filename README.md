@@ -1,6 +1,6 @@
-# Coding Tools MCP
+# MicroMatrix Workbench
 
-Coding Tools MCP 是一个面向本地开发环境的 MCP 桌面工具。
+MicroMatrix Workbench 是一个面向本地开发环境的 AI Agent 工作台。桌面端由 `agent_workbench` 负责交互与编排，`agent_runtime` 提供 MCP、工具、权限、安全沙箱和工作流执行等基础运行能力。
 
 它允许你选择一个本地 Workspace，把这个目录中的代码、文件和 Git 信息通过受控的 MCP 工具提供给支持 Remote MCP 的 AI 客户端使用。
 
@@ -10,7 +10,7 @@ Coding Tools MCP 是一个面向本地开发环境的 MCP 桌面工具。
 
 ## 这个项目适合谁
 
-Coding Tools MCP 主要面向以下用户：
+MicroMatrix Workbench 主要面向以下用户：
 
 - 希望让 ChatGPT 或其他 MCP Client 直接协助本地项目开发的个人开发者
 - 不希望把源码上传到第三方代码托管或在线 IDE，但又希望 AI 能理解本地代码的开发者
@@ -23,7 +23,7 @@ Coding Tools MCP 主要面向以下用户：
 
 ### 1. AI 无法直接访问你的本地项目
 
-普通聊天中的 AI 并不能直接读取你电脑上的项目目录。Coding Tools MCP 可以把你指定的 Workspace 转换成 AI 可以调用的一组 MCP 工具。
+普通聊天中的 AI 并不能直接读取你电脑上的项目目录。MicroMatrix Workbench 可以把你指定的 Workspace 转换成 AI 可以调用的一组 MCP 工具。
 
 ### 2. 不希望把整个本地文件系统暴露给 AI
 
@@ -119,7 +119,7 @@ Node.js + npm
 首次构建前端：
 
 ```bash
-cd coding_tools_launcher/web
+cd agent_workbench/web
 npm install
 npm run build
 ```
@@ -140,7 +140,7 @@ python build_desktop.py
 
 ## 安全说明
 
-Coding Tools MCP 的目标是提供一个受控的本地开发入口，而不是一个任意文件共享服务。
+MicroMatrix Workbench 的目标是提供一个受控的本地开发入口，而不是一个任意文件共享服务。
 
 使用时仍建议：
 

@@ -7,14 +7,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from coding_tools_launcher.gateway_process import (
+from agent_workbench.gateway_process import (
     GatewayChildProfile,
     GatewayProcessConfig,
     build_gateway_mcp_command,
     prepare_gateway_config,
 )
-from coding_tools_launcher.oauth_persistence import OAuthPersistence
-from coding_tools_launcher.permission_broker import DesktopPermissionBroker
+from agent_workbench.oauth_persistence import OAuthPersistence
+from agent_workbench.permission_broker import DesktopPermissionBroker
 
 
 class GatewayProcessTests(unittest.TestCase):
@@ -79,13 +79,13 @@ class GatewayProcessTests(unittest.TestCase):
 
             with (
                 patch(
-                    "coding_tools_launcher.gateway_process.prepare_issuer_oauth_persistence",
+                    "agent_workbench.gateway_process.prepare_issuer_oauth_persistence",
                     side_effect=persistence_for_issuer,
                 ),
                 patch(
-                    "coding_tools_launcher.gateway_process.migrate_oauth_storage_to_issuer"
+                    "agent_workbench.gateway_process.migrate_oauth_storage_to_issuer"
                 ),
-                patch("coding_tools_launcher.gateway_process.bind_server_oauth_issuer"),
+                patch("agent_workbench.gateway_process.bind_server_oauth_issuer"),
             ):
                 prepared = prepare_gateway_config(config)
             try:
@@ -131,10 +131,10 @@ class GatewayProcessTests(unittest.TestCase):
                 port=8234,
             )
             config_file = root / "gateway.json"
-            with patch("coding_tools_launcher.gateway_process.is_frozen", return_value=False):
+            with patch("agent_workbench.gateway_process.is_frozen", return_value=False):
                 command = build_gateway_mcp_command(config, config_file)
 
-            self.assertIn("coding_tools_launcher.mcp_worker", command)
+            self.assertIn("agent_workbench.mcp_worker", command)
             self.assertIn("--gateway-config", command)
             self.assertIn(str(config_file), command)
             self.assertIn("8234", command)
@@ -181,13 +181,13 @@ class GatewayProcessTests(unittest.TestCase):
             try:
                 with (
                     patch(
-                        "coding_tools_launcher.gateway_process.prepare_issuer_oauth_persistence",
+                        "agent_workbench.gateway_process.prepare_issuer_oauth_persistence",
                         side_effect=lambda issuer: persistence_by_issuer[issuer],
                     ),
                     patch(
-                        "coding_tools_launcher.gateway_process.migrate_oauth_storage_to_issuer"
+                        "agent_workbench.gateway_process.migrate_oauth_storage_to_issuer"
                     ),
-                    patch("coding_tools_launcher.gateway_process.bind_server_oauth_issuer"),
+                    patch("agent_workbench.gateway_process.bind_server_oauth_issuer"),
                 ):
                     prepared = prepare_gateway_config(
                         config,

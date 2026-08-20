@@ -1,11 +1,11 @@
 # 网络提供商安装与部署教程（新手版）
 
-这份教程面向第一次使用 Coding Tools MCP 的用户。
+这份教程面向第一次使用 MicroMatrix Workbench 的用户。
 
 你不需要先理解 MCP、反向代理或内网穿透的全部原理，只需要记住一件事：
 
 ```text
-Coding Tools MCP 在你的电脑上运行
+MicroMatrix Workbench 在你的电脑上运行
         ↓
 第一个 Server 默认是 http://127.0.0.1:8234/mcp
         ↓
@@ -140,7 +140,7 @@ Networking
 名称可以填写：
 
 ```text
-coding-tools-mcp
+micromatrix-workbench
 ```
 
 ### 4.2 添加公网 Hostname
@@ -298,7 +298,7 @@ auth.method = "token"
 auth.token = "与 frps 相同的 Token"
 
 [[proxies]]
-name = "coding-tools-mcp"
+name = "micromatrix-workbench"
 type = "http"
 localIP = "127.0.0.1"
 localPort = 8234
@@ -339,7 +339,7 @@ FRP HTTP vhost :8080
 https://mcp.example.com/mcp
 ```
 
-### 5.6 Coding Tools MCP 桌面端
+### 5.6 MicroMatrix Workbench 桌面端
 
 选择：
 
@@ -412,7 +412,7 @@ ngrok config add-authtoken <YOUR_TOKEN>
 
 这样 token 会进入 ngrok 自己的配置文件。
 
-Coding Tools MCP 中也可以直接填写：
+MicroMatrix Workbench 中也可以直接填写：
 
 ```text
 Auth Token
@@ -565,7 +565,7 @@ Public URL:
 https://mcp.example.com
 ```
 
-Coding Tools MCP 不会启动额外 Tunnel 进程。
+MicroMatrix Workbench 不会启动额外 Tunnel 进程。
 
 你只需要保证：
 
@@ -635,7 +635,7 @@ https://mcp.example.com/mcp
 Password
 ```
 
-授权完成后，客户端应能看到 Coding Tools MCP 暴露的工具。
+授权完成后，客户端应能看到 MicroMatrix Workbench 暴露的工具。
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## 1. 背景
 
-当前 Coding Tools MCP 已经解决了 AI 安全访问本地 Workspace 的基础能力：
+当前 MicroMatrix Workbench 已经解决了 AI 安全访问本地 Workspace 的基础能力：
 
 - 文件读取与修改；
 - Git 只读能力；
@@ -152,7 +152,7 @@ Workspace > Global > Built-in
 └── runs/
 
 项目级：
-<workspace>/.coding-tools/
+<workspace>/.micromatrix-workbench/
 ├── prompts/
 ├── skills/
 └── workflows/
@@ -268,7 +268,7 @@ AI Natural Language Authoring
 
 ### ADR-013：第一版 Workflow Engine 不内置 LLM，Prompt/Skill 是外部模型执行边界
 
-当前 Coding Tools MCP 的 AI 模型由 MCP Client 提供，桌面程序本身没有内置模型 Provider。第一版 Workflow Engine 因此不得假装自己能够直接“执行 Prompt/Skill”。
+当前 MicroMatrix Workbench 的 AI 模型由 MCP Client 提供，桌面程序本身没有内置模型 Provider。第一版 Workflow Engine 因此不得假装自己能够直接“执行 Prompt/Skill”。
 
 节点语义固定为：
 
@@ -320,7 +320,7 @@ Workflow Definition 中的 Tool Node 不能调用 `workflow_start`、`workflow_c
 
 ### ADR-018：Workflow Approval 复用 Desktop Signed Broker，不写入 Workspace 决策文件
 
-Workflow Runtime 运行在 MCP 子进程，Vue/pywebview 运行在 Desktop 主进程。人工审批必须跨进程，但不能把“approved/rejected”作为普通 Workspace 文件写入 `.coding-tools/runs/`，否则拥有 Workspace 写权限的 AI 也可能伪造用户决策。
+Workflow Runtime 运行在 MCP 子进程，Vue/pywebview 运行在 Desktop 主进程。人工审批必须跨进程，但不能把“approved/rejected”作为普通 Workspace 文件写入 `.micromatrix-workbench/runs/`，否则拥有 Workspace 写权限的 AI 也可能伪造用户决策。
 
 第一版复用现有 Desktop Permission Broker 的私有目录、随机 32-byte secret、HMAC 签名和 `server_id` 隔离，增加独立的 Workflow Approval 消息类型：
 
@@ -371,7 +371,7 @@ running
 - Desktop 可以基于 Profile 配置做更准确的 Tool/feature validation；
 - 前端不直接把任意文件系统路径传给 Workbench 写接口。
 
-Workbench 的持久化资源仍写入目标 Profile 对应 Workspace 的 `.coding-tools/`，Target 只是 Desktop 控制面身份，不改变资源的 Workspace scope。
+Workbench 的持久化资源仍写入目标 Profile 对应 Workspace 的 `.micromatrix-workbench/`，Target 只是 Desktop 控制面身份，不改变资源的 Workspace scope。
 
 ### ADR-020：AI 与 Vue Flow 共享 Optimistic Concurrency Contract
 
@@ -437,7 +437,7 @@ System Tool     程序提供，只读，不允许用户改写实现
 - Prompt 是可复用的模型指令模板；
 - Skill 是方法论、入口 Prompt、Tool Allowlist 与 Artifact 约束组成的 AI 能力包；
 - MCP Connection 是外部能力来源，连接后通过 discovery 产生可引用的 MCP Tools；
-- System Tool 是 Coding Tools MCP 自身实现的受权限控制原子能力；
+- System Tool 是 MicroMatrix Workbench 自身实现的受权限控制原子能力；
 - Workflow 负责引用和编排上述能力，不复制其完整定义。
 
 第一阶段不开放任意 Python / JavaScript / Shell Custom Tool。未来如果需要用户参与 Tool 定义，优先从受控 Tool Preset / Command Preset 开始，而不是直接开放任意代码执行。
@@ -528,7 +528,7 @@ Workspace Assets
 
 用户或 AI 新建、编辑 Prompt / Skill 时写入应用级 Global Store；每个 Workspace Runtime 自动加载 Built-in + Global Prompt / Skill。Workflow 在编辑、保存、运行时再选择 Workspace Target，并引用当前可见的 Prompt / Skill / Tool Catalog。
 
-0.3.x 最终模型只读取 Built-in + Global Prompt / Skill，不读取 `<workspace>/.coding-tools/prompts|skills`。发布前内部测试数据不进入产品 migration pipeline，按 ADR-032 直接清理并重新初始化。
+0.3.x 最终模型只读取 Built-in + Global Prompt / Skill，不读取 `<workspace>/.micromatrix-workbench/prompts|skills`。发布前内部测试数据不进入产品 migration pipeline，按 ADR-032 直接清理并重新初始化。
 
 因此 Prompt / Skill 页面中的“Workspace Target”“Save Workspace Override”等概念全部移除，Built-in 资源第一次编辑后保存为 Global Override。
 

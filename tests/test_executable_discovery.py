@@ -5,12 +5,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from coding_tools_launcher.executables.models import (
+from agent_workbench.executables.models import (
     ExecutableCandidate,
     ExecutableSpec,
 )
-from coding_tools_launcher.executables.resolver import ExecutableResolver
-from coding_tools_launcher.executables.verification import verify_executable
+from agent_workbench.executables.resolver import ExecutableResolver
+from agent_workbench.executables.verification import verify_executable
 
 
 TEST_SPEC = ExecutableSpec(
@@ -35,12 +35,12 @@ class ExecutableResolverTests(unittest.TestCase):
     def test_manual_path_has_highest_priority(self) -> None:
         resolver = ExecutableResolver()
         with (
-            patch("coding_tools_launcher.executables.resolver.Path.is_file", return_value=True),
+            patch("agent_workbench.executables.resolver.Path.is_file", return_value=True),
             patch(
-                "coding_tools_launcher.executables.resolver.verify_executable",
+                "agent_workbench.executables.resolver.verify_executable",
                 return_value=candidate("/manual/tool", "manual"),
             ) as verify,
-            patch("coding_tools_launcher.executables.resolver.bundled_candidate") as bundled,
+            patch("agent_workbench.executables.resolver.bundled_candidate") as bundled,
         ):
             result = resolver.resolve(TEST_SPEC, configured="/manual/tool")
         self.assertEqual(result.source, "manual")
@@ -51,15 +51,15 @@ class ExecutableResolverTests(unittest.TestCase):
         resolver = ExecutableResolver()
         with (
             patch(
-                "coding_tools_launcher.executables.resolver.bundled_candidate",
+                "agent_workbench.executables.resolver.bundled_candidate",
                 return_value=Path("/bundle/tool"),
             ),
             patch(
-                "coding_tools_launcher.executables.resolver.verify_executable",
+                "agent_workbench.executables.resolver.verify_executable",
                 return_value=candidate("/bundle/tool", "bundled"),
             ) as verify,
-            patch("coding_tools_launcher.executables.resolver.standard_candidates") as standard,
-            patch("coding_tools_launcher.executables.resolver.path_candidate") as path_lookup,
+            patch("agent_workbench.executables.resolver.standard_candidates") as standard,
+            patch("agent_workbench.executables.resolver.path_candidate") as path_lookup,
         ):
             result = resolver.resolve(TEST_SPEC)
         self.assertEqual(result.source, "bundled")
@@ -71,18 +71,18 @@ class ExecutableResolverTests(unittest.TestCase):
         resolver = ExecutableResolver()
         with (
             patch(
-                "coding_tools_launcher.executables.resolver.bundled_candidate",
+                "agent_workbench.executables.resolver.bundled_candidate",
                 return_value=None,
             ),
             patch(
-                "coding_tools_launcher.executables.resolver.standard_candidates",
+                "agent_workbench.executables.resolver.standard_candidates",
                 return_value=[Path("/standard/tool")],
             ),
             patch(
-                "coding_tools_launcher.executables.resolver.verify_executable",
+                "agent_workbench.executables.resolver.verify_executable",
                 return_value=candidate("/standard/tool", "standard"),
             ),
-            patch("coding_tools_launcher.executables.resolver.path_candidate") as path_lookup,
+            patch("agent_workbench.executables.resolver.path_candidate") as path_lookup,
         ):
             result = resolver.resolve(TEST_SPEC)
         self.assertEqual(result.source, "standard")
@@ -92,11 +92,11 @@ class ExecutableResolverTests(unittest.TestCase):
         resolver = ExecutableResolver()
         with (
             patch(
-                "coding_tools_launcher.executables.resolver.bundled_candidate",
+                "agent_workbench.executables.resolver.bundled_candidate",
                 return_value=Path("/bundle/tool"),
             ),
             patch(
-                "coding_tools_launcher.executables.resolver.verify_executable",
+                "agent_workbench.executables.resolver.verify_executable",
                 return_value=candidate("/bundle/tool", "bundled"),
             ) as verify,
         ):
@@ -133,11 +133,11 @@ class ExecutableVerificationTests(unittest.TestCase):
         )
         with (
             patch(
-                "coding_tools_launcher.executables.verification._safe_real_path",
+                "agent_workbench.executables.verification._safe_real_path",
                 return_value=Path("/broken/client"),
             ),
             patch(
-                "coding_tools_launcher.executables.verification._run_probe",
+                "agent_workbench.executables.verification._run_probe",
                 return_value=(127, "missing target"),
             ),
         ):

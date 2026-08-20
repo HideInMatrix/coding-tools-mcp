@@ -2,7 +2,7 @@
 
 ## 1. 设计原则
 
-`mcp_tools_server` 按**功能领域组织工具实现**，权限作为横切策略层管理，不按 `safe / trusted / dangerous` 把工具文件拆散。
+`agent_runtime` 按**功能领域组织工具实现**，权限作为横切策略层管理，不按 `safe / trusted / dangerous` 把工具文件拆散。
 
 三个核心概念必须保持独立：
 
@@ -30,7 +30,7 @@ tools/dangerous/
 ## 2. 当前框架结构
 
 ```text
-mcp_tools_server/
+agent_runtime/
 ├── core/
 │   ├── constants.py     # Server identity / endpoint constants
 │   ├── tool.py          # ToolDefinition / ToolAnnotations
@@ -242,14 +242,14 @@ Runtime Runtime Runtime
 该架构已经落地为：
 
 ```text
-mcp_tools_server/gateway/
+agent_runtime/gateway/
 ├── models.py
 ├── routes.py
 ├── registry.py
 ├── runtime_pool.py
 └── config.py
 
-coding_tools_launcher/
+agent_workbench/
 ├── gateway_process.py
 ├── gateway_launcher.py
 ├── gateway_profiles.py

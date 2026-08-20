@@ -6,9 +6,9 @@ import time
 import unittest
 from pathlib import Path
 
-from mcp_tools_server.runtime import Runtime
-from mcp_tools_server.tools import build_tool_registry
-from mcp_tools_server.workbench import (
+from agent_runtime.runtime import Runtime
+from agent_runtime.tools import build_tool_registry
+from agent_runtime.workbench import (
     PromptDefinition,
     ResourceScope,
     RunStore,
@@ -167,7 +167,7 @@ class WorkbenchCorruptionRecoveryTests(unittest.TestCase):
     def test_corrupt_workflow_is_quarantined_and_registry_recovers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
-            workflow_dir = workspace / ".coding-tools" / "workflows"
+            workflow_dir = workspace / ".micromatrix-workbench" / "workflows"
             workflow_dir.mkdir(parents=True)
             (workflow_dir / "broken.json").write_text("{broken", encoding="utf-8")
             store = WorkflowStore(workspace)
@@ -182,7 +182,7 @@ class WorkbenchCorruptionRecoveryTests(unittest.TestCase):
     def test_future_workflow_schema_is_skipped_without_quarantine(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
-            workflow_dir = workspace / ".coding-tools" / "workflows"
+            workflow_dir = workspace / ".micromatrix-workbench" / "workflows"
             workflow_dir.mkdir(parents=True)
             future = workflow_dir / "future.json"
             future.write_text(
@@ -206,7 +206,7 @@ class WorkbenchCorruptionRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             run_id = "b" * 24
-            run_dir = workspace / ".coding-tools" / "runs" / run_id
+            run_dir = workspace / ".micromatrix-workbench" / "runs" / run_id
             run_dir.mkdir(parents=True)
             (run_dir / "run.json").write_text("{broken", encoding="utf-8")
             store = RunStore(workspace)
@@ -278,7 +278,7 @@ class WorkflowImportExportTests(unittest.TestCase):
 
 class RunPruningTests(unittest.TestCase):
     def test_prune_removes_old_terminal_runs_but_keeps_nonterminal_and_failed(self) -> None:
-        from mcp_tools_server.workbench.engine import EngineState
+        from agent_runtime.workbench.engine import EngineState
 
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)

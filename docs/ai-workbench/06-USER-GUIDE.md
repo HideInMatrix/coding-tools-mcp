@@ -2,7 +2,7 @@
 
 ## 1. 定位
 
-AI Workbench 是 Coding Tools MCP 在原子 Tool 之上的工程编排层。
+AI Workbench 是 MicroMatrix Workbench 在原子 Tool 之上的工程编排层。
 
 核心资源：
 
@@ -278,7 +278,7 @@ expected_version
 
 ## 7. 自然语言生成 Workflow
 
-可以直接对已连接 Coding Tools MCP 的 AI 说：
+可以直接对已连接 MicroMatrix Workbench 的 AI 说：
 
 ```text
 给当前项目创建一个逆向工程工作流：
@@ -402,7 +402,7 @@ signed response
 Runtime consume
 ```
 
-请求和响应使用 HMAC 签名。Workspace 文件不作为人工 Approval 的真相来源，因此 AI 不能通过写 `.coding-tools` 文件伪造人工批准。
+请求和响应使用 HMAC 签名。Workspace 文件不作为人工 Approval 的真相来源，因此 AI 不能通过写 `.micromatrix-workbench` 文件伪造人工批准。
 
 ---
 
@@ -449,7 +449,7 @@ Application Data / Workbench/
 Workspace 资源：
 
 ```text
-<workspace>/.coding-tools/
+<workspace>/.micromatrix-workbench/
 ├── workflows/
 └── runs/
 ```

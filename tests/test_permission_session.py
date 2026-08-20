@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mcp_tools_server.errors import RpcError
-from mcp_tools_server.permissions import PermissionSession
-from mcp_tools_server.protocol import RequestContext
+from agent_runtime.errors import RpcError
+from agent_runtime.permissions import PermissionSession
+from agent_runtime.protocol import RequestContext
 
 
 def modern_context(

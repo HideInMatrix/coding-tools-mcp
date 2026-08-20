@@ -17,14 +17,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from mcp_tools_server import __version__
-from mcp_tools_server.local_permission_broker import (
+from agent_runtime import __version__
+from agent_runtime.local_permission_broker import (
     BROKER_DIR_ENV,
     BROKER_SECRET_ENV,
     BROKER_SERVER_ID_ENV,
 )
-from mcp_tools_server.route_probe import ROUTE_PROBE_TOKEN_ENV
-from mcp_tools_server.oauth import (
+from agent_runtime.route_probe import ROUTE_PROBE_TOKEN_ENV
+from agent_runtime.oauth import (
     OAUTH_TOKEN_TTL_SECONDS,
     OAuthConfig,
     access_token_client_id,
@@ -33,22 +33,22 @@ from mcp_tools_server.oauth import (
     valid_pkce_challenge,
     validate_access_token,
 )
-from mcp_tools_server.protocol import (
+from agent_runtime.protocol import (
     META_CLIENT_CAPABILITIES,
     META_PROTOCOL_VERSION,
     dispatch,
 )
-from mcp_tools_server.runtime import Runtime
-from mcp_tools_server.sandbox.backend import (
+from agent_runtime.runtime import Runtime
+from agent_runtime.sandbox.backend import (
     MacSeatbeltBackend,
     WindowsRestrictedTokenBackend,
 )
-from mcp_tools_server.server import MCPHandler, MCPHTTPServer
-from mcp_tools_server.server import _normalize_public_server_url
-from mcp_tools_server.server import _protected_resource_metadata_url
-from mcp_tools_server.server import _public_ip_for_host
-from mcp_tools_server.server import _resolve_oauth_client
-from mcp_tools_server.toolchains import ToolchainResolver
+from agent_runtime.server import MCPHandler, MCPHTTPServer
+from agent_runtime.server import _normalize_public_server_url
+from agent_runtime.server import _protected_resource_metadata_url
+from agent_runtime.server import _public_ip_for_host
+from agent_runtime.server import _resolve_oauth_client
+from agent_runtime.toolchains import ToolchainResolver
 
 
 class CustomMCPServerContractTests(unittest.TestCase):
@@ -148,24 +148,24 @@ class CustomMCPServerContractTests(unittest.TestCase):
             (2, 1, 6, "", ("198.18.0.14", 443)),
             (30, 1, 6, "", ("::ffff:0:c612:e", 443, 0, 0)),
         ]
-        with patch("mcp_tools_server.server.socket.getaddrinfo", return_value=fake_answers):
+        with patch("agent_runtime.server.socket.getaddrinfo", return_value=fake_answers):
             self.assertEqual(_public_ip_for_host("chatgpt.com", 443), "198.18.0.14")
 
         private_answers = [(2, 1, 6, "", ("192.168.1.10", 443))]
-        with patch("mcp_tools_server.server.socket.getaddrinfo", return_value=private_answers):
+        with patch("agent_runtime.server.socket.getaddrinfo", return_value=private_answers):
             with self.assertRaisesRegex(ValueError, "public IP"):
                 _public_ip_for_host("internal.example.com", 443)
 
     def test_cimd_https_connection_loads_certifi_ca_bundle(self) -> None:
         with (
-            patch("mcp_tools_server.server.ssl.create_default_context") as create_context,
+            patch("agent_runtime.server.ssl.create_default_context") as create_context,
             patch(
-                "mcp_tools_server.server.certifi",
+                "agent_runtime.server.certifi",
                 SimpleNamespace(where=lambda: "/tmp/cacert.pem"),
             ),
         ):
             context = create_context.return_value
-            from mcp_tools_server.server import _PinnedHTTPSConnection
+            from agent_runtime.server import _PinnedHTTPSConnection
 
             _PinnedHTTPSConnection("chatgpt.com", 443, "104.18.32.47", 5.0)
 
@@ -176,7 +176,7 @@ class CustomMCPServerContractTests(unittest.TestCase):
             (2, 1, 6, "", ("104.18.32.47", 443)),
             (2, 1, 6, "", ("10.0.0.8", 443)),
         ]
-        with patch("mcp_tools_server.server.socket.getaddrinfo", return_value=mixed_answers):
+        with patch("agent_runtime.server.socket.getaddrinfo", return_value=mixed_answers):
             with self.assertRaisesRegex(ValueError, "public IP"):
                 _public_ip_for_host("mixed.example.com", 443)
 
@@ -194,7 +194,7 @@ class CustomMCPServerContractTests(unittest.TestCase):
             token_secret=b"x" * 32,
         )
         with patch(
-            "mcp_tools_server.server._fetch_cimd_document",
+            "agent_runtime.server._fetch_cimd_document",
             return_value=(metadata, 300),
         ) as fetch:
             first = _resolve_oauth_client(config, client_id)
@@ -294,7 +294,7 @@ class CustomMCPServerContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary))
             try:
-                with self.assertLogs("mcp_tools_server.runtime", level="ERROR"):
+                with self.assertLogs("agent_runtime.runtime", level="ERROR"):
                     with patch.object(
                         Runtime,
                         "server_info",
@@ -453,7 +453,7 @@ class CustomMCPServerContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary))
             try:
-                with self.assertLogs("mcp_tools_server.protocol", level="ERROR"):
+                with self.assertLogs("agent_runtime.protocol", level="ERROR"):
                     with patch.object(
                         Runtime,
                         "list_tools",
@@ -644,7 +644,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "CODING_TOOLS_MCP_OS_SANDBOX": "off",
+                    "AGENT_RUNTIME_OS_SANDBOX": "off",
                     "HOME": str(home),
                     "PATH": "/usr/bin:/bin",
                     "SHELL": str(shell),
@@ -736,7 +736,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "CODING_TOOLS_MCP_OS_SANDBOX": "off",
+                    "AGENT_RUNTIME_OS_SANDBOX": "off",
                     "HOME": str(home),
                     "PATH": "/usr/bin:/bin",
                     "SHELL": str(shell),
@@ -788,7 +788,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             workspace = Path(temporary)
             with patch.dict(
                 os.environ,
-                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                {"AGENT_RUNTIME_OS_SANDBOX": "off"},
                 clear=False,
             ):
                 runtime = Runtime(workspace, permission_mode="safe")
@@ -843,7 +843,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             workspace = Path(temporary)
             with patch.dict(
                 os.environ,
-                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                {"AGENT_RUNTIME_OS_SANDBOX": "off"},
                 clear=False,
             ):
                 runtime = Runtime(workspace, permission_mode="safe")
@@ -854,7 +854,7 @@ class RuntimeSafetyTests(unittest.TestCase):
                         self._modern_tool_request(
                             1,
                             "exec_process",
-                            {"program": "coding-tools-no-such-program-xyz"},
+                            {"program": "agent-runtime-no-such-program-xyz"},
                             elicitation=False,
                         ),
                         principal="principal-a",
@@ -864,7 +864,7 @@ class RuntimeSafetyTests(unittest.TestCase):
                         self._modern_tool_request(
                             2,
                             "exec_process",
-                            {"program": "coding-tools-no-such-program-xyz"},
+                            {"program": "agent-runtime-no-such-program-xyz"},
                             elicitation=False,
                         ),
                         principal="principal-a",
@@ -972,7 +972,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "CODING_TOOLS_MCP_OS_SANDBOX": "off",
+                    "AGENT_RUNTIME_OS_SANDBOX": "off",
                     "PATH": "/usr/bin:/bin",
                     "SHELL": str(shell),
                     "TEST_TOOL_BIN": str(tool_bin),
@@ -1128,7 +1128,7 @@ class RuntimeSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             with patch.dict(
                 os.environ,
-                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                {"AGENT_RUNTIME_OS_SANDBOX": "off"},
                 clear=False,
             ):
                 runtime = Runtime(Path(temporary), permission_mode="safe")
@@ -1183,7 +1183,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             (target / "file.txt").write_text("hello\n", encoding="utf-8")
             with patch.dict(
                 os.environ,
-                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                {"AGENT_RUNTIME_OS_SANDBOX": "off"},
                 clear=False,
             ):
                 runtime = Runtime(root, permission_mode="safe")
@@ -1238,7 +1238,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             (target / "file.txt").write_text("hello\n", encoding="utf-8")
             with patch.dict(
                 os.environ,
-                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                {"AGENT_RUNTIME_OS_SANDBOX": "off"},
                 clear=False,
             ):
                 runtime = Runtime(root, permission_mode="safe")
@@ -1313,7 +1313,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             target.mkdir()
             with patch.dict(
                 os.environ,
-                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                {"AGENT_RUNTIME_OS_SANDBOX": "off"},
                 clear=False,
             ):
                 runtime = Runtime(root, permission_mode="safe")
@@ -1356,7 +1356,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             target.mkdir()
             with patch.dict(
                 os.environ,
-                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                {"AGENT_RUNTIME_OS_SANDBOX": "off"},
                 clear=False,
             ):
                 runtime = Runtime(root, permission_mode="safe")
@@ -1433,7 +1433,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             (target / "file.txt").write_text("hello\n", encoding="utf-8")
             with patch.dict(
                 os.environ,
-                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                {"AGENT_RUNTIME_OS_SANDBOX": "off"},
                 clear=False,
             ):
                 runtime = Runtime(root, permission_mode="safe")
@@ -1514,7 +1514,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             target.mkdir()
             with patch.dict(
                 os.environ,
-                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                {"AGENT_RUNTIME_OS_SANDBOX": "off"},
                 clear=False,
             ):
                 runtime = Runtime(root, permission_mode="safe")
@@ -1563,7 +1563,7 @@ class RuntimeSafetyTests(unittest.TestCase):
             target.mkdir()
             with patch.dict(
                 os.environ,
-                {"CODING_TOOLS_MCP_OS_SANDBOX": "off"},
+                {"AGENT_RUNTIME_OS_SANDBOX": "off"},
                 clear=False,
             ):
                 runtime = Runtime(root, permission_mode="safe")
@@ -1738,7 +1738,7 @@ class RuntimeSafetyTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows restricted-token integration test")
     def test_windows_restricted_launcher_runs_a_child_process(self) -> None:
-        from mcp_tools_server.sandbox.windows_launcher import _launch_restricted
+        from agent_runtime.sandbox.windows_launcher import _launch_restricted
 
         comspec = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
         exit_code = _launch_restricted(
@@ -2151,7 +2151,7 @@ class HTTPTransportTests(unittest.TestCase):
                 unauthorized.read()
                 self.assertEqual(unauthorized.status, 401)
                 self.assertIn(
-                    'realm="coding-tools-mcp"',
+                    'realm="micromatrix-workbench"',
                     unauthorized.getheader("WWW-Authenticate", ""),
                 )
                 self.assertIn(
@@ -2276,6 +2276,52 @@ class HTTPTransportTests(unittest.TestCase):
                 self.assertEqual(
                     metadata["protected_resources"],
                     ["https://mcp.example.com/mcp"],
+                )
+                connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                runtime.close()
+                thread.join(timeout=2)
+
+    def test_oauth_metadata_can_disable_cimd_and_keep_dcr(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = OAuthConfig(
+                password="password",
+                server_url="https://temporary.example.com",
+                token_secret=b"d" * 32,
+                cimd_enabled=False,
+            )
+            runtime = Runtime(Path(temporary), oauth_config=config)
+            server = MCPHTTPServer(("127.0.0.1", 0), runtime)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = server.server_address[:2]
+                connection = http.client.HTTPConnection(host, port, timeout=5)
+                connection.request("GET", "/.well-known/oauth-authorization-server")
+                response = connection.getresponse()
+                metadata = json.loads(response.read())
+                self.assertEqual(response.status, 200)
+                self.assertNotIn("client_id_metadata_document_supported", metadata)
+                self.assertEqual(
+                    metadata["registration_endpoint"],
+                    "https://temporary.example.com/oauth/register",
+                )
+                self.assertIsNone(
+                    _resolve_oauth_client(
+                        config,
+                        "https://chatgpt.com/oauth/client.json",
+                    )
+                )
+                registered = config.registry.register(
+                    {
+                        "redirect_uris": ["https://chatgpt.com/oauth/callback"],
+                        "token_endpoint_auth_method": "none",
+                    }
+                )
+                self.assertIsNotNone(
+                    _resolve_oauth_client(config, registered["client_id"])
                 )
                 connection.close()
             finally:
@@ -2462,7 +2508,7 @@ class HTTPTransportTests(unittest.TestCase):
                 token = create_access_token(config, "dispatch-test")
                 connection = http.client.HTTPConnection(host, port, timeout=5)
                 with patch(
-                    "mcp_tools_server.server.dispatch",
+                    "agent_runtime.server.dispatch",
                     side_effect=ExceptionGroup("transport failure", [RuntimeError("boom")]),
                 ):
                     connection.request(

@@ -58,7 +58,7 @@ Workflow Editor
 ## 2. Python 模块规划
 
 ```text
-mcp_tools_server/workbench/
+agent_runtime/workbench/
 ├── models.py
 ├── paths.py
 ├── registry.py
@@ -78,7 +78,7 @@ mcp_tools_server/workbench/
 MCP Tool：
 
 ```text
-mcp_tools_server/tools/workbench/
+agent_runtime/tools/workbench/
 ├── definitions.py
 └── handlers.py
 ```
@@ -459,7 +459,7 @@ expires_at
 
 响应同时绑定原 `request_id/run_id/node_id/approval_id`，并经过同一 HMAC secret 验证。Runtime 只接受匹配当前 Run pending approval 的有效响应。
 
-`.coding-tools/runs/<run_id>/run.json` 不具有“证明用户批准”的安全权限，只负责恢复业务状态。
+`.micromatrix-workbench/runs/<run_id>/run.json` 不具有“证明用户批准”的安全权限，只负责恢复业务状态。
 
 Artifact Node 第一版配置：
 
@@ -1019,7 +1019,7 @@ AI MCP Tool ───────┘
               Catalog Refresh
 ```
 
-AI 不允许通过直接写 `.coding-tools` 文件绕过 Validator / expected_version / Secret Policy。
+AI 不允许通过直接写 `.micromatrix-workbench` 文件绕过 Validator / expected_version / Secret Policy。
 
 ### 12.9 Workflow Discovery
 

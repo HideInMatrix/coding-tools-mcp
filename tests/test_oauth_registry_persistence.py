@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from coding_tools_launcher.oauth_persistence import install_oauth_registry_persistence
-from mcp_tools_server.oauth import (
+from agent_workbench.oauth_persistence import install_oauth_registry_persistence
+from agent_runtime.oauth import (
     OAuthClient,
     OAuthClientRegistry,
     OAuthConfig,

@@ -1,6 +1,6 @@
-# Coding Tools MCP 使用文档
+# MicroMatrix Workbench 使用文档
 
-这份文档只讲如何使用 Coding Tools MCP。
+这份文档只讲如何使用 MicroMatrix Workbench。
 
 如果你想先了解项目适合谁、解决什么问题，请查看项目根目录的 `README.md`。
 
@@ -27,7 +27,7 @@
 
 ## 2. 启动桌面程序
 
-打开 Coding Tools MCP 桌面程序后，主要会看到：
+打开 MicroMatrix Workbench 桌面程序后，主要会看到：
 
 ```text
 当前服务
@@ -101,7 +101,7 @@ Password
 
 如果 AI 在 `Safe` 模式请求执行 `git add`、`git commit`、联网命令等受限操作，优先使用 MCP 客户端自己的授权交互。批准后只对对应的工具调用临时放行，不需要把整个 Server 切换成 `Dangerous`。
 
-如果当前客户端不支持 MCP elicitation，桌面版会自动显示 Coding Tools MCP 自己的本地授权框。选择“仅允许本次”后，授权会在同一次逻辑工具调用中持续累积，避免一个命令先申请 `long_timeout`、随后申请 `privileged_executable` 时来回重复弹窗。
+如果当前客户端不支持 MCP elicitation，桌面版会自动显示 MicroMatrix Workbench 自己的本地授权框。选择“仅允许本次”后，授权会在同一次逻辑工具调用中持续累积，避免一个命令先申请 `long_timeout`、随后申请 `privileged_executable` 时来回重复弹窗。
 
 “仅允许本次”右侧的下拉菜单还提供“本次服务会话全部允许”：它会对同一个已认证 MCP Client，在当前 MCP Server 进程停止或重启前自动放行所有可临时授权的权限。它不会关闭 Workspace 边界，也不会提升 `sandbox_env_override` 等不可临时授权的系统限制；真正的普通终端级完全访问仍然必须显式选择 `Dangerous`。
 
@@ -119,7 +119,7 @@ Password
 
 ## 5. Dynamic Client Registration
 
-Coding Tools MCP 只支持动态 Client 注册，不支持手工预注册 Client。
+MicroMatrix Workbench 只支持动态 Client 注册，不支持手工预注册 Client。
 
 客户端连接时会先读取 OAuth metadata，然后调用：
 
@@ -236,7 +236,7 @@ https://mcp.example.com/mcp
 
 浏览器出现授权页面后，输入桌面端配置的 `Password` 完成授权。
 
-授权成功后，AI 客户端就可以看到 Coding Tools MCP 提供的工具。
+授权成功后，AI 客户端就可以看到 MicroMatrix Workbench 提供的工具。
 
 ## 10. AI 可以做什么
 
@@ -267,7 +267,7 @@ AI 使用的是 MCP 工具，而不是直接获得电脑的任意磁盘访问权
 常见日志来源包括：
 
 ```text
-coding-tools-mcp
+Agent Runtime
 cloudflared
 frpc
 ngrok
@@ -313,7 +313,7 @@ tailscale
 除了桌面版，也可以使用 CLI：
 
 ```bash
-python -m coding_tools_launcher.cli /path/to/workspace
+python -m agent_workbench.cli /path/to/workspace
 ```
 
 CLI 会从 `.env` 读取 OAuth 和网络配置。
@@ -367,7 +367,7 @@ cp .env.example .env
 macOS 使用固定 Bundle Identifier：
 
 ```text
-org.micromatrix.coding-tools-mcp
+org.micromatrix.workbench
 ```
 
 当前阶段未使用付费 Developer ID / Apple Notarization，因此固定 Bundle Identifier 和应用内替换可以改善升级连续性，但不能承诺完全消除所有 Gatekeeper 提示。
@@ -375,16 +375,16 @@ org.micromatrix.coding-tools-mcp
 Release 文件名不包含版本号，平台名称统一为：
 
 ```text
-Coding-Tools-MCP-windows-x64.exe
-Coding-Tools-MCP-windows-arm64.exe
-Coding-Tools-MCP-windows-x64.zip
-Coding-Tools-MCP-windows-arm64.zip
-Coding-Tools-MCP-macos-x64.dmg
-Coding-Tools-MCP-macos-arm64.dmg
-Coding-Tools-MCP-macos-x64.zip
-Coding-Tools-MCP-macos-arm64.zip
-Coding-Tools-MCP-linux-x64.tar.gz
-Coding-Tools-MCP-linux-arm64.tar.gz
+MicroMatrix-Workbench-windows-x64.exe
+MicroMatrix-Workbench-windows-arm64.exe
+MicroMatrix-Workbench-windows-x64.zip
+MicroMatrix-Workbench-windows-arm64.zip
+MicroMatrix-Workbench-macos-x64.dmg
+MicroMatrix-Workbench-macos-arm64.dmg
+MicroMatrix-Workbench-macos-x64.zip
+MicroMatrix-Workbench-macos-arm64.zip
+MicroMatrix-Workbench-linux-x64.tar.gz
+MicroMatrix-Workbench-linux-arm64.tar.gz
 ```
 
 Windows 的 `.exe` 是当前正式安装与应用内更新包；Windows `.zip` 仅用于旧版 `onedir` updater 迁移到单文件版本。macOS 的 `.dmg` 用于首次手动安装，`.zip` 专供应用内更新。每个可用于自动更新的包同时发布对应的 `.sha256` 校验文件。
@@ -448,4 +448,4 @@ URL Path 能力仍然保留，但定位为后续 Local MCP Gateway 的路由键�
 
 基础运行逻辑示意图：
 
-![Coding Tools MCP 基础运行逻辑](assets/coding-tools-mcp-basic-flow.svg)
+![MicroMatrix Workbench 基础运行逻辑](assets/micromatrix-workbench-basic-flow.svg)

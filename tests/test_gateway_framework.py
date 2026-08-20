@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mcp_tools_server.gateway import (
+from agent_runtime.gateway import (
     build_gateway_runtime_pool,
     GatewayProfile,
     GatewayProfileRegistry,
@@ -17,15 +17,15 @@ from mcp_tools_server.gateway import (
     load_gateway_config,
     normalize_instance_path,
 )
-from mcp_tools_server.oauth import OAuthConfig
-from mcp_tools_server.route_probe import (
+from agent_runtime.oauth import OAuthConfig
+from agent_runtime.route_probe import (
     ROUTE_PROBE_HEADER,
     ROUTE_PROBE_PATH,
     ROUTE_PROBE_TOKEN_ENV,
     workspace_fingerprint,
 )
-from mcp_tools_server.runtime import Runtime
-from mcp_tools_server.server import MCPHTTPServer
+from agent_runtime.runtime import Runtime
+from agent_runtime.server import MCPHTTPServer
 
 
 class GatewayFrameworkTests(unittest.TestCase):

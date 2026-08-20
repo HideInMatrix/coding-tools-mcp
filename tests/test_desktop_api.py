@@ -5,13 +5,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from coding_tools_launcher.desktop_api import DesktopAPI
-from coding_tools_launcher.gateway_launcher import (
+from agent_workbench.desktop_api import DesktopAPI
+from agent_workbench.gateway_launcher import (
     GatewayDiagnosticReport,
     GatewayProfileDiagnostic,
 )
-from mcp_tools_server.local_permission_broker import LocalWorkflowApprovalBrokerClient
-from mcp_tools_server.runtime import Runtime
+from agent_runtime.local_permission_broker import LocalWorkflowApprovalBrokerClient
+from agent_runtime.runtime import Runtime
 
 
 class DesktopAPITests(unittest.TestCase):
@@ -21,27 +21,27 @@ class DesktopAPITests(unittest.TestCase):
         self.settings: dict[str, object] = {}
         self.patches = [
             patch(
-                "coding_tools_launcher.server_profiles.settings_dir",
+                "agent_workbench.server_profiles.settings_dir",
                 return_value=self.base,
             ),
             patch(
-                "coding_tools_launcher.gateway_profiles.settings_dir",
+                "agent_workbench.gateway_profiles.settings_dir",
                 return_value=self.base,
             ),
             patch(
-                "coding_tools_launcher.oauth_persistence.settings_dir",
+                "agent_workbench.oauth_persistence.settings_dir",
                 return_value=self.base,
             ),
             patch(
-                "coding_tools_launcher.desktop_api.load_settings",
+                "agent_workbench.desktop_api.load_settings",
                 side_effect=lambda: dict(self.settings),
             ),
             patch(
-                "coding_tools_launcher.desktop_api.save_settings",
+                "agent_workbench.desktop_api.save_settings",
                 side_effect=lambda value: self.settings.update(value),
             ),
             patch(
-                "coding_tools_launcher.desktop_api.settings_dir",
+                "agent_workbench.desktop_api.settings_dir",
                 return_value=self.base,
             ),
         ]
@@ -654,15 +654,15 @@ class DesktopAPITests(unittest.TestCase):
 
         with (
             patch(
-                "coding_tools_launcher.desktop_api.bound_server_oauth_issuer",
+                "agent_workbench.desktop_api.bound_server_oauth_issuer",
                 side_effect=lambda server_id: (
                     "https://mcp.example.com/home"
                     if server_id == removed["server_id"]
                     else None
                 ),
             ),
-            patch("coding_tools_launcher.desktop_api.delete_server_oauth_storage") as delete_server,
-            patch("coding_tools_launcher.desktop_api.delete_issuer_oauth_storage") as delete_issuer,
+            patch("agent_workbench.desktop_api.delete_server_oauth_storage") as delete_server,
+            patch("agent_workbench.desktop_api.delete_issuer_oauth_storage") as delete_issuer,
         ):
             self.api.update_gateway(str(created["gateway_id"]), payload)
 

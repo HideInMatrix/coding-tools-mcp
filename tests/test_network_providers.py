@@ -6,12 +6,12 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from coding_tools_launcher.config import LaunchConfig, NetworkConfig
-from coding_tools_launcher.launcher import MCPLauncher
-from coding_tools_launcher.network.external import ExternalUrlProvider
-from coding_tools_launcher.network.factory import create_network_provider
-from coding_tools_launcher.network.frp import FrpProvider
-from coding_tools_launcher.network.ngrok import NgrokProvider
+from agent_workbench.config import LaunchConfig, NetworkConfig
+from agent_workbench.launcher import MCPLauncher
+from agent_workbench.network.external import ExternalUrlProvider
+from agent_workbench.network.factory import create_network_provider
+from agent_workbench.network.frp import FrpProvider
+from agent_workbench.network.ngrok import NgrokProvider
 
 
 class NetworkConfigTests(unittest.TestCase):
@@ -57,12 +57,12 @@ class NetworkConfigTests(unittest.TestCase):
                 env={
                     # Legacy values are intentionally ignored. OAuth clients
                     # are always created through Dynamic Client Registration.
-                    "CODING_TOOLS_MCP_OAUTH_CLIENT_ID": "client",
-                    "CODING_TOOLS_MCP_OAUTH_CLIENT_SECRET": "secret",
-                    "CODING_TOOLS_MCP_OAUTH_PASSWORD": "password",
-                    "CODING_TOOLS_MCP_NETWORK_PROVIDER": "ngrok",
-                    "CODING_TOOLS_MCP_NGROK": "/opt/ngrok",
-                    "CODING_TOOLS_MCP_NGROK_AUTHTOKEN": "token",
+                    "AGENT_RUNTIME_OAUTH_CLIENT_ID": "client",
+                    "AGENT_RUNTIME_OAUTH_CLIENT_SECRET": "secret",
+                    "AGENT_RUNTIME_OAUTH_PASSWORD": "password",
+                    "AGENT_RUNTIME_NETWORK_PROVIDER": "ngrok",
+                    "AGENT_RUNTIME_NGROK": "/opt/ngrok",
+                    "AGENT_RUNTIME_NGROK_AUTHTOKEN": "token",
                 },
             )
         self.assertEqual(config.network.provider, "ngrok")
@@ -76,9 +76,9 @@ class NetworkConfigTests(unittest.TestCase):
             config = LaunchConfig.from_env(
                 workspace=Path(temporary),
                 env={
-                    "CODING_TOOLS_MCP_OAUTH_PASSWORD": "password",
-                    "CODING_TOOLS_MCP_NETWORK_PROVIDER": "external",
-                    "CODING_TOOLS_MCP_SERVER_URL": "https://mcp.example.com",
+                    "AGENT_RUNTIME_OAUTH_PASSWORD": "password",
+                    "AGENT_RUNTIME_NETWORK_PROVIDER": "external",
+                    "AGENT_RUNTIME_SERVER_URL": "https://mcp.example.com",
                 },
             )
         self.assertFalse(hasattr(config, "oauth_client_id"))
@@ -88,10 +88,10 @@ class NetworkConfigTests(unittest.TestCase):
             config = LaunchConfig.from_env(
                 workspace=Path(temporary),
                 env={
-                    "CODING_TOOLS_MCP_OAUTH_PASSWORD": "password",
-                    "CODING_TOOLS_MCP_NETWORK_PROVIDER": "cloudflare",
-                    "CODING_TOOLS_MCP_SERVER_URL": "https://mcp.example.com/company/mcp",
-                    "CODING_TOOLS_MCP_TUNNEL_TOKEN": "company-token",
+                    "AGENT_RUNTIME_OAUTH_PASSWORD": "password",
+                    "AGENT_RUNTIME_NETWORK_PROVIDER": "cloudflare",
+                    "AGENT_RUNTIME_SERVER_URL": "https://mcp.example.com/company/mcp",
+                    "AGENT_RUNTIME_TUNNEL_TOKEN": "company-token",
                 },
             )
 
@@ -151,10 +151,10 @@ class ProviderTests(unittest.TestCase):
         response.__enter__.return_value = response
         with (
             patch(
-                "coding_tools_launcher.launcher.urllib.request.urlopen",
+                "agent_workbench.launcher.urllib.request.urlopen",
                 return_value=response,
             ) as urlopen,
-            patch("coding_tools_launcher.launcher.time.sleep"),
+            patch("agent_workbench.launcher.time.sleep"),
         ):
             launcher._verify_named_tunnel_route(
                 "https://mcp.example.com/company",
@@ -165,21 +165,21 @@ class ProviderTests(unittest.TestCase):
         request = urlopen.call_args_list[0].args[0]
         self.assertTrue(
             request.full_url.startswith(
-                "https://mcp.example.com/company/.well-known/coding-tools-mcp-route-probe?nonce="
+                "https://mcp.example.com/company/.well-known/micromatrix-workbench-route-probe?nonce="
             )
         )
 
     def test_named_tunnel_probe_reports_public_hostname_mismatch(self) -> None:
         launcher = MCPLauncher()
         error = urllib.error.HTTPError(
-            "https://mcp.example.com/company/.well-known/coding-tools-mcp-route-probe",
+            "https://mcp.example.com/company/.well-known/micromatrix-workbench-route-probe",
             404,
             "Not Found",
             None,
             None,
         )
         with patch(
-            "coding_tools_launcher.launcher.urllib.request.urlopen",
+            "agent_workbench.launcher.urllib.request.urlopen",
             side_effect=error,
         ):
             with self.assertRaisesRegex(RuntimeError, "Public Hostname"):
@@ -193,14 +193,14 @@ class ProviderTests(unittest.TestCase):
         logs: list[str] = []
         launcher = MCPLauncher(logs.append)
         error = urllib.error.HTTPError(
-            "https://mcp.example.com/.well-known/coding-tools-mcp-route-probe",
+            "https://mcp.example.com/.well-known/micromatrix-workbench-route-probe",
             403,
             "Forbidden",
             None,
             None,
         )
         with patch(
-            "coding_tools_launcher.launcher.urllib.request.urlopen",
+            "agent_workbench.launcher.urllib.request.urlopen",
             side_effect=error,
         ):
             launcher._verify_named_tunnel_route(

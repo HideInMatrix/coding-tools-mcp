@@ -25,18 +25,18 @@ jobs:
           package-manager-cache: false
 
       - name: Install frontend dependencies
-        working-directory: coding_tools_launcher/web
+        working-directory: agent_workbench/web
         run: npm install --no-package-lock --no-audit --no-fund
 
       - name: Build frontend
-        working-directory: coding_tools_launcher/web
+        working-directory: agent_workbench/web
         run: npm run build
 
       - name: Upload frontend artifact
         uses: actions/upload-artifact@v7
         with:
           name: web-dist
-          path: coding_tools_launcher/web/dist/
+          path: agent_workbench/web/dist/
           if-no-files-found: error
           retention-days: 1
 
@@ -50,32 +50,32 @@ jobs:
           - name: Windows x64
             runner: windows-2025
             python_arch: x64
-            artifact: coding-tools-mcp-windows-x64
+            artifact: micromatrix-workbench-windows-x64
 
           - name: Windows ARM64
             runner: windows-11-arm
             python_arch: arm64
-            artifact: coding-tools-mcp-windows-arm64
+            artifact: micromatrix-workbench-windows-arm64
 
           - name: macOS x64
             runner: macos-15-intel
             python_arch: x64
-            artifact: coding-tools-mcp-macos-x64
+            artifact: micromatrix-workbench-macos-x64
 
           - name: macOS ARM64
             runner: macos-15
             python_arch: arm64
-            artifact: coding-tools-mcp-macos-arm64
+            artifact: micromatrix-workbench-macos-arm64
 
           - name: Linux x64
             runner: ubuntu-24.04
             python_arch: x64
-            artifact: coding-tools-mcp-linux-x64
+            artifact: micromatrix-workbench-linux-x64
 
           - name: Linux ARM64
             runner: ubuntu-24.04-arm
             python_arch: arm64
-            artifact: coding-tools-mcp-linux-arm64
+            artifact: micromatrix-workbench-linux-arm64
 
     runs-on: ${{ matrix.runner }}
     steps:
@@ -132,7 +132,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           path: release-assets
-          pattern: coding-tools-mcp-*
+          pattern: micromatrix-workbench-*
           merge-multiple: true
 
       - name: Publish release assets
@@ -146,6 +146,6 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
           else
             gh release create "$GITHUB_REF_NAME" release-assets/* \
-              --title "Coding Tools MCP $GITHUB_REF_NAME" \
+              --title "MicroMatrix Workbench $GITHUB_REF_NAME" \
               --generate-notes
           fi

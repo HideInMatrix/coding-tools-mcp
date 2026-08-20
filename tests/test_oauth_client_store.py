@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from coding_tools_launcher import oauth_persistence
-from coding_tools_launcher.oauth_client_store import CIMDClientStore, OAuthClientStore
+from agent_workbench import oauth_persistence
+from agent_workbench.oauth_client_store import CIMDClientStore, OAuthClientStore
 
 
 class OAuthClientStoreTests(unittest.TestCase):

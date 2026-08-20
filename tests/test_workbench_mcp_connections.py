@@ -7,10 +7,10 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from mcp_tools_server.runtime import Runtime
-from mcp_tools_server.server import MCPHTTPServer
-from mcp_tools_server.tools import build_tool_registry
-from mcp_tools_server.workbench import (
+from agent_runtime.runtime import Runtime
+from agent_runtime.server import MCPHTTPServer
+from agent_runtime.tools import build_tool_registry
+from agent_runtime.workbench import (
     CapabilityAssetService,
     MCPConnectionService,
     MCPConnectionVersionConflictError,

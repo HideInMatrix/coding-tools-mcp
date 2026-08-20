@@ -6,15 +6,14 @@ import json
 import subprocess
 import tempfile
 import unittest
-import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
 from build_desktop import MACOS_BUNDLE_IDENTIFIER, resolve_build_version
-import coding_tools_launcher.self_update as self_update
-from coding_tools_launcher.self_update import _parse_checksum
-from coding_tools_launcher.version import DEV_VERSION, git_release_version
-from coding_tools_launcher.updates import (
+import agent_workbench.self_update as self_update
+from agent_workbench.self_update import _parse_checksum
+from agent_workbench.version import DEV_VERSION, git_release_version
+from agent_workbench.updates import (
     DEFAULT_GITHUB_DOWNLOAD_PROXY,
     apply_download_proxy,
     fetch_latest_release,
@@ -28,31 +27,37 @@ from scripts.package_release import _create_macos_dmg, platform_label, release_b
 
 
 class UpdateNamingTests(unittest.TestCase):
-    def test_windows_release_package_is_single_executable(self) -> None:
+    def test_windows_release_package_is_inno_installer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             dist = root / "dist"
-            dist.mkdir()
-            source = dist / "Coding Tools MCP.exe"
-            source.write_bytes(b"single-executable")
-            output_base = root / "release" / "Coding-Tools-MCP-windows-x64"
+            source = dist / "MicroMatrix Workbench"
+            source.mkdir(parents=True)
+            (source / "MicroMatrix Workbench.exe").write_bytes(b"onedir-executable")
+            output_base = root / "release" / "MicroMatrix-Workbench-windows-x64"
             output_base.parent.mkdir()
 
-            with patch.object(package_release, "DIST_DIR", dist):
-                packages = package_release.package_windows(output_base)
+            def build_installer(_command: list[str], **_kwargs: object) -> None:
+                Path(f"{output_base}.exe").write_bytes(b"inno-installer")
 
-            executable, legacy_zip = packages
-            self.assertEqual(executable, Path(f"{output_base}.exe"))
-            self.assertEqual(executable.read_bytes(), b"single-executable")
-            self.assertEqual(legacy_zip, Path(f"{output_base}.zip"))
-            with zipfile.ZipFile(legacy_zip) as archive:
-                self.assertEqual(
-                    archive.read("Coding Tools MCP/Coding Tools MCP.exe"),
-                    b"single-executable",
-                )
+            with (
+                patch.object(package_release, "DIST_DIR", dist),
+                patch.object(package_release, "INNO_SCRIPT", root / "installer.iss"),
+                patch.object(package_release, "_resolve_inno_compiler", return_value=Path("ISCC.exe")),
+                patch.object(package_release, "_inno_architecture", return_value="x64compatible"),
+                patch.object(package_release.subprocess, "run", side_effect=build_installer) as run,
+            ):
+                package_release.INNO_SCRIPT.write_text("[Setup]\n", encoding="utf-8")
+                packages = package_release.package_windows(output_base, version="1.2.3")
+
+            self.assertEqual(packages, [Path(f"{output_base}.exe")])
+            self.assertEqual(packages[0].read_bytes(), b"inno-installer")
+            environment = run.call_args.kwargs["env"]
+            self.assertEqual(environment["MICROMATRIX_WORKBENCH_INSTALLER_VERSION"], "1.2.3")
+            self.assertEqual(environment["MICROMATRIX_WORKBENCH_INSTALLER_ARCH"], "x64compatible")
 
     def test_windows_updater_replaces_current_executable_not_install_directory(self) -> None:
-        executable = Path("C:/Portable/Coding Tools MCP.exe")
+        executable = Path("C:/Portable/MicroMatrix Workbench.exe")
         with (
             patch.object(self_update, "is_frozen", return_value=True),
             patch.object(self_update.sys, "platform", "win32"),
@@ -60,19 +65,25 @@ class UpdateNamingTests(unittest.TestCase):
         ):
             self.assertEqual(self_update.current_install_target(), executable.resolve())
 
-    def test_windows_update_helper_uses_file_replacement_and_restart(self) -> None:
-        self.assertNotIn("Expand-Archive", self_update._WINDOWS_HELPER)
-        self.assertIn("Copy-Item -LiteralPath $Package -Destination $Target", self_update._WINDOWS_HELPER)
-        self.assertIn("Start-Process -FilePath $Target -PassThru", self_update._WINDOWS_HELPER)
-        self.assertIn("Stop-Process -Id $ParentPid -Force", self_update._WINDOWS_HELPER)
-        self.assertIn("coding-tools-update-backup", self_update._WINDOWS_HELPER)
+    def test_windows_update_launches_installer_instead_of_replacing_itself(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            installer = Path(temporary) / "MicroMatrix-Workbench-windows-x64.exe"
+            installer.write_bytes(b"installer")
+            with patch("agent_workbench.self_update.subprocess.Popen") as popen:
+                self_update._spawn_windows_installer(installer)
+
+        command = popen.call_args.args[0]
+        self.assertEqual(command[0], str(installer))
+        self.assertIn("/VERYSILENT", command)
+        self.assertIn("/CLOSEAPPLICATIONS", command)
+        self.assertNotIn("powershell.exe", " ".join(command).lower())
 
     def test_macos_dmg_creation_retries_resource_busy_at_fresh_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             staging = root / "staging"
             staging.mkdir()
-            image = root / "release" / "Coding-Tools-MCP-macos-arm64.dmg"
+            image = root / "release" / "MicroMatrix-Workbench-macos-arm64.dmg"
             commands: list[list[str]] = []
 
             def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -133,7 +144,7 @@ class UpdateNamingTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "CODING_TOOLS_RELEASE_VERSION": "v1.2.3",
+                "MICROMATRIX_WORKBENCH_RELEASE_VERSION": "v1.2.3",
                 "GITHUB_REF_NAME": "v0.1.4",
             },
             clear=False,
@@ -145,7 +156,7 @@ class UpdateNamingTests(unittest.TestCase):
             patch.dict(
                 "os.environ",
                 {
-                    "CODING_TOOLS_RELEASE_VERSION": "",
+                    "MICROMATRIX_WORKBENCH_RELEASE_VERSION": "",
                     "GITHUB_REF_NAME": "main",
                 },
                 clear=False,
@@ -161,7 +172,7 @@ class UpdateNamingTests(unittest.TestCase):
             stdout="v0.1.5\n",
             stderr="",
         )
-        with patch("coding_tools_launcher.version.subprocess.run", return_value=completed):
+        with patch("agent_workbench.version.subprocess.run", return_value=completed):
             self.assertEqual(git_release_version(), "0.1.5")
 
     def test_version_comparison(self) -> None:
@@ -172,12 +183,12 @@ class UpdateNamingTests(unittest.TestCase):
 
     def test_release_asset_names_are_versionless_and_normalized(self) -> None:
         expected = {
-            ("Windows", "AMD64"): "Coding-Tools-MCP-windows-x64.exe",
-            ("Windows", "ARM64"): "Coding-Tools-MCP-windows-arm64.exe",
-            ("Darwin", "x86_64"): "Coding-Tools-MCP-macos-x64.dmg",
-            ("Darwin", "arm64"): "Coding-Tools-MCP-macos-arm64.dmg",
-            ("Linux", "x86_64"): "Coding-Tools-MCP-linux-x64.tar.gz",
-            ("Linux", "aarch64"): "Coding-Tools-MCP-linux-arm64.tar.gz",
+            ("Windows", "AMD64"): "MicroMatrix-Workbench-windows-x64.exe",
+            ("Windows", "ARM64"): "MicroMatrix-Workbench-windows-arm64.exe",
+            ("Darwin", "x86_64"): "MicroMatrix-Workbench-macos-x64.dmg",
+            ("Darwin", "arm64"): "MicroMatrix-Workbench-macos-arm64.dmg",
+            ("Linux", "x86_64"): "MicroMatrix-Workbench-linux-x64.tar.gz",
+            ("Linux", "aarch64"): "MicroMatrix-Workbench-linux-arm64.tar.gz",
         }
         for (system, machine), filename in expected.items():
             with self.subTest(system=system, machine=machine):
@@ -190,36 +201,36 @@ class UpdateNamingTests(unittest.TestCase):
     def test_updater_asset_names_use_platform_update_packages(self) -> None:
         self.assertEqual(
             updater_asset_name(system="Darwin", machine="arm64"),
-            "Coding-Tools-MCP-macos-arm64.zip",
+            "MicroMatrix-Workbench-macos-arm64.zip",
         )
         self.assertEqual(
             updater_asset_name(system="Windows", machine="AMD64"),
-            "Coding-Tools-MCP-windows-x64.exe",
+            "MicroMatrix-Workbench-windows-x64.exe",
         )
         self.assertEqual(
             updater_asset_name(system="Linux", machine="x86_64"),
-            "Coding-Tools-MCP-linux-x64.tar.gz",
+            "MicroMatrix-Workbench-linux-x64.tar.gz",
         )
 
     def test_macos_bundle_identifier_is_stable(self) -> None:
         self.assertEqual(
             MACOS_BUNDLE_IDENTIFIER,
-            "org.micromatrix.coding-tools-mcp",
+            "org.micromatrix.workbench",
         )
 
     def test_update_checksum_requires_matching_filename(self) -> None:
         digest = "a" * 64
         self.assertEqual(
             _parse_checksum(
-                f"{digest}  Coding-Tools-MCP-macos-arm64.zip\n",
-                "Coding-Tools-MCP-macos-arm64.zip",
+                f"{digest}  MicroMatrix-Workbench-macos-arm64.zip\n",
+                "MicroMatrix-Workbench-macos-arm64.zip",
             ),
             digest,
         )
         with self.assertRaisesRegex(ValueError, "不匹配"):
             _parse_checksum(
-                f"{digest}  Coding-Tools-MCP-macos-x64.zip\n",
-                "Coding-Tools-MCP-macos-arm64.zip",
+                f"{digest}  MicroMatrix-Workbench-macos-x64.zip\n",
+                "MicroMatrix-Workbench-macos-arm64.zip",
             )
 
     def test_package_platform_labels_match_updater_names(self) -> None:
@@ -232,26 +243,26 @@ class UpdateNamingTests(unittest.TestCase):
         with patch("scripts.package_release.platform_label", return_value="windows-arm64"):
             self.assertEqual(
                 release_base_name(),
-                "Coding-Tools-MCP-windows-arm64",
+                "MicroMatrix-Workbench-windows-arm64",
             )
 
     def test_latest_release_uses_exact_platform_asset(self) -> None:
         payload = {
             "tag_name": "v0.1.4",
-            "html_url": "https://github.com/HideInMatrix/coding-tools-mcp/releases/tag/v0.1.4",
+            "html_url": "https://github.com/HideInMatrix/micromatrix-workbench/releases/tag/v0.1.4",
             "assets": [
                 {
-                    "name": "Coding-Tools-MCP-windows-arm64.exe",
+                    "name": "MicroMatrix-Workbench-windows-arm64.exe",
                     "browser_download_url": (
-                        "https://github.com/HideInMatrix/coding-tools-mcp/releases/download/"
-                        "v0.1.4/Coding-Tools-MCP-windows-arm64.exe"
+                        "https://github.com/HideInMatrix/micromatrix-workbench/releases/download/"
+                        "v0.1.4/MicroMatrix-Workbench-windows-arm64.exe"
                     ),
                 },
                 {
-                    "name": "Coding-Tools-MCP-windows-arm64.exe.sha256",
+                    "name": "MicroMatrix-Workbench-windows-arm64.exe.sha256",
                     "browser_download_url": (
-                        "https://github.com/HideInMatrix/coding-tools-mcp/releases/download/"
-                        "v0.1.4/Coding-Tools-MCP-windows-arm64.exe.sha256"
+                        "https://github.com/HideInMatrix/micromatrix-workbench/releases/download/"
+                        "v0.1.4/MicroMatrix-Workbench-windows-arm64.exe.sha256"
                     ),
                 },
             ],
@@ -259,15 +270,15 @@ class UpdateNamingTests(unittest.TestCase):
         response = io.BytesIO(json.dumps(payload).encode("utf-8"))
         with (
             patch(
-                "coding_tools_launcher.updates.platform_asset_name",
-                return_value="Coding-Tools-MCP-windows-arm64.exe",
+                "agent_workbench.updates.platform_asset_name",
+                return_value="MicroMatrix-Workbench-windows-arm64.exe",
             ),
             patch(
-                "coding_tools_launcher.updates.updater_asset_name",
-                return_value="Coding-Tools-MCP-windows-arm64.exe",
+                "agent_workbench.updates.updater_asset_name",
+                return_value="MicroMatrix-Workbench-windows-arm64.exe",
             ),
             patch(
-                "coding_tools_launcher.updates.urllib.request.urlopen",
+                "agent_workbench.updates.urllib.request.urlopen",
                 return_value=response,
             ),
         ):
@@ -275,10 +286,10 @@ class UpdateNamingTests(unittest.TestCase):
 
         self.assertTrue(info.update_available)
         self.assertEqual(info.latest_version, "0.1.4")
-        self.assertEqual(info.asset_name, "Coding-Tools-MCP-windows-arm64.exe")
-        self.assertTrue(info.download_url.endswith("/Coding-Tools-MCP-windows-arm64.exe"))
-        self.assertEqual(info.update_asset_name, "Coding-Tools-MCP-windows-arm64.exe")
-        self.assertTrue(info.update_download_url.endswith("/Coding-Tools-MCP-windows-arm64.exe"))
+        self.assertEqual(info.asset_name, "MicroMatrix-Workbench-windows-arm64.exe")
+        self.assertTrue(info.download_url.endswith("/MicroMatrix-Workbench-windows-arm64.exe"))
+        self.assertEqual(info.update_asset_name, "MicroMatrix-Workbench-windows-arm64.exe")
+        self.assertTrue(info.update_download_url.endswith("/MicroMatrix-Workbench-windows-arm64.exe"))
         self.assertTrue(info.checksum_url.endswith(".exe.sha256"))
         self.assertTrue(info.download_url.startswith(DEFAULT_GITHUB_DOWNLOAD_PROXY))
         self.assertTrue(info.update_download_url.startswith(DEFAULT_GITHUB_DOWNLOAD_PROXY))
@@ -287,21 +298,21 @@ class UpdateNamingTests(unittest.TestCase):
     def test_latest_release_retries_incomplete_read(self) -> None:
         payload = {
             "tag_name": "v0.2.3",
-            "html_url": "https://github.com/HideInMatrix/coding-tools-mcp/releases/tag/v0.2.3",
+            "html_url": "https://github.com/HideInMatrix/micromatrix-workbench/releases/tag/v0.2.3",
             "assets": [],
         }
         good_response = io.BytesIO(json.dumps(payload).encode("utf-8"))
         incomplete = http.client.IncompleteRead(b'{"tag_name":"v0.2', 10)
         with (
             patch(
-                "coding_tools_launcher.updates.platform_asset_name",
-                return_value="Coding-Tools-MCP-windows-arm64.exe",
+                "agent_workbench.updates.platform_asset_name",
+                return_value="MicroMatrix-Workbench-windows-arm64.exe",
             ),
             patch(
-                "coding_tools_launcher.updates.urllib.request.urlopen",
+                "agent_workbench.updates.urllib.request.urlopen",
                 side_effect=[incomplete, good_response],
             ) as urlopen,
-            patch("coding_tools_launcher.updates.time.sleep") as sleep,
+            patch("agent_workbench.updates.time.sleep") as sleep,
         ):
             info = fetch_latest_release("0.2.2")
 
@@ -314,10 +325,10 @@ class UpdateNamingTests(unittest.TestCase):
         incomplete = http.client.IncompleteRead(b"partial", 100)
         with (
             patch(
-                "coding_tools_launcher.updates.urllib.request.urlopen",
+                "agent_workbench.updates.urllib.request.urlopen",
                 side_effect=incomplete,
             ),
-            patch("coding_tools_launcher.updates.time.sleep"),
+            patch("agent_workbench.updates.time.sleep"),
         ):
             with self.assertRaisesRegex(RuntimeError, "网络响应不完整.*自动重试 3 次"):
                 fetch_latest_release("0.2.2")

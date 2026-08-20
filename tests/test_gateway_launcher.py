@@ -8,21 +8,21 @@ from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
 
-from coding_tools_launcher.config import LaunchInfo, NetworkConfig
-from coding_tools_launcher.gateway_launcher import (
+from agent_workbench.config import LaunchInfo, NetworkConfig
+from agent_workbench.gateway_launcher import (
     GatewayLaunchConfig,
     GatewayLaunchInfo,
     GatewayProfileLaunchInfo,
     MCPGatewayLauncher,
 )
-from coding_tools_launcher.gateway_process import GatewayChildProfile
-from coding_tools_launcher.network.base import NetworkProviderResult
-from mcp_tools_server.local_permission_broker import (
+from agent_workbench.gateway_process import GatewayChildProfile
+from agent_workbench.network.base import NetworkProviderResult
+from agent_runtime.local_permission_broker import (
     BROKER_DIR_ENV,
     BROKER_SECRET_ENV,
     BROKER_SERVER_ID_ENV,
 )
-from mcp_tools_server.route_probe import ROUTE_PROBE_PATH, workspace_fingerprint
+from agent_runtime.route_probe import ROUTE_PROBE_PATH, workspace_fingerprint
 
 
 class _FakeProcess:
@@ -112,10 +112,10 @@ class GatewayLauncherTests(unittest.TestCase):
 
             with (
                 patch(
-                    "coding_tools_launcher.gateway_launcher.create_network_provider",
+                    "agent_workbench.gateway_launcher.create_network_provider",
                     return_value=provider,
                 ),
-                patch("coding_tools_launcher.gateway_launcher.check_port_available"),
+                patch("agent_workbench.gateway_launcher.check_port_available"),
                 patch.object(launcher._gateway, "start", side_effect=fake_gateway_start),
             ):
                 info = launcher.start(
@@ -161,10 +161,10 @@ class GatewayLauncherTests(unittest.TestCase):
 
             with (
                 patch(
-                    "coding_tools_launcher.gateway_launcher.create_network_provider",
+                    "agent_workbench.gateway_launcher.create_network_provider",
                     return_value=provider,
                 ),
-                patch("coding_tools_launcher.gateway_launcher.check_port_available"),
+                patch("agent_workbench.gateway_launcher.check_port_available"),
                 patch.object(launcher._gateway, "start", side_effect=fake_gateway_start),
             ):
                 info = launcher.start(
@@ -198,10 +198,10 @@ class GatewayLauncherTests(unittest.TestCase):
                 launcher._gateway.process = _FakeProcess()  # type: ignore[assignment]
 
             polluted = {
-                "CODING_TOOLS_MCP_OAUTH_PASSWORD": "old-password",
-                "CODING_TOOLS_MCP_SERVER_URL": "https://old.example.com",
-                "CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET": "11" * 32,
-                "CODING_TOOLS_MCP_OAUTH_CLIENT_REGISTRY_FILE": "/tmp/old.json",
+                "AGENT_RUNTIME_OAUTH_PASSWORD": "old-password",
+                "AGENT_RUNTIME_SERVER_URL": "https://old.example.com",
+                "AGENT_RUNTIME_OAUTH_TOKEN_SECRET": "11" * 32,
+                "AGENT_RUNTIME_OAUTH_CLIENT_REGISTRY_FILE": "/tmp/old.json",
                 BROKER_DIR_ENV: "/tmp/old-broker",
                 BROKER_SECRET_ENV: "22" * 32,
                 BROKER_SERVER_ID_ENV: "old-server",
@@ -209,10 +209,10 @@ class GatewayLauncherTests(unittest.TestCase):
             with (
                 patch.dict(os.environ, polluted),
                 patch(
-                    "coding_tools_launcher.gateway_launcher.create_network_provider",
+                    "agent_workbench.gateway_launcher.create_network_provider",
                     return_value=provider,
                 ),
-                patch("coding_tools_launcher.gateway_launcher.check_port_available"),
+                patch("agent_workbench.gateway_launcher.check_port_available"),
                 patch.object(launcher._gateway, "start", side_effect=fake_gateway_start),
             ):
                 launcher.start(
@@ -276,10 +276,10 @@ class GatewayLauncherTests(unittest.TestCase):
 
             with (
                 patch(
-                    "coding_tools_launcher.gateway_launcher.create_network_provider",
+                    "agent_workbench.gateway_launcher.create_network_provider",
                     return_value=provider,
                 ),
-                patch("coding_tools_launcher.gateway_launcher.check_port_available"),
+                patch("agent_workbench.gateway_launcher.check_port_available"),
                 patch.object(launcher._gateway, "start", side_effect=fake_gateway_start),
                 patch.object(launcher, "_diagnose_background"),
             ):
@@ -357,7 +357,7 @@ class GatewayLauncherTests(unittest.TestCase):
 
             headers = Message()
             headers["WWW-Authenticate"] = (
-                'Bearer realm="coding-tools-mcp", '
+                'Bearer realm="micromatrix-workbench", '
                 'resource_metadata="https://mcp.example.com/.well-known/'
                 'oauth-protected-resource/company/mcp"'
             )
@@ -372,7 +372,7 @@ class GatewayLauncherTests(unittest.TestCase):
             with (
                 patch.object(launcher, "_json_get", side_effect=fake_json_get),
                 patch(
-                    "coding_tools_launcher.gateway_launcher.urllib.request.urlopen",
+                    "agent_workbench.gateway_launcher.urllib.request.urlopen",
                     side_effect=unauthorized,
                 ),
             ):

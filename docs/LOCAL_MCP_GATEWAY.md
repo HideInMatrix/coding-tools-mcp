@@ -175,7 +175,7 @@ Desktop Permission Broker 在 Gateway 中也按 Profile 使用不同 `server_id`
 旧架构中的 OAuth Client Registry persistence 曾由进程级环境变量控制：
 
 ```text
-CODING_TOOLS_MCP_OAUTH_CLIENT_REGISTRY_FILE
+AGENT_RUNTIME_OAUTH_CLIENT_REGISTRY_FILE
 ```
 
 这不适合 Gateway，因为一个进程内有多个 Profile。
@@ -224,7 +224,7 @@ MCPGatewayLauncher
             ↓
         mcp_worker
             ↓
-        mcp_tools_server.server
+        agent_runtime.server
             ↓
         --gateway-config <temporary-json>
 ```
@@ -337,8 +337,8 @@ mcp_auth_challenge
 其中最关键的 `public_path_runtime` 会请求：
 
 ```text
-https://mcp.example.com/company/.well-known/coding-tools-mcp-route-probe
-https://mcp.example.com/home/.well-known/coding-tools-mcp-route-probe
+https://mcp.example.com/company/.well-known/micromatrix-workbench-route-probe
+https://mcp.example.com/home/.well-known/micromatrix-workbench-route-probe
 ```
 
 并将返回的 Workspace fingerprint 与桌面端当前 Member Workspace 的 fingerprint 比较，因此可以区分“公网确实到了 Gateway”与“公网 Path 确实到了正确 Runtime”。

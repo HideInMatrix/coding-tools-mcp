@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from coding_tools_launcher import oauth_persistence
+from agent_workbench import oauth_persistence
 
 
 class OAuthPersistenceTests(unittest.TestCase):
@@ -216,7 +216,7 @@ class OAuthPersistenceTests(unittest.TestCase):
             ):
                 oauth_persistence.install_oauth_registry_persistence()
 
-                from mcp_tools_server.oauth import OAuthClientRegistry
+                from agent_runtime.oauth import OAuthClientRegistry
 
                 first = OAuthClientRegistry(registry_file)
                 registered = first.register(
@@ -251,7 +251,7 @@ class OAuthPersistenceTests(unittest.TestCase):
             ):
                 oauth_persistence.install_oauth_registry_persistence()
 
-                from mcp_tools_server.oauth import OAuthClientRegistry
+                from agent_runtime.oauth import OAuthClientRegistry
 
                 registry = OAuthClientRegistry(registry_file)
                 first = registry.register(

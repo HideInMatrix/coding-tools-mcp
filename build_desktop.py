@@ -9,8 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from coding_tools_launcher.resources import bundled_cloudflared_path
-from coding_tools_launcher.version import (
+from agent_workbench.resources import bundled_cloudflared_path
+from agent_workbench.version import (
     BUILD_VERSION_FILENAME,
     DEV_VERSION,
     git_release_version,
@@ -19,10 +19,9 @@ from coding_tools_launcher.version import (
 
 
 ROOT = Path(__file__).resolve().parent
-MACOS_BUNDLE_IDENTIFIER = "org.micromatrix.coding-tools-mcp"
-DEFAULT_WEB_DIR = ROOT / "coding_tools_launcher" / "web"
+MACOS_BUNDLE_IDENTIFIER = "org.micromatrix.workbench"
+DEFAULT_WEB_DIR = ROOT / "agent_workbench" / "web"
 DEFAULT_WEB_DIST = DEFAULT_WEB_DIR / "dist"
-WINDOWS_RUNTIME_TMPDIR = r"%LOCALAPPDATA%\Micromatrix\Coding Tools MCP\runtime"
 
 
 def build_web_frontend() -> None:
@@ -55,14 +54,14 @@ def resolve_web_dist(path: str | None) -> Path:
         raise SystemExit(
             f"找不到前端构建产物: {entrypoint}\n"
             "桌面打包默认复用已构建的 Vue dist。请先执行:\n"
-            "  cd coding_tools_launcher/web && npm install --no-package-lock && npm run build\n"
+            "  cd agent_workbench/web && npm install --no-package-lock && npm run build\n"
             "或使用 build_desktop.py --build-web。"
         )
     return web_dist
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build the Coding Tools MCP desktop bundle.")
+    parser = argparse.ArgumentParser(description="Build the MicroMatrix Workbench desktop bundle.")
     web_source = parser.add_mutually_exclusive_group()
     web_source.add_argument(
         "--build-web",
@@ -72,44 +71,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     web_source.add_argument(
         "--web-dist",
         metavar="PATH",
-        help="Use an existing frontend dist artifact instead of coding_tools_launcher/web/dist.",
+        help="Use an existing frontend dist artifact instead of agent_workbench/web/dist.",
     )
     return parser.parse_args(argv)
 
 
 def pyinstaller_bundle_mode(platform_name: str | None = None) -> str:
     current = (platform_name or sys.platform).lower()
-    return "--onefile" if current.startswith("win") else "--onedir"
-
-
-def pyinstaller_runtime_tmpdir(platform_name: str | None = None) -> str | None:
-    """Return a writable extraction root for Windows onefile bundles.
-
-    PyInstaller's Windows onefile bootloader needs to create its ``_MEI``
-    directory before Python starts.  Some Windows installations expose an
-    unusable TMP/TEMP location, which otherwise terminates the application
-    with ``Could not create temporary directory!`` before our code can run.
-    ``%LOCALAPPDATA%`` is per-user and PyInstaller expands Windows environment
-    variables in ``--runtime-tmpdir`` itself.
-    """
-
-    current = (platform_name or sys.platform).lower()
-    if current.startswith("win"):
-        return WINDOWS_RUNTIME_TMPDIR
-    return None
+    # Windows is intentionally onedir. Updates are installed by Inno Setup,
+    # so the application no longer needs PyInstaller's onefile bootloader or
+    # its parent/child process and temporary extraction lifecycle.
+    return "--onedir"
 
 
 def resolve_build_version() -> str:
     """Resolve the version embedded into the desktop bundle.
 
     Tag builds use GitHub's GITHUB_REF_NAME (for example ``v0.1.4``).
-    CODING_TOOLS_RELEASE_VERSION is provided as an explicit local/CI override.
+    MICROMATRIX_WORKBENCH_RELEASE_VERSION is provided as an explicit local/CI override.
     Local builds use the semantic Git tag attached to HEAD. The version of the
-    mcp_tools_server package is intentionally unrelated to the desktop release.
+    agent_runtime package is intentionally unrelated to the desktop release.
     """
 
     candidates = (
-        os.environ.get("CODING_TOOLS_RELEASE_VERSION", ""),
+        os.environ.get("MICROMATRIX_WORKBENCH_RELEASE_VERSION", ""),
         os.environ.get("GITHUB_REF_NAME", ""),
     )
     for candidate in candidates:
@@ -148,7 +133,6 @@ def main(argv: list[str] | None = None) -> int:
     version_file = write_build_version(build_version)
     separator = ";" if sys.platform.startswith("win") else ":"
     bundle_mode = pyinstaller_bundle_mode()
-    runtime_tmpdir = pyinstaller_runtime_tmpdir()
     command = [
         sys.executable,
         "-m",
@@ -158,22 +142,20 @@ def main(argv: list[str] | None = None) -> int:
         bundle_mode,
         "--windowed",
         "--name",
-        "Coding Tools MCP",
+        "MicroMatrix Workbench",
         "--paths",
         str(ROOT),
         "--collect-submodules",
-        "mcp_tools_server",
+        "agent_runtime",
         "--collect-all",
         "webview",
         "--add-binary",
         f"{cloudflared}{separator}vendor/cloudflared/{cloudflared.parent.name}",
         "--add-data",
-        f"{version_file}{separator}coding_tools_launcher",
+        f"{version_file}{separator}agent_workbench",
         "--add-data",
-        f"{web_dist}{separator}coding_tools_launcher/web/dist",
+        f"{web_dist}{separator}agent_workbench/web/dist",
     ]
-    if runtime_tmpdir:
-        command.extend(["--runtime-tmpdir", runtime_tmpdir])
     if sys.platform == "darwin":
         command.extend(
             [

@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from coding_tools_launcher.permission_broker import DesktopPermissionBroker
-from mcp_tools_server.local_permission_broker import LocalWorkflowApprovalBrokerClient
-from mcp_tools_server.runtime import Runtime
+from agent_workbench.permission_broker import DesktopPermissionBroker
+from agent_runtime.local_permission_broker import LocalWorkflowApprovalBrokerClient
+from agent_runtime.runtime import Runtime
 
 
 class WorkflowApprovalBrokerTests(unittest.TestCase):

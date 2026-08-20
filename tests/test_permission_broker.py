@@ -6,8 +6,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from coding_tools_launcher.permission_broker import DesktopPermissionBroker
-from mcp_tools_server.local_permission_broker import LocalPermissionBrokerClient
+from agent_workbench.permission_broker import DesktopPermissionBroker
+from agent_runtime.local_permission_broker import LocalPermissionBrokerClient
 
 
 class PermissionBrokerTests(unittest.TestCase):

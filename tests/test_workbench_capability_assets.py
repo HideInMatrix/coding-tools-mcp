@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mcp_tools_server.tools import build_tool_registry
-from mcp_tools_server.workbench import (
+from agent_runtime.tools import build_tool_registry
+from agent_runtime.workbench import (
     CapabilityAssetService,
     PromptVersionConflictError,
     ResourceScope,
