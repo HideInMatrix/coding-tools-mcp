@@ -8,15 +8,19 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
 from pathlib import Path
 
-from agent_workbench.version import current_version
-
-
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from agent_workbench.version import current_version  # noqa: E402
+
+
 DIST_DIR = ROOT / "dist"
 APP_NAME = "MicroMatrix Workbench"
 INNO_SCRIPT = ROOT / "deploy" / "windows" / "MicroMatrixWorkbench.iss"

@@ -4,6 +4,7 @@ import io
 import http.client
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,6 +28,19 @@ from scripts.package_release import _create_macos_dmg, platform_label, release_b
 
 
 class UpdateNamingTests(unittest.TestCase):
+    def test_package_release_script_runs_directly_like_ci(self) -> None:
+        root = Path(package_release.__file__).resolve().parent.parent
+        completed = subprocess.run(
+            [sys.executable, str(root / "scripts" / "package_release.py"), "--help"],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("Package the PyInstaller desktop build", completed.stdout)
+
     def test_windows_release_package_is_inno_installer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
