@@ -18,6 +18,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent_runtime import __version__
+from agent_runtime.cimd import (
+    PinnedHTTPSConnection,
+    public_ip_for_host,
+    resolve_oauth_client,
+)
+from agent_runtime.http_mcp import protected_resource_metadata_url
 from agent_runtime.local_permission_broker import (
     BROKER_DIR_ENV,
     BROKER_SECRET_ENV,
@@ -26,11 +32,13 @@ from agent_runtime.local_permission_broker import (
 from agent_runtime.route_probe import ROUTE_PROBE_TOKEN_ENV
 from agent_runtime.oauth import (
     OAUTH_TOKEN_TTL_SECONDS,
-    OAuthConfig,
-    access_token_client_id,
     client_from_metadata_document,
-    create_access_token,
     valid_pkce_challenge,
+)
+from agent_runtime.oauth_service import (
+    OAuthService,
+    access_token_client_id,
+    create_access_token,
     validate_access_token,
 )
 from agent_runtime.protocol import (
@@ -45,9 +53,6 @@ from agent_runtime.sandbox.backend import (
 )
 from agent_runtime.server import MCPHandler, MCPHTTPServer
 from agent_runtime.server import _normalize_public_server_url
-from agent_runtime.server import _protected_resource_metadata_url
-from agent_runtime.server import _public_ip_for_host
-from agent_runtime.server import _resolve_oauth_client
 from agent_runtime.toolchains import ToolchainResolver
 
 
@@ -61,7 +66,7 @@ class CustomMCPServerContractTests(unittest.TestCase):
         self.assertFalse(valid_pkce_challenge("A" * 44))
         self.assertFalse(valid_pkce_challenge("~" * 43))
 
-        config = OAuthConfig(
+        config = OAuthService(
             password="password",
             server_url="https://mcp.example.com",
             token_secret=b"x" * 32,
@@ -70,7 +75,7 @@ class CustomMCPServerContractTests(unittest.TestCase):
             config.registry.register({"redirect_uris": ["myapp://callback"]})
 
     def test_dcr_accepts_and_echoes_application_type(self) -> None:
-        config = OAuthConfig(
+        config = OAuthService(
             password="password",
             server_url="https://mcp.example.com",
             token_secret=b"x" * 32,
@@ -148,26 +153,24 @@ class CustomMCPServerContractTests(unittest.TestCase):
             (2, 1, 6, "", ("198.18.0.14", 443)),
             (30, 1, 6, "", ("::ffff:0:c612:e", 443, 0, 0)),
         ]
-        with patch("agent_runtime.server.socket.getaddrinfo", return_value=fake_answers):
-            self.assertEqual(_public_ip_for_host("chatgpt.com", 443), "198.18.0.14")
+        with patch("agent_runtime.cimd.socket.getaddrinfo", return_value=fake_answers):
+            self.assertEqual(public_ip_for_host("chatgpt.com", 443), "198.18.0.14")
 
         private_answers = [(2, 1, 6, "", ("192.168.1.10", 443))]
-        with patch("agent_runtime.server.socket.getaddrinfo", return_value=private_answers):
+        with patch("agent_runtime.cimd.socket.getaddrinfo", return_value=private_answers):
             with self.assertRaisesRegex(ValueError, "public IP"):
-                _public_ip_for_host("internal.example.com", 443)
+                public_ip_for_host("internal.example.com", 443)
 
     def test_cimd_https_connection_loads_certifi_ca_bundle(self) -> None:
         with (
-            patch("agent_runtime.server.ssl.create_default_context") as create_context,
+            patch("agent_runtime.cimd.ssl.create_default_context") as create_context,
             patch(
-                "agent_runtime.server.certifi",
+                "agent_runtime.cimd.certifi",
                 SimpleNamespace(where=lambda: "/tmp/cacert.pem"),
             ),
         ):
             context = create_context.return_value
-            from agent_runtime.server import _PinnedHTTPSConnection
-
-            _PinnedHTTPSConnection("chatgpt.com", 443, "104.18.32.47", 5.0)
+            PinnedHTTPSConnection("chatgpt.com", 443, "104.18.32.47", 5.0)
 
         context.load_verify_locations.assert_called_once_with(cafile="/tmp/cacert.pem")
 
@@ -176,9 +179,9 @@ class CustomMCPServerContractTests(unittest.TestCase):
             (2, 1, 6, "", ("104.18.32.47", 443)),
             (2, 1, 6, "", ("10.0.0.8", 443)),
         ]
-        with patch("agent_runtime.server.socket.getaddrinfo", return_value=mixed_answers):
+        with patch("agent_runtime.cimd.socket.getaddrinfo", return_value=mixed_answers):
             with self.assertRaisesRegex(ValueError, "public IP"):
-                _public_ip_for_host("mixed.example.com", 443)
+                public_ip_for_host("mixed.example.com", 443)
 
     def test_cimd_client_is_resolved_on_demand_and_cached(self) -> None:
         client_id = "https://client.example.com/oauth/metadata.json"
@@ -188,17 +191,17 @@ class CustomMCPServerContractTests(unittest.TestCase):
             "redirect_uris": ["https://claude.example.com/oauth/callback"],
             "token_endpoint_auth_method": "none",
         }
-        config = OAuthConfig(
+        config = OAuthService(
             password="password",
             server_url="https://mcp.example.com",
             token_secret=b"x" * 32,
         )
         with patch(
-            "agent_runtime.server._fetch_cimd_document",
+            "agent_runtime.cimd.fetch_cimd_document",
             return_value=(metadata, 300),
         ) as fetch:
-            first = _resolve_oauth_client(config, client_id)
-            second = _resolve_oauth_client(config, client_id)
+            first = resolve_oauth_client(config, client_id)
+            second = resolve_oauth_client(config, client_id)
         self.assertIsNotNone(first)
         self.assertIs(first, second)
         fetch.assert_called_once_with(client_id)
@@ -223,18 +226,18 @@ class CustomMCPServerContractTests(unittest.TestCase):
 
     def test_protected_resource_metadata_url_preserves_instance_path(self) -> None:
         self.assertEqual(
-            _protected_resource_metadata_url("https://mcp.example.com/company/mcp"),
+            protected_resource_metadata_url("https://mcp.example.com/company/mcp"),
             "https://mcp.example.com/.well-known/oauth-protected-resource/company/mcp",
         )
 
     def test_handler_instance_path_helpers_are_path_aware(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            config = OAuthConfig(
+            config = OAuthService(
                 password="password",
                 server_url="https://mcp.example.com/company",
                 token_secret=b"h" * 32,
             )
-            runtime = Runtime(Path(temporary), oauth_config=config)
+            runtime = Runtime(Path(temporary), oauth_service=config)
             handler = object.__new__(MCPHandler)
             handler.server = type("FakeServer", (), {"runtime": runtime})()
             try:
@@ -251,7 +254,7 @@ class CustomMCPServerContractTests(unittest.TestCase):
                 )
                 self.assertIn(
                     'action="https://mcp.example.com/company/oauth/authorize"',
-                    handler._authorize_page({}),
+                    handler.oauth_controller.authorize_page(handler, {}),
                 )
             finally:
                 runtime.close()
@@ -2127,12 +2130,12 @@ class RuntimeSafetyTests(unittest.TestCase):
 class HTTPTransportTests(unittest.TestCase):
     def test_protected_resource_metadata_separates_issuer_and_mcp_resource(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            config = OAuthConfig(
+            config = OAuthService(
                 password="password",
                 server_url="https://mcp.example.com",
                 token_secret=b"p" * 32,
             )
-            runtime = Runtime(Path(temporary), oauth_config=config)
+            runtime = Runtime(Path(temporary), oauth_service=config)
             server = MCPHTTPServer(("127.0.0.1", 0), runtime)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -2181,12 +2184,12 @@ class HTTPTransportTests(unittest.TestCase):
 
     def test_instance_path_routes_mcp_oauth_and_well_known_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            config = OAuthConfig(
+            config = OAuthService(
                 password="password",
                 server_url="https://mcp.example.com/company",
                 token_secret=b"i" * 32,
             )
-            runtime = Runtime(Path(temporary), oauth_config=config)
+            runtime = Runtime(Path(temporary), oauth_service=config)
             server = MCPHTTPServer(("127.0.0.1", 0), runtime)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -2250,12 +2253,12 @@ class HTTPTransportTests(unittest.TestCase):
 
     def test_oauth_metadata_advertises_cimd_and_refresh_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            config = OAuthConfig(
+            config = OAuthService(
                 password="password",
                 server_url="https://mcp.example.com",
                 token_secret=b"c" * 32,
             )
-            runtime = Runtime(Path(temporary), oauth_config=config)
+            runtime = Runtime(Path(temporary), oauth_service=config)
             server = MCPHTTPServer(("127.0.0.1", 0), runtime)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -2286,13 +2289,13 @@ class HTTPTransportTests(unittest.TestCase):
 
     def test_oauth_metadata_can_disable_cimd_and_keep_dcr(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            config = OAuthConfig(
+            config = OAuthService(
                 password="password",
                 server_url="https://temporary.example.com",
                 token_secret=b"d" * 32,
                 cimd_enabled=False,
             )
-            runtime = Runtime(Path(temporary), oauth_config=config)
+            runtime = Runtime(Path(temporary), oauth_service=config)
             server = MCPHTTPServer(("127.0.0.1", 0), runtime)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -2309,7 +2312,7 @@ class HTTPTransportTests(unittest.TestCase):
                     "https://temporary.example.com/oauth/register",
                 )
                 self.assertIsNone(
-                    _resolve_oauth_client(
+                    resolve_oauth_client(
                         config,
                         "https://chatgpt.com/oauth/client.json",
                     )
@@ -2321,7 +2324,7 @@ class HTTPTransportTests(unittest.TestCase):
                     }
                 )
                 self.assertIsNotNone(
-                    _resolve_oauth_client(config, registered["client_id"])
+                    resolve_oauth_client(config, registered["client_id"])
                 )
                 connection.close()
             finally:
@@ -2332,7 +2335,7 @@ class HTTPTransportTests(unittest.TestCase):
 
     def test_authorization_response_includes_rfc9207_issuer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            config = OAuthConfig(
+            config = OAuthService(
                 password="password",
                 server_url="https://mcp.example.com",
                 token_secret=b"i" * 32,
@@ -2346,7 +2349,7 @@ class HTTPTransportTests(unittest.TestCase):
             challenge = base64.urlsafe_b64encode(
                 hashlib.sha256(verifier.encode("ascii")).digest()
             ).decode("ascii").rstrip("=")
-            runtime = Runtime(Path(temporary), oauth_config=config)
+            runtime = Runtime(Path(temporary), oauth_service=config)
             server = MCPHTTPServer(("127.0.0.1", 0), runtime)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -2414,7 +2417,7 @@ class HTTPTransportTests(unittest.TestCase):
 
     def test_authenticated_mcp_tools_list_exposes_output_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            config = OAuthConfig(
+            config = OAuthService(
                 password="password",
                 server_url="http://127.0.0.1",
                 token_secret=b"z" * 32,
@@ -2424,7 +2427,7 @@ class HTTPTransportTests(unittest.TestCase):
                 ("http://127.0.0.1/callback",),
                 client_secret=None,
             )
-            runtime = Runtime(Path(temporary), oauth_config=config)
+            runtime = Runtime(Path(temporary), oauth_service=config)
             server = MCPHTTPServer(("127.0.0.1", 0), runtime)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -2489,7 +2492,7 @@ class HTTPTransportTests(unittest.TestCase):
 
     def test_dispatch_exception_returns_json_rpc_internal_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            config = OAuthConfig(
+            config = OAuthService(
                 password="password",
                 server_url="http://127.0.0.1",
                 token_secret=b"d" * 32,
@@ -2499,7 +2502,7 @@ class HTTPTransportTests(unittest.TestCase):
                 ("http://127.0.0.1/callback",),
                 client_secret=None,
             )
-            runtime = Runtime(Path(temporary), oauth_config=config)
+            runtime = Runtime(Path(temporary), oauth_service=config)
             server = MCPHTTPServer(("127.0.0.1", 0), runtime)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -2508,7 +2511,7 @@ class HTTPTransportTests(unittest.TestCase):
                 token = create_access_token(config, "dispatch-test")
                 connection = http.client.HTTPConnection(host, port, timeout=5)
                 with patch(
-                    "agent_runtime.server.dispatch",
+                    "agent_runtime.http_mcp.dispatch",
                     side_effect=ExceptionGroup("transport failure", [RuntimeError("boom")]),
                 ):
                     connection.request(
@@ -2537,7 +2540,7 @@ class HTTPTransportTests(unittest.TestCase):
 
     def test_modern_http_requests_require_and_accept_mirror_headers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            config = OAuthConfig(
+            config = OAuthService(
                 password="password",
                 server_url="http://127.0.0.1",
                 token_secret=b"m" * 32,
@@ -2547,7 +2550,7 @@ class HTTPTransportTests(unittest.TestCase):
                 ("http://127.0.0.1/callback",),
                 client_secret=None,
             )
-            runtime = Runtime(Path(temporary), oauth_config=config)
+            runtime = Runtime(Path(temporary), oauth_service=config)
             server = MCPHTTPServer(("127.0.0.1", 0), runtime)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -2610,7 +2613,7 @@ class HTTPTransportTests(unittest.TestCase):
 
 class OAuthTokenTests(unittest.TestCase):
     def test_signed_access_token_round_trip(self) -> None:
-        config = OAuthConfig(
+        config = OAuthService(
             password="password",
             server_url="https://mcp.example.com",
             token_secret=b"x" * 32,
@@ -2632,7 +2635,7 @@ class OAuthTokenTests(unittest.TestCase):
         self.assertEqual(payload["aud"], "https://mcp.example.com/mcp")
 
     def test_revoked_dynamic_client_invalidates_existing_access_token(self) -> None:
-        config = OAuthConfig(
+        config = OAuthService(
             password="password",
             server_url="https://mcp.example.com",
             token_secret=b"x" * 32,
@@ -2650,12 +2653,12 @@ class OAuthTokenTests(unittest.TestCase):
         self.assertFalse(validate_access_token(config, token))
 
     def test_access_token_is_bound_to_server_resource(self) -> None:
-        config = OAuthConfig(
+        config = OAuthService(
             password="password",
             server_url="https://mcp.example.com",
             token_secret=b"x" * 32,
         )
-        other = OAuthConfig(
+        other = OAuthService(
             password="password",
             server_url="https://other.example.com",
             token_secret=b"x" * 32,
@@ -2670,49 +2673,8 @@ class OAuthTokenTests(unittest.TestCase):
         self.assertTrue(validate_access_token(config, token))
         self.assertFalse(validate_access_token(other, token))
 
-    def test_pre_split_access_token_remains_valid_during_compatibility_window(self) -> None:
-        config = OAuthConfig(
-            password="password",
-            server_url="https://mcp.example.com",
-            token_secret=b"x" * 32,
-        )
-        config.registry.add_preregistered(
-            "client-1",
-            ("http://127.0.0.1/callback",),
-            client_secret=None,
-        )
-        payload = {
-            "sub": "client-1",
-            "client_id": "client-1",
-            "iat": int(time.time()),
-            "exp": int(time.time()) + 3600,
-            "scope": "mcp",
-            "iss": "https://mcp.example.com",
-            "aud": "https://mcp.example.com",
-        }
-        encoded = base64.urlsafe_b64encode(
-            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-        ).decode("ascii").rstrip("=")
-        signature = base64.urlsafe_b64encode(
-            hmac.new(b"x" * 32, encoded.encode("ascii"), hashlib.sha256).digest()
-        ).decode("ascii").rstrip("=")
-        self.assertTrue(validate_access_token(config, f"ctm1.{encoded}.{signature}"))
-
-    def test_oauth_resource_accepts_base_and_mcp_endpoint_alias(self) -> None:
-        config = OAuthConfig(
-            password="password",
-            server_url="https://mcp.example.com",
-            token_secret=b"x" * 32,
-        )
-        self.assertEqual(config.issuer, "https://mcp.example.com")
-        self.assertEqual(config.resource, "https://mcp.example.com/mcp")
-        self.assertEqual(
-            config.normalize_resource("https://mcp.example.com"),
-            "https://mcp.example.com/mcp",
-        )
-
     def test_refresh_token_is_single_use_and_rotated(self) -> None:
-        config = OAuthConfig(
+        config = OAuthService(
             password="password",
             server_url="https://mcp.example.com",
             token_secret=b"x" * 32,
@@ -2740,13 +2702,13 @@ class OAuthTokenTests(unittest.TestCase):
         )
 
     def test_refresh_token_survives_process_restart_with_same_token_secret(self) -> None:
-        first = OAuthConfig(
+        first = OAuthService(
             password="password",
             server_url="https://mcp.example.com",
             token_secret=b"r" * 32,
         )
         token = first.issue_refresh_token("client-1", first.resource)
-        second = OAuthConfig(
+        second = OAuthService(
             password="password",
             server_url="https://mcp.example.com",
             token_secret=b"r" * 32,
@@ -2764,7 +2726,7 @@ class OAuthTokenTests(unittest.TestCase):
 class OAuthRefreshHTTPTests(unittest.TestCase):
     def test_authorization_code_issues_refresh_token_and_refresh_rotates_it(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            config = OAuthConfig(
+            config = OAuthService(
                 password="password",
                 server_url="http://127.0.0.1",
                 token_secret=b"r" * 32,
@@ -2784,7 +2746,7 @@ class OAuthRefreshHTTPTests(unittest.TestCase):
                 challenge,
                 config.resource,
             )
-            runtime = Runtime(Path(temporary), oauth_config=config)
+            runtime = Runtime(Path(temporary), oauth_service=config)
             server = MCPHTTPServer(("127.0.0.1", 0), runtime)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()

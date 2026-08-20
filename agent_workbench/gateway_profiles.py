@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
-from typing import Any
+from typing import Any, Mapping
 
 from agent_runtime.gateway import normalize_instance_path
 
@@ -236,6 +236,46 @@ class MCPGatewayProfile:
         return GatewayLaunchConfig(
             network=value.network,
             profiles=tuple(member.to_child_profile() for member in value.members),
+            mode=value.mode,
+            host=value.host,
+            port=value.port,
+        ).validated()
+
+    def runtime_launch_config(
+        self,
+        *,
+        network: NetworkConfig | None = None,
+        oauth_passwords: Mapping[str, str] | None = None,
+    ) -> GatewayLaunchConfig:
+        """Build a runtime config while preserving the saved Gateway identity."""
+
+        value = self.validated()
+        runtime_network = (network or value.network).validated()
+        if (
+            runtime_network.provider != value.network.provider
+            or runtime_network.public_url != value.network.public_url
+        ):
+            raise ValueError("运行配置与已保存 Gateway 不一致，请先保存配置。")
+        passwords = oauth_passwords or {}
+        profiles = tuple(
+            GatewayChildProfile(
+                server_id=member.server_id,
+                name=member.name,
+                workspace=member.workspace,
+                oauth_password=str(
+                    passwords.get(member.server_id) or member.oauth_password
+                ),
+                instance_path=member.instance_path,
+                permission_mode=member.permission_mode,
+                lifecycle=member.lifecycle,
+                allow_network=member.allow_network,
+                enable_view_image=member.enable_view_image,
+            )
+            for member in value.members
+        )
+        return GatewayLaunchConfig(
+            network=runtime_network,
+            profiles=profiles,
             mode=value.mode,
             host=value.host,
             port=value.port,

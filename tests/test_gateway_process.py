@@ -82,9 +82,6 @@ class GatewayProcessTests(unittest.TestCase):
                     "agent_workbench.gateway_process.prepare_issuer_oauth_persistence",
                     side_effect=persistence_for_issuer,
                 ),
-                patch(
-                    "agent_workbench.gateway_process.migrate_oauth_storage_to_issuer"
-                ),
                 patch("agent_workbench.gateway_process.bind_server_oauth_issuer"),
             ):
                 prepared = prepare_gateway_config(config)
@@ -183,9 +180,6 @@ class GatewayProcessTests(unittest.TestCase):
                     patch(
                         "agent_workbench.gateway_process.prepare_issuer_oauth_persistence",
                         side_effect=lambda issuer: persistence_by_issuer[issuer],
-                    ),
-                    patch(
-                        "agent_workbench.gateway_process.migrate_oauth_storage_to_issuer"
                     ),
                     patch("agent_workbench.gateway_process.bind_server_oauth_issuer"),
                 ):

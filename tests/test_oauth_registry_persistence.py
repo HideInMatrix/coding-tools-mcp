@@ -4,12 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_workbench.oauth_persistence import install_oauth_registry_persistence
 from agent_runtime.oauth import (
     OAuthClient,
     OAuthClientRegistry,
-    OAuthConfig,
     OAuthObservedClientRegistry,
+)
+from agent_runtime.oauth_service import (
+    OAuthService,
     create_access_token,
     validate_access_token,
 )
@@ -57,17 +58,12 @@ class OAuthRegistryPersistenceTests(unittest.TestCase):
             self.assertEqual(reloaded.clear(), 1)
             self.assertEqual(OAuthClientRegistry(path).list_clients(), ())
 
-    def test_launcher_monkeypatch_hook_is_a_noop_for_builtin_persistence(self) -> None:
-        original_init = OAuthClientRegistry.__init__
-        install_oauth_registry_persistence()
-        self.assertIs(OAuthClientRegistry.__init__, original_init)
-
     def test_valid_cimd_access_token_is_observed_without_becoming_dcr(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             dcr_file = root / "clients.json"
             cimd_file = root / "cimd-clients.json"
-            config = OAuthConfig(
+            config = OAuthService(
                 password="password",
                 server_url="https://mcp.example.com",
                 token_secret=b"x" * 32,

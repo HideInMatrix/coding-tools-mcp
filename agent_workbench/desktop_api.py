@@ -10,21 +10,16 @@ from urllib.parse import urlsplit
 
 from .config import LaunchConfig, NetworkConfig
 from .executables import resolve_executable
-from .gateway_launcher import GatewayLaunchConfig
 from .gateway_manager import MCPGatewayManager
 from .gateway_profiles import (
     GatewayProfileStore,
     MCPGatewayMember,
     MCPGatewayProfile,
 )
-from .gateway_process import GatewayChildProfile
 from .oauth_persistence import (
-    bind_server_oauth_issuer,
     bound_server_oauth_issuer,
-    canonical_oauth_issuer,
     delete_issuer_oauth_storage,
     delete_server_oauth_storage,
-    migrate_oauth_storage_to_issuer,
 )
 from .permission_broker import DesktopPermissionBroker
 from .server_manager import MCPServerManager
@@ -84,7 +79,6 @@ class DesktopAPI:
         self._window: Any | None = None
         self._permission_attention_id = ""
         self._workflow_approval_attention_id = ""
-        self._migrate_legacy_desktop_settings()
 
     def _bind_window(self, window: Any) -> None:
         self._window = window
@@ -603,66 +597,6 @@ class DesktopAPI:
         self._latest_release = None
         return normalized
 
-    def _migrate_legacy_desktop_settings(self) -> None:
-        if self.store.list():
-            return
-        settings = load_settings()
-        workspace = str(settings.get("workspace") or "").strip()
-        if not workspace:
-            return
-
-        raw_network = settings.get("network")
-        network_settings = raw_network if isinstance(raw_network, dict) else {}
-        provider = str(
-            settings.get("network_provider")
-            or network_settings.get("provider")
-            or "cloudflare"
-        )
-        provider_settings_raw = network_settings.get(provider)
-        provider_settings = (
-            provider_settings_raw if isinstance(provider_settings_raw, dict) else {}
-        )
-
-        public_url = str(provider_settings.get("public_url") or "")
-        if provider == "cloudflare" and not public_url:
-            public_url = str(settings.get("server_url") or "")
-
-        options: dict[str, str] = {}
-        for key in ("tunnel_token", "executable", "config_file", "authtoken"):
-            value = provider_settings.get(key)
-            if value:
-                options[key] = str(value)
-        if provider == "cloudflare" and "tunnel_token" not in options:
-            value = settings.get("tunnel_token")
-            if value:
-                options["tunnel_token"] = str(value)
-
-        try:
-            network = NetworkConfig(
-                provider=provider,
-                public_url=public_url,
-                options=options,
-            ).validated()
-            profile = self.store.create(
-                name="默认服务",
-                workspace=Path(workspace),
-                oauth_password=str(settings.get("password") or ""),
-                network=network,
-                port=8234,
-                lifecycle=default_lifecycle(network),
-            )
-            if network.public_url:
-                issuer = canonical_oauth_issuer(network.public_url)
-                migrate_oauth_storage_to_issuer(
-                    issuer,
-                    server_id=profile.server_id,
-                )
-                bind_server_oauth_issuer(profile.server_id, issuer)
-            self._save_selected_server_id(profile.server_id)
-            self._append_log(f"已将旧版桌面配置迁移为 Server Profile: {profile.name}")
-        except Exception as exc:
-            self._append_log(f"旧版桌面配置自动迁移失败: {exc}")
-
     def bootstrap(self) -> dict[str, object]:
         profiles = self.store.list()
         gateways = self.gateway_store.list()
@@ -887,6 +821,107 @@ class DesktopAPI:
         )
         return self._gateway_payload(gateway)
 
+    def _updated_gateway_members(
+        self,
+        current: MCPGatewayProfile,
+        raw_members: object,
+        *,
+        lifecycle: str,
+        remember_secrets: bool,
+    ) -> tuple[tuple[MCPGatewayMember, ...], tuple[MCPGatewayMember, ...]]:
+        current_by_id = {member.server_id: member for member in current.members}
+        if raw_members is None:
+            raw_members = [member.to_dict() for member in current.members]
+        if not isinstance(raw_members, list) or not raw_members:
+            raise ValueError("Gateway 至少需要一个 Member。")
+        members = tuple(
+            self._gateway_member_from_payload(
+                raw if isinstance(raw, dict) else {},
+                lifecycle=lifecycle,
+                remember_secrets=remember_secrets,
+                current=current_by_id.get(
+                    str(raw.get("server_id") or "")
+                    if isinstance(raw, dict)
+                    else ""
+                ),
+            )
+            for raw in raw_members
+        )
+        member_ids = {member.server_id for member in members}
+        removed = tuple(
+            member for member in current.members if member.server_id not in member_ids
+        )
+        return members, removed
+
+    def _cleanup_removed_gateway_members(
+        self,
+        removed_members: tuple[MCPGatewayMember, ...],
+    ) -> None:
+        issuers = {
+            member.server_id: bound_server_oauth_issuer(member.server_id)
+            for member in removed_members
+        }
+        for member in removed_members:
+            self.permission_broker.clear_server(member.server_id)
+            delete_server_oauth_storage(member.server_id)
+            issuer = issuers.get(member.server_id)
+            if issuer and not self._oauth_identity_still_referenced(issuer):
+                delete_issuer_oauth_storage(issuer)
+
+    def _promoted_gateway_members(
+        self,
+        current: MCPServerProfile,
+        raw_members: object,
+        *,
+        lifecycle: str,
+        remember_secrets: bool,
+    ) -> tuple[MCPGatewayMember, ...]:
+        if not isinstance(raw_members, list) or not raw_members:
+            raise ValueError("服务至少需要一个 Workspace Profile。")
+        members: list[MCPGatewayMember] = []
+        root_seen = False
+        for raw in raw_members:
+            value = raw if isinstance(raw, dict) else {}
+            instance_path = str(value.get("instance_path") or "")
+            if instance_path.strip().strip("/"):
+                members.append(
+                    self._gateway_member_from_payload(
+                        value,
+                        lifecycle=lifecycle,
+                        remember_secrets=remember_secrets,
+                    )
+                )
+                continue
+            if root_seen:
+                raise ValueError("一个服务只能有一个根 Workspace Profile。")
+            root_seen = True
+            members.append(
+                MCPGatewayMember(
+                    server_id=current.server_id,
+                    name=str(value.get("name") or current.name),
+                    workspace=Path(str(value.get("workspace") or current.workspace)),
+                    oauth_password=(
+                        str(value.get("oauth_password") or current.oauth_password)
+                        if remember_secrets
+                        else ""
+                    ),
+                    instance_path="",
+                    permission_mode=str(
+                        value.get("permission_mode") or current.permission_mode
+                    ),
+                    lifecycle=lifecycle,
+                    allow_network=bool(value.get("allow_network", False)),
+                    enable_view_image=bool(value.get("enable_view_image", True)),
+                ).validated()
+            )
+        if not root_seen:
+            raise ValueError(
+                "从单 Workspace 升级时必须保留原来的根 Workspace Profile。"
+            )
+        if len(members) < 2:
+            raise ValueError("没有新增子 Profile，无需切换到多 Workspace Runtime。")
+        return tuple(members)
+
     def update_gateway(
         self,
         gateway_id: str,
@@ -908,39 +943,18 @@ class DesktopAPI:
             port=port,
         )
         lifecycle = default_lifecycle(network)
-        raw_members = payload.get("members")
-        current_by_id = {member.server_id: member for member in current.members}
-        if raw_members is None:
-            raw_members = [member.to_dict() for member in current.members]
-        if not isinstance(raw_members, list) or not raw_members:
-            raise ValueError("Gateway 至少需要一个 Member。")
-        members: list[MCPGatewayMember] = []
-        for raw in raw_members:
-            raw_dict = raw if isinstance(raw, dict) else {}
-            member_id = str(raw_dict.get("server_id") or "")
-            members.append(
-                self._gateway_member_from_payload(
-                    raw_dict,
-                    lifecycle=lifecycle,
-                    remember_secrets=remember,
-                    current=current_by_id.get(member_id),
-                )
-            )
-        removed_members = [
-            member
-            for member in current.members
-            if member.server_id not in {item.server_id for item in members}
-        ]
-        removed_issuers = {
-            member.server_id: bound_server_oauth_issuer(member.server_id)
-            for member in removed_members
-        }
+        members, removed_members = self._updated_gateway_members(
+            current,
+            payload.get("members"),
+            lifecycle=lifecycle,
+            remember_secrets=remember,
+        )
         gateway = self.gateway_store.save(
             MCPGatewayProfile(
                 gateway_id=current.gateway_id,
                 name=str(payload.get("name") or current.name),
                 network=self._persistable_network(network, remember),
-                members=tuple(members),
+                members=members,
                 mode=str(payload.get("mode") or current.mode),
                 host=host,
                 port=port,
@@ -948,12 +962,7 @@ class DesktopAPI:
                 updated_at=current.updated_at,
             )
         )
-        for member in removed_members:
-            self.permission_broker.clear_server(member.server_id)
-            delete_server_oauth_storage(member.server_id)
-            issuer = removed_issuers.get(member.server_id)
-            if issuer and not self._oauth_identity_still_referenced(issuer):
-                delete_issuer_oauth_storage(issuer)
+        self._cleanup_removed_gateway_members(removed_members)
         return self._gateway_payload(gateway)
 
     def promote_server_to_gateway(
@@ -984,69 +993,20 @@ class DesktopAPI:
             port=port,
             ignore_server_id=server_id,
         )
-        raw_members = payload.get("members")
-        if not isinstance(raw_members, list) or not raw_members:
-            raise ValueError("服务至少需要一个 Workspace Profile。")
-
         lifecycle = default_lifecycle(network)
-        members: list[MCPGatewayMember] = []
-        root_seen = False
-        for raw in raw_members:
-            value = raw if isinstance(raw, dict) else {}
-            instance_path = str(value.get("instance_path") or "")
-            if not instance_path.strip().strip("/"):
-                if root_seen:
-                    raise ValueError("一个服务只能有一个根 Workspace Profile。")
-                root_seen = True
-                members.append(
-                    MCPGatewayMember(
-                        server_id=current.server_id,
-                        name=str(value.get("name") or current.name),
-                        workspace=Path(
-                            str(value.get("workspace") or current.workspace)
-                        ),
-                        oauth_password=(
-                            str(
-                                value.get("oauth_password")
-                                or current.oauth_password
-                            )
-                            if remember
-                            else ""
-                        ),
-                        instance_path="",
-                        permission_mode=str(
-                            value.get("permission_mode")
-                            or current.permission_mode
-                        ),
-                        lifecycle=lifecycle,
-                        allow_network=bool(value.get("allow_network", False)),
-                        enable_view_image=bool(
-                            value.get("enable_view_image", True)
-                        ),
-                    ).validated()
-                )
-                continue
-            members.append(
-                self._gateway_member_from_payload(
-                    value,
-                    lifecycle=lifecycle,
-                    remember_secrets=remember,
-                )
-            )
-
-        if not root_seen:
-            raise ValueError(
-                "从单 Workspace 升级时必须保留原来的根 Workspace Profile。"
-            )
-        if len(members) < 2:
-            raise ValueError("没有新增子 Profile，无需切换到多 Workspace Runtime。")
+        members = self._promoted_gateway_members(
+            current,
+            payload.get("members"),
+            lifecycle=lifecycle,
+            remember_secrets=remember,
+        )
 
         gateway = self.gateway_store.save(
             MCPGatewayProfile(
                 gateway_id=current.server_id,
                 name=str(payload.get("name") or current.name),
                 network=self._persistable_network(network, remember),
-                members=tuple(members),
+                members=members,
                 mode=str(payload.get("mode") or "multi"),
                 host=host,
                 port=port,
@@ -1103,11 +1063,6 @@ class DesktopAPI:
             raw_network = runtime_payload.get("network")
             network_payload = raw_network if isinstance(raw_network, dict) else {}
             runtime_network = self._network_from_payload(network_payload)
-            if (
-                runtime_network.provider != gateway.network.provider
-                or runtime_network.public_url != gateway.network.public_url
-            ):
-                raise ValueError("运行配置与已保存 Gateway 不一致，请先保存配置。")
             merged_options = dict(gateway.network.options)
             for key, value in runtime_network.options.items():
                 if value:
@@ -1118,40 +1073,20 @@ class DesktopAPI:
                 options=merged_options,
             ).validated()
             raw_members = runtime_payload.get("members")
-            overrides: dict[str, dict[str, object]] = {}
+            oauth_passwords: dict[str, str] = {}
             if isinstance(raw_members, list):
                 for raw in raw_members:
                     if not isinstance(raw, dict):
                         continue
                     server_id = str(raw.get("server_id") or "")
                     if server_id:
-                        overrides[server_id] = raw
-            profiles: list[GatewayChildProfile] = []
-            for member in gateway.members:
-                override = overrides.get(member.server_id, {})
-                profiles.append(
-                    GatewayChildProfile(
-                        server_id=member.server_id,
-                        name=member.name,
-                        workspace=member.workspace,
-                        oauth_password=str(
-                            override.get("oauth_password")
-                            or member.oauth_password
-                        ),
-                        instance_path=member.instance_path,
-                        permission_mode=member.permission_mode,
-                        lifecycle=member.lifecycle,
-                        allow_network=member.allow_network,
-                        enable_view_image=member.enable_view_image,
-                    )
-                )
-            config = GatewayLaunchConfig(
+                        oauth_passwords[server_id] = str(
+                            raw.get("oauth_password") or ""
+                        )
+            config = gateway.runtime_launch_config(
                 network=network,
-                profiles=tuple(profiles),
-                mode=gateway.mode,
-                host=gateway.host,
-                port=gateway.port,
-            ).validated()
+                oauth_passwords=oauth_passwords,
+            )
             self.gateway_manager.start_config(gateway_id, config)
         else:
             self.gateway_manager.start(gateway_id)

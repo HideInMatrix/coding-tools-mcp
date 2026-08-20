@@ -9,7 +9,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ..local_permission_broker import LocalPermissionBrokerClient
-from ..oauth import OAuthClientRegistry, OAuthConfig, OAuthObservedClientRegistry
+from ..oauth import OAuthClientRegistry, OAuthObservedClientRegistry
+from ..oauth_service import OAuthService
 from ..runtime import Runtime
 from .models import GatewayProfile
 from .registry import GatewayProfileRegistry
@@ -201,7 +202,7 @@ def build_gateway_runtime_pool(
             profile.workspace,
             permission_mode=profile.permission_mode,
             allow_network=profile.allow_network,
-            oauth_config=OAuthConfig(
+            oauth_service=OAuthService(
                 password=oauth.password,
                 server_url=oauth.server_url,
                 token_secret=bytes.fromhex(oauth.token_secret_hex),

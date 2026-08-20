@@ -266,6 +266,101 @@ class MCPGatewayLauncher:
                 raise RuntimeError(f"诊断端点返回了非对象 JSON: {url}")
             return raw, {key.lower(): value for key, value in response.headers.items()}
 
+    def _check_runtime_probe(
+        self,
+        url: str,
+        *,
+        route_probe_token: str,
+        expected_fingerprint: str,
+        mismatch_message: str,
+    ) -> None:
+        payload, _ = self._json_get(
+            url,
+            headers={ROUTE_PROBE_HEADER: route_probe_token},
+        )
+        if payload.get("workspace_fingerprint") != expected_fingerprint:
+            raise RuntimeError(mismatch_message)
+
+    def _check_server_card(
+        self,
+        info: GatewayLaunchInfo,
+        profile: GatewayProfileLaunchInfo,
+    ) -> None:
+        card, _ = self._json_get(
+            f"{info.public_base_url}{profile.instance_path}/"
+        )
+        transport = card.get("transport")
+        endpoint = transport.get("endpoint") if isinstance(transport, dict) else None
+        if endpoint != f"{profile.instance_path}/mcp":
+            raise RuntimeError(f"Server Card endpoint 不匹配: {endpoint}")
+
+    def _check_oauth_authorization_metadata(
+        self,
+        info: GatewayLaunchInfo,
+        profile: GatewayProfileLaunchInfo,
+    ) -> None:
+        url = (
+            f"{info.public_base_url}/.well-known/oauth-authorization-server"
+            f"{profile.instance_path}"
+        )
+        metadata, _ = self._json_get(url)
+        expected_issuer = profile.oauth_issuer
+        if metadata.get("issuer") != expected_issuer:
+            raise RuntimeError(f"OAuth issuer 不匹配: {metadata.get('issuer')}")
+        if metadata.get("authorization_endpoint") != f"{expected_issuer}/oauth/authorize":
+            raise RuntimeError("OAuth authorization_endpoint 不匹配")
+        if metadata.get("token_endpoint") != f"{expected_issuer}/oauth/token":
+            raise RuntimeError("OAuth token_endpoint 不匹配")
+
+    @staticmethod
+    def _protected_metadata_url(
+        info: GatewayLaunchInfo,
+        profile: GatewayProfileLaunchInfo,
+    ) -> str:
+        return (
+            f"{info.public_base_url}/.well-known/oauth-protected-resource"
+            f"{profile.instance_path}/mcp"
+        )
+
+    def _check_oauth_protected_resource(
+        self,
+        info: GatewayLaunchInfo,
+        profile: GatewayProfileLaunchInfo,
+    ) -> None:
+        metadata, _ = self._json_get(self._protected_metadata_url(info, profile))
+        if metadata.get("resource") != profile.public_mcp_url:
+            raise RuntimeError(f"OAuth protected resource 不匹配: {metadata.get('resource')}")
+        authorization_servers = metadata.get("authorization_servers")
+        if (
+            not isinstance(authorization_servers, list)
+            or profile.oauth_issuer not in authorization_servers
+        ):
+            raise RuntimeError("OAuth authorization_servers 未包含当前 Profile issuer")
+
+    def _check_mcp_auth_challenge(
+        self,
+        info: GatewayLaunchInfo,
+        profile: GatewayProfileLaunchInfo,
+    ) -> None:
+        request = urllib.request.Request(
+            profile.public_mcp_url,
+            headers={"Cache-Control": "no-cache"},
+            method="GET",
+        )
+        try:
+            urllib.request.urlopen(
+                request,
+                timeout=5.0,
+                context=self._ssl_context(),
+            ).close()
+            raise RuntimeError("未授权 MCP GET 意外成功")
+        except urllib.error.HTTPError as exc:
+            if exc.code != 401:
+                raise RuntimeError(f"未授权 MCP GET 返回 HTTP {exc.code}") from exc
+            challenge = exc.headers.get("WWW-Authenticate", "")
+            if self._protected_metadata_url(info, profile) not in challenge:
+                raise RuntimeError("WWW-Authenticate resource_metadata 不匹配")
+
     def _profile_diagnostic(
         self,
         info: GatewayLaunchInfo,
@@ -281,89 +376,49 @@ class MCPGatewayLauncher:
         public_probe = (
             f"{info.public_base_url}{profile.instance_path}{ROUTE_PROBE_PATH}"
         )
-        probe_headers = {ROUTE_PROBE_HEADER: route_probe_token}
 
         try:
-            payload, _ = self._json_get(local_probe, headers=probe_headers)
-            if payload.get("workspace_fingerprint") != expected_fingerprint:
-                raise RuntimeError("本地 Path 命中了错误的 Workspace Runtime")
+            self._check_runtime_probe(
+                local_probe,
+                route_probe_token=route_probe_token,
+                expected_fingerprint=expected_fingerprint,
+                mismatch_message="本地 Path 命中了错误的 Workspace Runtime",
+            )
             checks.append("local_path_runtime")
         except Exception as exc:  # noqa: BLE001 - aggregate diagnostic failures
             errors.append(f"local_path_runtime: {exc}")
 
         try:
-            payload, _ = self._json_get(public_probe, headers=probe_headers)
-            if payload.get("workspace_fingerprint") != expected_fingerprint:
-                raise RuntimeError("公网 Path 命中了错误的 Workspace Runtime")
+            self._check_runtime_probe(
+                public_probe,
+                route_probe_token=route_probe_token,
+                expected_fingerprint=expected_fingerprint,
+                mismatch_message="公网 Path 命中了错误的 Workspace Runtime",
+            )
             checks.append("public_path_runtime")
         except Exception as exc:  # noqa: BLE001 - aggregate diagnostic failures
             errors.append(f"public_path_runtime: {exc}")
 
         try:
-            card, _ = self._json_get(
-                f"{info.public_base_url}{profile.instance_path}/"
-            )
-            transport = card.get("transport")
-            endpoint = transport.get("endpoint") if isinstance(transport, dict) else None
-            if endpoint != f"{profile.instance_path}/mcp":
-                raise RuntimeError(f"Server Card endpoint 不匹配: {endpoint}")
+            self._check_server_card(info, profile)
             checks.append("server_card")
         except Exception as exc:  # noqa: BLE001
             errors.append(f"server_card: {exc}")
 
-        authorization_metadata_url = (
-            f"{info.public_base_url}/.well-known/oauth-authorization-server"
-            f"{profile.instance_path}"
-        )
         try:
-            metadata, _ = self._json_get(authorization_metadata_url)
-            expected_issuer = profile.oauth_issuer
-            expected_authorize = f"{expected_issuer}/oauth/authorize"
-            expected_token = f"{expected_issuer}/oauth/token"
-            if metadata.get("issuer") != expected_issuer:
-                raise RuntimeError(f"OAuth issuer 不匹配: {metadata.get('issuer')}")
-            if metadata.get("authorization_endpoint") != expected_authorize:
-                raise RuntimeError("OAuth authorization_endpoint 不匹配")
-            if metadata.get("token_endpoint") != expected_token:
-                raise RuntimeError("OAuth token_endpoint 不匹配")
+            self._check_oauth_authorization_metadata(info, profile)
             checks.append("oauth_authorization_metadata")
         except Exception as exc:  # noqa: BLE001
             errors.append(f"oauth_authorization_metadata: {exc}")
 
-        protected_metadata_url = (
-            f"{info.public_base_url}/.well-known/oauth-protected-resource"
-            f"{profile.instance_path}/mcp"
-        )
         try:
-            metadata, _ = self._json_get(protected_metadata_url)
-            if metadata.get("resource") != profile.public_mcp_url:
-                raise RuntimeError(f"OAuth protected resource 不匹配: {metadata.get('resource')}")
-            authorization_servers = metadata.get("authorization_servers")
-            if not isinstance(authorization_servers, list) or profile.oauth_issuer not in authorization_servers:
-                raise RuntimeError("OAuth authorization_servers 未包含当前 Profile issuer")
+            self._check_oauth_protected_resource(info, profile)
             checks.append("oauth_protected_resource")
         except Exception as exc:  # noqa: BLE001
             errors.append(f"oauth_protected_resource: {exc}")
 
         try:
-            request = urllib.request.Request(
-                profile.public_mcp_url,
-                headers={"Cache-Control": "no-cache"},
-                method="GET",
-            )
-            try:
-                urllib.request.urlopen(
-                    request,
-                    timeout=5.0,
-                    context=self._ssl_context(),
-                ).close()
-                raise RuntimeError("未授权 MCP GET 意外成功")
-            except urllib.error.HTTPError as exc:
-                if exc.code != 401:
-                    raise RuntimeError(f"未授权 MCP GET 返回 HTTP {exc.code}") from exc
-                challenge = exc.headers.get("WWW-Authenticate", "")
-                if protected_metadata_url not in challenge:
-                    raise RuntimeError("WWW-Authenticate resource_metadata 不匹配")
+            self._check_mcp_auth_challenge(info, profile)
             checks.append("mcp_auth_challenge")
         except Exception as exc:  # noqa: BLE001
             errors.append(f"mcp_auth_challenge: {exc}")
@@ -432,6 +487,107 @@ class MCPGatewayLauncher:
                 f"失败 Profile: {', '.join(failed) or '未知'}"
             )
 
+    def _start_network(self, config: GatewayLaunchConfig) -> tuple[str, str]:
+        self._provider = create_network_provider(
+            config.network.provider,
+            self._log,
+        )
+        network_info = self._provider.start(
+            config.host,
+            config.port,
+            config.network,
+        )
+        public_base_url = canonical_oauth_issuer(network_info.public_base_url)
+        parsed = urlsplit(public_base_url)
+        if (parsed.path or "").rstrip("/"):
+            raise RuntimeError(
+                "Gateway Network Provider 返回了带 Path 的 Public URL；"
+                "Gateway 公网入口必须是 hostname 级 URL。"
+            )
+        return public_base_url, network_info.mode_label
+
+    def _launch_profiles(
+        self,
+        config: GatewayLaunchConfig,
+    ) -> tuple[GatewayChildProfile, ...]:
+        ephemeral = _ephemeral_network(config.network)
+        profiles = _effective_profiles(config.profiles, ephemeral=ephemeral)
+        if ephemeral:
+            self._log(
+                "Gateway 使用临时公网 hostname：所有 Profile OAuth 状态按 ephemeral session 管理。"
+            )
+        return profiles
+
+    def _gateway_environment(self) -> dict[str, str]:
+        env = os.environ.copy()
+        # Gateway profile secrets/broker identities are instance scoped inside
+        # its restricted temporary config. Never let stale single-profile
+        # environment variables leak into Gateway Runtime.
+        for name in (
+            "AGENT_RUNTIME_OAUTH_PASSWORD",
+            "AGENT_RUNTIME_SERVER_URL",
+            OAUTH_TOKEN_SECRET_ENV,
+            OAUTH_REGISTRY_FILE_ENV,
+            BROKER_DIR_ENV,
+            BROKER_SECRET_ENV,
+            BROKER_SERVER_ID_ENV,
+            "AGENT_RUNTIME_OAUTH_CLIENT_ID",
+            "AGENT_RUNTIME_OAUTH_CLIENT_SECRET",
+        ):
+            env.pop(name, None)
+        self._route_probe_token = secrets.token_urlsafe(32)
+        self._last_diagnostic = None
+        env[ROUTE_PROBE_TOKEN_ENV] = self._route_probe_token
+        return env
+
+    @staticmethod
+    def _build_launch_info(
+        config: GatewayLaunchConfig,
+        *,
+        public_base_url: str,
+        url_mode: str,
+        profiles: tuple[GatewayChildProfile, ...],
+    ) -> GatewayLaunchInfo:
+        profile_info = tuple(
+            GatewayProfileLaunchInfo(
+                server_id=profile.server_id,
+                name=profile.name,
+                workspace=profile.workspace,
+                instance_path=profile.instance_path,
+                local_mcp_url=(
+                    f"http://{config.host}:{config.port}{profile.instance_path}/mcp"
+                ),
+                public_mcp_url=f"{public_base_url}{profile.instance_path}/mcp",
+                oauth_issuer=f"{public_base_url}{profile.instance_path}",
+                lifecycle=profile.lifecycle,
+            )
+            for profile in profiles
+        )
+        return GatewayLaunchInfo(
+            host=config.host,
+            port=config.port,
+            public_base_url=public_base_url,
+            tunnel_url=public_base_url,
+            url_mode=url_mode,
+            profiles=profile_info,
+        )
+
+    def _log_launch_info(self, info: GatewayLaunchInfo) -> None:
+        self._log(
+            f"Local MCP Gateway 已启动: {info.public_base_url}，"
+            f"Profiles: {len(info.profiles)}"
+        )
+        for profile in info.profiles:
+            self._log(f"Gateway Profile [{profile.name}]: {profile.public_mcp_url}")
+
+    def _start_watchers(self, url_mode: str) -> None:
+        threading.Thread(target=self._watch_children, daemon=True).start()
+        if url_mode == "Cloudflare Named Tunnel":
+            threading.Thread(
+                target=self._diagnose_background,
+                daemon=True,
+            ).start()
+
     def start(self, config: GatewayLaunchConfig) -> GatewayLaunchInfo:
         with self._lock:
             if self.is_running:
@@ -445,102 +601,23 @@ class MCPGatewayLauncher:
             self._exit_reason = ""
             check_port_available(validated.host, validated.port)
             try:
-                self._provider = create_network_provider(
-                    validated.network.provider,
-                    self._log,
-                )
-                network_info = self._provider.start(
-                    validated.host,
-                    validated.port,
-                    validated.network,
-                )
-                public_base_url = canonical_oauth_issuer(
-                    network_info.public_base_url
-                )
-                parsed = urlsplit(public_base_url)
-                if (parsed.path or "").rstrip("/"):
-                    raise RuntimeError(
-                        "Gateway Network Provider 返回了带 Path 的 Public URL；"
-                        "Gateway 公网入口必须是 hostname 级 URL。"
-                    )
-
-                ephemeral = _ephemeral_network(validated.network)
-                profiles = _effective_profiles(
-                    validated.profiles,
-                    ephemeral=ephemeral,
-                )
-                if ephemeral:
-                    self._log(
-                        "Gateway 使用临时公网 hostname：所有 Profile OAuth 状态按 ephemeral session 管理。"
-                    )
-
+                public_base_url, url_mode = self._start_network(validated)
+                profiles = self._launch_profiles(validated)
                 child_config = GatewayProcessConfig(
                     public_base_url=public_base_url,
                     profiles=profiles,
                     host=validated.host,
                     port=validated.port,
                 )
-                env = os.environ.copy()
-                # Gateway profile secrets/broker identities are instance scoped
-                # inside its restricted temporary config. Never let stale
-                # single-profile environment variables leak into Gateway Runtime.
-                for name in (
-                    "AGENT_RUNTIME_OAUTH_PASSWORD",
-                    "AGENT_RUNTIME_SERVER_URL",
-                    OAUTH_TOKEN_SECRET_ENV,
-                    OAUTH_REGISTRY_FILE_ENV,
-                    BROKER_DIR_ENV,
-                    BROKER_SECRET_ENV,
-                    BROKER_SERVER_ID_ENV,
-                ):
-                    env.pop(name, None)
-                env.pop("AGENT_RUNTIME_OAUTH_CLIENT_ID", None)
-                env.pop("AGENT_RUNTIME_OAUTH_CLIENT_SECRET", None)
-                self._route_probe_token = secrets.token_urlsafe(32)
-                self._last_diagnostic = None
-                env[ROUTE_PROBE_TOKEN_ENV] = self._route_probe_token
-
-                self._gateway.start(child_config, env)
-                profile_info = tuple(
-                    GatewayProfileLaunchInfo(
-                        server_id=profile.server_id,
-                        name=profile.name,
-                        workspace=profile.workspace,
-                        instance_path=profile.instance_path,
-                        local_mcp_url=(
-                            f"http://{validated.host}:{validated.port}"
-                            f"{profile.instance_path}/mcp"
-                        ),
-                        public_mcp_url=(
-                            f"{public_base_url}{profile.instance_path}/mcp"
-                        ),
-                        oauth_issuer=f"{public_base_url}{profile.instance_path}",
-                        lifecycle=profile.lifecycle,
-                    )
-                    for profile in profiles
-                )
-                self._info = GatewayLaunchInfo(
-                    host=validated.host,
-                    port=validated.port,
+                self._gateway.start(child_config, self._gateway_environment())
+                self._info = self._build_launch_info(
+                    validated,
                     public_base_url=public_base_url,
-                    tunnel_url=public_base_url,
-                    url_mode=network_info.mode_label,
-                    profiles=profile_info,
+                    url_mode=url_mode,
+                    profiles=profiles,
                 )
-                self._log(
-                    f"Local MCP Gateway 已启动: {public_base_url}，"
-                    f"Profiles: {len(profile_info)}"
-                )
-                for profile in profile_info:
-                    self._log(
-                        f"Gateway Profile [{profile.name}]: {profile.public_mcp_url}"
-                    )
-                threading.Thread(target=self._watch_children, daemon=True).start()
-                if network_info.mode_label == "Cloudflare Named Tunnel":
-                    threading.Thread(
-                        target=self._diagnose_background,
-                        daemon=True,
-                    ).start()
+                self._log_launch_info(self._info)
+                self._start_watchers(url_mode)
                 return self._info
             except Exception:
                 self._stop_locked()

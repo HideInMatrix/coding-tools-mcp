@@ -4,7 +4,6 @@ import subprocess
 import sys
 
 from .config import LaunchConfig
-from .oauth_persistence import install_oauth_registry_persistence
 from .process_utils import (
     LogCallback,
     forward_process_output,
@@ -43,7 +42,6 @@ def build_mcp_command(config: LaunchConfig) -> list[str]:
 
 
 def run_internal_mcp_server(arguments: list[str]) -> int:
-    install_oauth_registry_persistence()
     from agent_runtime.server import main as server_main
 
     old_argv = sys.argv[:]

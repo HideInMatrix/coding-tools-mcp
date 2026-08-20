@@ -183,10 +183,10 @@ AGENT_RUNTIME_OAUTH_CLIENT_REGISTRY_FILE
 现在 `OAuthClientRegistry` 自身拥有可选的 `persistence_file`：
 
 ```text
-Company OAuthConfig
+Company OAuthService
 └── OAuthClientRegistry(company/clients.json)
 
-Home OAuthConfig
+Home OAuthService
 └── OAuthClientRegistry(home/clients.json)
 ```
 

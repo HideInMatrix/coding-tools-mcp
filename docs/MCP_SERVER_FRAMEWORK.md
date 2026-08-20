@@ -237,7 +237,7 @@ Runtime Runtime Runtime
       Shared Tool Framework
 ```
 
-每个 Profile 拥有独立 Workspace、PermissionProfile、PermissionSession、OAuthConfig/Registry 与 Desktop Broker identity，但共享同一套 ToolDefinition 与 Handler 实现。
+每个 Profile 拥有独立 Workspace、PermissionProfile、PermissionSession、OAuthService/Registry 与 Desktop Broker identity，但共享同一套 ToolDefinition 与 Handler 实现。
 
 该架构已经落地为：
 

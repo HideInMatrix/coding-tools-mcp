@@ -695,6 +695,185 @@ class WorkflowRunManager:
         )
         return self._drive(run, context=context)
 
+    def _wait_for_model(
+        self,
+        run: WorkflowRun,
+        workflow: WorkflowDefinition,
+        node: WorkflowNode,
+    ) -> WorkflowRun:
+        state = run.engine_state
+        try:
+            action = self.engine.model_action(
+                workflow,
+                state,
+                node.id,
+                inputs=run.inputs,
+            )
+        except Exception as exc:
+            return self._fail(
+                run,
+                node_id=node.id,
+                message=str(exc),
+                retry_state=state,
+            )
+        return self._save(
+            run,
+            status="waiting_model",
+            pending_action=action.to_dict(),
+            retry_state=state,
+            node_states=self._node_states(
+                run,
+                node.id,
+                status="waiting_model",
+                updated_at=int(time.time()),
+            ),
+        )
+
+    def _wait_for_approval(
+        self,
+        run: WorkflowRun,
+        node: WorkflowNode,
+    ) -> WorkflowRun:
+        now = int(time.time())
+        approval = ApprovalRequest(
+            approval_id=secrets.token_hex(8),
+            run_id=run.run_id,
+            node_id=node.id,
+            title=str(node.config.get("title") or node.name),
+            description=str(node.config.get("description") or ""),
+            status="pending",
+            requested_at=now,
+        )
+        request_id = ""
+        if self.approval_broker is not None:
+            try:
+                request_id = self._publish_approval_request(run, approval)
+            except OSError:
+                request_id = ""
+        return self._save(
+            run,
+            status="waiting_approval",
+            approvals=(*run.approvals, approval),
+            pending_action={
+                "type": "approval",
+                "approval_id": approval.approval_id,
+                "node_id": node.id,
+                "title": approval.title,
+                "description": approval.description,
+                "request_id": request_id,
+            },
+            node_states=self._node_states(
+                run,
+                node.id,
+                status="waiting_approval",
+                updated_at=now,
+            ),
+        )
+
+    def _execute_artifact_node(
+        self,
+        run: WorkflowRun,
+        workflow: WorkflowDefinition,
+        node: WorkflowNode,
+    ) -> WorkflowRun:
+        state = run.engine_state
+        source_node_id = str(node.config.get("source_node_id") or "")
+        artifact_id = str(node.config.get("artifact_id") or "")
+        artifact_format = str(node.config.get("format") or "json")
+        if source_node_id not in state.outputs:
+            return self._fail(
+                run,
+                node_id=node.id,
+                message=f"Artifact source output is not available: {source_node_id}",
+                retry_state=state,
+            )
+        try:
+            reference = self.artifact_store.write(
+                run_id=run.run_id,
+                artifact_id=artifact_id,
+                producer_node_id=node.id,
+                value=state.outputs[source_node_id],
+                format=artifact_format,
+            )
+            next_state = self.engine.complete(
+                workflow,
+                state,
+                node.id,
+                outcome="success",
+                output=reference.to_dict(),
+            )
+        except Exception as exc:
+            return self._fail(
+                run,
+                node_id=node.id,
+                message=str(exc),
+                retry_state=state,
+            )
+        return self._save(
+            run,
+            status="running",
+            engine_state=next_state,
+            artifacts=(*run.artifacts, reference),
+            node_states=self._node_states(
+                run,
+                node.id,
+                status="succeeded",
+                outcome="success",
+                updated_at=int(time.time()),
+            ),
+        )
+
+    def _execute_local_node(
+        self,
+        run: WorkflowRun,
+        workflow: WorkflowDefinition,
+        node: WorkflowNode,
+        *,
+        context: RequestContext | None,
+    ) -> WorkflowRun:
+        checkpoint = run.engine_state
+        try:
+            result = self.engine.execute_local(
+                workflow,
+                checkpoint,
+                node.id,
+                context=context,
+                values={"inputs": run.inputs},
+            )
+        except Exception as exc:
+            return self._fail(
+                run,
+                node_id=node.id,
+                message=str(exc),
+                retry_state=checkpoint,
+            )
+
+        run = self._save(
+            run,
+            status="running",
+            engine_state=result.state,
+            retry_state=(checkpoint if result.outcome == "failure" else None),
+            node_states=self._node_states(
+                run,
+                node.id,
+                status="failed" if result.outcome == "failure" else "succeeded",
+                outcome=result.outcome,
+                updated_at=int(time.time()),
+            ),
+        )
+        if (
+            result.outcome == "failure"
+            and node.policy.on_error == "stop"
+            and not self._has_edge(workflow, node.id, "failure")
+        ):
+            return self._fail(
+                run,
+                node_id=node.id,
+                message=f"Workflow tool node failed: {node.id}",
+                retry_state=checkpoint,
+            )
+        return run
+
     def _drive(
         self,
         run: WorkflowRun,
@@ -724,157 +903,18 @@ class WorkflowRunManager:
             node = self._node(workflow, node_id)
 
             if node.type in {"prompt", "skill"}:
-                try:
-                    action = self.engine.model_action(
-                        workflow,
-                        state,
-                        node_id,
-                        inputs=run.inputs,
-                    )
-                except Exception as exc:
-                    return self._fail(
-                        run,
-                        node_id=node_id,
-                        message=str(exc),
-                        retry_state=state,
-                    )
-                return self._save(
-                    run,
-                    status="waiting_model",
-                    pending_action=action.to_dict(),
-                    retry_state=state,
-                    node_states=self._node_states(
-                        run,
-                        node_id,
-                        status="waiting_model",
-                        updated_at=int(time.time()),
-                    ),
-                )
+                return self._wait_for_model(run, workflow, node)
 
             if node.type == "approval":
-                now = int(time.time())
-                approval = ApprovalRequest(
-                    approval_id=secrets.token_hex(8),
-                    run_id=run.run_id,
-                    node_id=node_id,
-                    title=str(node.config.get("title") or node.name),
-                    description=str(node.config.get("description") or ""),
-                    status="pending",
-                    requested_at=now,
-                )
-                request_id = ""
-                if self.approval_broker is not None:
-                    try:
-                        request_id = self._publish_approval_request(run, approval)
-                    except OSError:
-                        request_id = ""
-                return self._save(
-                    run,
-                    status="waiting_approval",
-                    approvals=(*run.approvals, approval),
-                    pending_action={
-                        "type": "approval",
-                        "approval_id": approval.approval_id,
-                        "node_id": node_id,
-                        "title": approval.title,
-                        "description": approval.description,
-                        "request_id": request_id,
-                    },
-                    node_states=self._node_states(
-                        run,
-                        node_id,
-                        status="waiting_approval",
-                        updated_at=now,
-                    ),
-                )
+                return self._wait_for_approval(run, node)
 
             if node.type == "artifact":
-                source_node_id = str(node.config.get("source_node_id") or "")
-                artifact_id = str(node.config.get("artifact_id") or "")
-                artifact_format = str(node.config.get("format") or "json")
-                if source_node_id not in state.outputs:
-                    return self._fail(
-                        run,
-                        node_id=node_id,
-                        message=f"Artifact source output is not available: {source_node_id}",
-                        retry_state=state,
-                    )
-                try:
-                    reference = self.artifact_store.write(
-                        run_id=run.run_id,
-                        artifact_id=artifact_id,
-                        producer_node_id=node_id,
-                        value=state.outputs[source_node_id],
-                        format=artifact_format,
-                    )
-                    next_state = self.engine.complete(
-                        workflow,
-                        state,
-                        node_id,
-                        outcome="success",
-                        output=reference.to_dict(),
-                    )
-                except Exception as exc:
-                    return self._fail(
-                        run,
-                        node_id=node_id,
-                        message=str(exc),
-                        retry_state=state,
-                    )
-                run = self._save(
-                    run,
-                    status="running",
-                    engine_state=next_state,
-                    artifacts=(*run.artifacts, reference),
-                    node_states=self._node_states(
-                        run,
-                        node_id,
-                        status="succeeded",
-                        outcome="success",
-                        updated_at=int(time.time()),
-                    ),
-                )
+                run = self._execute_artifact_node(run, workflow, node)
+                if run.status != "running":
+                    return run
                 continue
 
-            checkpoint = state
-            try:
-                result = self.engine.execute_local(
-                    workflow,
-                    state,
-                    node_id,
-                    context=context,
-                    values={"inputs": run.inputs},
-                )
-            except Exception as exc:
-                return self._fail(
-                    run,
-                    node_id=node_id,
-                    message=str(exc),
-                    retry_state=checkpoint,
-                )
-
-            run = self._save(
-                run,
-                status="running",
-                engine_state=result.state,
-                retry_state=(checkpoint if result.outcome == "failure" else None),
-                node_states=self._node_states(
-                    run,
-                    node_id,
-                    status="failed" if result.outcome == "failure" else "succeeded",
-                    outcome=result.outcome,
-                    updated_at=int(time.time()),
-                ),
-            )
-            if (
-                result.outcome == "failure"
-                and node.policy.on_error == "stop"
-                and not self._has_edge(workflow, node_id, "failure")
-            ):
-                return self._fail(
-                    run,
-                    node_id=node_id,
-                    message=f"Workflow tool node failed: {node_id}",
-                    retry_state=checkpoint,
-                )
+            run = self._execute_local_node(run, workflow, node, context=context)
+            if run.status != "running":
+                return run
 

@@ -17,7 +17,7 @@ from agent_runtime.gateway import (
     load_gateway_config,
     normalize_instance_path,
 )
-from agent_runtime.oauth import OAuthConfig
+from agent_runtime.oauth_service import OAuthService
 from agent_runtime.route_probe import (
     ROUTE_PROBE_HEADER,
     ROUTE_PROBE_PATH,
@@ -147,7 +147,7 @@ class GatewayFrameworkTests(unittest.TestCase):
             registry.register(GatewayProfile("home", "/home", home_root))
 
             def factory(profile: GatewayProfile) -> Runtime:
-                oauth = OAuthConfig(
+                oauth = OAuthService(
                     password="password",
                     server_url=f"https://mcp.example.com{profile.instance_path}",
                     token_secret=b"x" * 32,
@@ -155,7 +155,7 @@ class GatewayFrameworkTests(unittest.TestCase):
                 return Runtime(
                     profile.workspace,
                     permission_mode=profile.permission_mode,
-                    oauth_config=oauth,
+                    oauth_service=oauth,
                 )
 
             pool = GatewayRuntimePool(registry, factory=factory)
@@ -280,15 +280,15 @@ class GatewayFrameworkTests(unittest.TestCase):
                 company = pool.get("company")
                 home = pool.get("home")
                 self.assertEqual(len(registry), 2)
-                self.assertEqual(company.oauth_config.issuer, "https://mcp.example.com/company")
-                self.assertEqual(home.oauth_config.issuer, "https://mcp.example.com/home")
+                self.assertEqual(company.oauth_service.issuer, "https://mcp.example.com/company")
+                self.assertEqual(home.oauth_service.issuer, "https://mcp.example.com/home")
                 self.assertNotEqual(
-                    company.oauth_config.token_secret,
-                    home.oauth_config.token_secret,
+                    company.oauth_service.token_secret,
+                    home.oauth_service.token_secret,
                 )
                 self.assertNotEqual(
-                    company.oauth_config.registry.persistence_file,
-                    home.oauth_config.registry.persistence_file,
+                    company.oauth_service.registry.persistence_file,
+                    home.oauth_service.registry.persistence_file,
                 )
                 self.assertEqual(company.permission_mode, "safe")
                 self.assertEqual(home.permission_mode, "trusted")

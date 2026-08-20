@@ -23,7 +23,6 @@ from .oauth_persistence import (
     OAuthPersistence,
     bind_server_oauth_issuer,
     canonical_oauth_issuer,
-    migrate_oauth_storage_to_issuer,
     prepare_ephemeral_oauth_persistence,
     prepare_issuer_oauth_persistence,
 )
@@ -157,7 +156,6 @@ def prepare_gateway_config(
             if profile.lifecycle == "ephemeral":
                 persistence = prepare_ephemeral_oauth_persistence(profile.server_id)
             else:
-                migrate_oauth_storage_to_issuer(issuer, server_id=profile.server_id)
                 persistence = prepare_issuer_oauth_persistence(issuer)
                 bind_server_oauth_issuer(profile.server_id, issuer)
             persistences.append(persistence)

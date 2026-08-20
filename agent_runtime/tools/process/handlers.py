@@ -18,15 +18,8 @@ from ...processes import command_payload
 from ...route_probe import ROUTE_PROBE_TOKEN_ENV
 from .._shared import truncate_text
 from .policy import (
-    DESTRUCTIVE_RE,
-    GIT_METADATA_WRITE_RE,
-    INLINE_SCRIPT_RE,
-    NETWORK_COMMAND_RE,
-    NETWORK_RE,
-    REDIRECT_ESCAPE_RE,
-    SANDBOX_PROTECTED_ENV,
+    ProcessCommandPolicy,
     SENSITIVE_ENV_RE,
-    SHELL_EXPANSION_RE,
     WINDOWS_BATCH_META_RE,
 )
 
@@ -116,137 +109,71 @@ class ProcessHandlers:
         env: dict[str, str],
         timeout_ms: int,
     ) -> None:
-        if self.permission_mode == "dangerous":
-            return
-        protected_names = {name.upper() for name in SANDBOX_PROTECTED_ENV}
-        protected = [name for name in env if name.upper() in protected_names]
-        if protected:
+        ProcessCommandPolicy(
+            permission_mode=self.permission_mode,
+            allow_network=self.allow_network,
+            permission_granted=self._permission_granted,
+            validate_writable_path=self.workspace.writable,
+        ).validate(cmd, env, timeout_ms)
+
+    def _privileged_execution(self) -> bool:
+        return self.permission_mode == "dangerous" or self._permission_granted(
+            "privileged_executable"
+        )
+
+    def _resolve_program(
+        self,
+        program: str,
+        *,
+        privileged: bool,
+        include_safe_path: bool,
+    ) -> str:
+        program_key = os.path.normcase(program.strip())
+        if not privileged and program_key in self._privileged_program_misses:
+            details: dict[str, Any] = {
+                "program": program,
+                "elevated_lookup": True,
+                "cached_miss": True,
+                "hint": "安装或调整工具环境后，请重启当前 MCP Server 再重新检测。",
+            }
+            if include_safe_path:
+                details["safe_path"] = list(self.safe_exec_path)
+            raise ToolError(
+                "EXECUTABLE_NOT_FOUND",
+                f"宿主机用户环境已查询过，仍未找到 {program}；本次 MCP Server 会话不再重复请求环境权限。",
+                "process",
+                False,
+                details,
+            )
+
+        resolved = self.toolchains.resolve_program(program, privileged=privileged)
+        if resolved is None and not privileged:
             raise ToolError(
                 "PERMISSION_REQUIRED",
-                "sandbox-controlled environment variables cannot be overridden outside dangerous mode",
+                f"沙箱执行 PATH 中未找到 {program}；需要读取用户工具环境后重试。",
                 "permission",
                 False,
-                {"permission": "sandbox_env_override", "variables": protected},
+                {
+                    "permission": "privileged_executable",
+                    "program": program,
+                    "sandbox_path": list(self.safe_exec_path),
+                },
             )
-        sensitive = [name for name in env if SENSITIVE_ENV_RE.search(name)]
-        if sensitive and not self._permission_granted("sensitive_env"):
+        if resolved is None:
+            self._privileged_program_misses.add(program_key)
+            details = {"program": program, "elevated_lookup": True}
+            if include_safe_path:
+                details["safe_path"] = list(self.safe_exec_path)
             raise ToolError(
-                "PERMISSION_REQUIRED",
-                "sensitive environment variables require dangerous mode",
-                "permission",
+                "EXECUTABLE_NOT_FOUND",
+                f"program is not available in either the sandbox or elevated user environment: {program}",
+                "process",
                 False,
-                {"permission": "sensitive_env", "variables": sensitive},
+                details,
             )
-        if (
-            timeout_ms > 60_000
-            and self.permission_mode == "safe"
-            and not self._permission_granted("long_timeout")
-        ):
-            raise ToolError(
-                "PERMISSION_REQUIRED",
-                "timeouts above 60 seconds require trusted mode",
-                "permission",
-                False,
-                {"permission": "long_timeout"},
-            )
-        checks = [
-            (DESTRUCTIVE_RE, "destructive_command", "destructive command is blocked"),
-            (
-                GIT_METADATA_WRITE_RE,
-                "git_metadata_write",
-                "Git metadata-changing commands are blocked outside dangerous mode",
-            ),
-        ]
-        if self.permission_mode == "safe":
-            checks.extend(
-                [
-                    (
-                        SHELL_EXPANSION_RE,
-                        "shell_expansion",
-                        "shell expansion is blocked in safe mode",
-                    ),
-                    (
-                        INLINE_SCRIPT_RE,
-                        "inline_script",
-                        "inline scripts are blocked in safe mode",
-                    ),
-                ]
-            )
-            if not self.allow_network:
-                checks.append(
-                    (
-                        NETWORK_RE,
-                        "network",
-                        "network-looking commands are blocked in safe mode",
-                    )
-                )
-                checks.append(
-                    (
-                        NETWORK_COMMAND_RE,
-                        "network",
-                        "network-capable package or VCS command is blocked in safe mode",
-                    )
-                )
-        for expression, permission, message in checks:
-            if expression.search(cmd) and not self._permission_granted(permission):
-                raise ToolError(
-                    "PERMISSION_REQUIRED",
-                    message,
-                    "permission",
-                    False,
-                    {"permission": permission},
-                )
-        redirect = REDIRECT_ESCAPE_RE.search(cmd)
-        if redirect:
-            raw_path = redirect.group(1)
-            try:
-                self.workspace.writable(raw_path)
-            except ToolError as exc:
-                raise ToolError(
-                    "PERMISSION_REQUIRED",
-                    "shell redirection outside the workspace is blocked",
-                    "permission",
-                    False,
-                    {
-                        "permission": "write_generated_or_ignored",
-                        "path": raw_path,
-                    },
-                ) from exc
-        try:
-            tokens = shlex.split(cmd, posix=os.name != "nt")
-        except ValueError as exc:
-            raise ToolError(
-                "INVALID_COMMAND", f"cannot parse command: {exc}", "validation"
-            ) from exc
-        for index, token in enumerate(tokens):
-            if index == 0 or token.startswith("-") or "://" in token:
-                continue
-            if token.startswith("~") and not self._permission_granted("shell_expansion"):
-                raise ToolError(
-                    "PERMISSION_REQUIRED",
-                    "home-directory shell expansion is blocked outside dangerous mode",
-                    "permission",
-                    False,
-                    {"permission": "shell_expansion", "path": token},
-                )
-            if token.startswith("/") or token.startswith("../") or token.startswith("..\\"):
-                if token in {
-                    "/dev/null",
-                    "/dev/zero",
-                    "/dev/random",
-                    "/dev/urandom",
-                }:
-                    continue
-                try:
-                    self.workspace.writable(token)
-                except ToolError as exc:
-                    raise ToolError(
-                        "PERMISSION_REQUIRED",
-                        "command path argument escapes the workspace",
-                        "permission",
-                        False,
-                        {"path": token},
-                    ) from exc
+        if privileged:
+            self._privileged_program_misses.discard(program_key)
+        return resolved
 
     def _validate_process(
         self,
@@ -257,53 +184,54 @@ class ProcessHandlers:
     ) -> str:
         display = subprocess.list2cmdline([program, *argv])
         self._validate_command(display, env, timeout_ms)
-        privileged = self.permission_mode == "dangerous" or self._permission_granted(
-            "privileged_executable"
+        return self._resolve_program(
+            program,
+            privileged=self._privileged_execution(),
+            include_safe_path=True,
         )
-        program_key = os.path.normcase(program.strip())
-        if not privileged and program_key in self._privileged_program_misses:
+
+    def _command_workdir(self, args: dict[str, Any], *, label: str) -> Path:
+        cwd = self.workspace.existing(
+            str(args.get("cwd") or args.get("workdir", "."))
+        ).absolute
+        if not cwd.is_dir():
             raise ToolError(
-                "EXECUTABLE_NOT_FOUND",
-                f"宿主机用户环境已查询过，仍未找到 {program}；本次 MCP Server 会话不再重复请求环境权限。",
-                "process",
-                False,
-                {
-                    "program": program,
-                    "safe_path": list(self.safe_exec_path),
-                    "elevated_lookup": True,
-                    "cached_miss": True,
-                    "hint": "安装或调整工具环境后，请重启当前 MCP Server 再重新检测。",
-                },
+                "NOT_DIRECTORY",
+                f"{label} workdir is not a directory",
+                "filesystem",
             )
-        resolved = self.toolchains.resolve_program(program, privileged=privileged)
-        if resolved is None:
-            if not privileged:
-                raise ToolError(
-                    "PERMISSION_REQUIRED",
-                    f"沙箱执行 PATH 中未找到 {program}；需要读取用户工具环境后重试。",
-                    "permission",
-                    False,
-                    {
-                        "permission": "privileged_executable",
-                        "program": program,
-                        "sandbox_path": list(self.safe_exec_path),
-                    },
-                )
-            self._privileged_program_misses.add(program_key)
+        return cwd
+
+    @staticmethod
+    def _process_launch_command(resolved_program: str, argv: list[str]) -> list[str]:
+        if os.name != "nt" or Path(resolved_program).suffix.lower() not in {".cmd", ".bat"}:
+            return [resolved_program, *argv]
+        unsafe = [item for item in argv if WINDOWS_BATCH_META_RE.search(item)]
+        if unsafe:
             raise ToolError(
-                "EXECUTABLE_NOT_FOUND",
-                f"program is not available in either the sandbox or elevated user environment: {program}",
-                "process",
+                "PERMISSION_REQUIRED",
+                "Windows batch arguments containing cmd.exe metacharacters are blocked",
+                "permission",
                 False,
-                {
-                    "program": program,
-                    "safe_path": list(self.safe_exec_path),
-                    "elevated_lookup": True,
-                },
+                {"permission": "shell_expansion", "arguments": unsafe},
             )
-        if privileged:
-            self._privileged_program_misses.discard(program_key)
-        return resolved
+        comspec = os.environ.get("COMSPEC", "cmd.exe")
+        quoted_program = f'"{resolved_program}"'
+        quoted_args = " ".join(f'"{item}"' for item in argv)
+        command_line = f'{quoted_program}{(" " + quoted_args) if quoted_args else ""}'
+        return [comspec, "/d", "/v:off", "/s", "/c", command_line]
+
+    def _apply_privileged_environment(
+        self,
+        env: dict[str, str],
+        bin_dirs: list[Path],
+    ) -> None:
+        if not bin_dirs:
+            return
+        env["HOME"] = str(self.toolchains.home)
+        env["PATH"] = os.pathsep.join(
+            [*(str(path) for path in bin_dirs), env.get("PATH", "")]
+        )
 
     def exec_process(self, args: dict[str, Any]) -> dict[str, Any]:
         program = str(args["program"])
@@ -315,36 +243,9 @@ class ProcessHandlers:
         resolved_program = self._validate_process(
             program, argv, env_overrides, timeout_ms
         )
-        privileged_execution = (
-            self.permission_mode == "dangerous"
-            or self._permission_granted("privileged_executable")
-        )
-        cwd = self.workspace.existing(
-            str(args.get("cwd") or args.get("workdir", "."))
-        ).absolute
-        if not cwd.is_dir():
-            raise ToolError(
-                "NOT_DIRECTORY", "process workdir is not a directory", "filesystem"
-            )
-
-        command: list[str]
-        if os.name == "nt" and Path(resolved_program).suffix.lower() in {".cmd", ".bat"}:
-            unsafe = [item for item in argv if WINDOWS_BATCH_META_RE.search(item)]
-            if unsafe:
-                raise ToolError(
-                    "PERMISSION_REQUIRED",
-                    "Windows batch arguments containing cmd.exe metacharacters are blocked",
-                    "permission",
-                    False,
-                    {"permission": "shell_expansion", "arguments": unsafe},
-                )
-            comspec = os.environ.get("COMSPEC", "cmd.exe")
-            quoted_program = f'"{resolved_program}"'
-            quoted_args = " ".join(f'"{item}"' for item in argv)
-            command_line = f'{quoted_program}{(" " + quoted_args) if quoted_args else ""}'
-            command = [comspec, "/d", "/v:off", "/s", "/c", command_line]
-        else:
-            command = [resolved_program, *argv]
+        privileged_execution = self._privileged_execution()
+        cwd = self._command_workdir(args, label="process")
+        command = self._process_launch_command(resolved_program, argv)
         command = self.process_sandbox.wrap(
             command,
             cwd=cwd,
@@ -363,12 +264,9 @@ class ProcessHandlers:
         )
         process_env = self._command_env(env_overrides)
         if privileged_execution:
-            process_env["HOME"] = str(self.toolchains.home)
-            process_env["PATH"] = os.pathsep.join(
-                [
-                    str(Path(resolved_program).parent.resolve()),
-                    process_env.get("PATH", ""),
-                ]
+            self._apply_privileged_environment(
+                process_env,
+                [Path(resolved_program).parent.resolve()],
             )
         managed = self.commands.start(
             command,
@@ -433,6 +331,58 @@ class ProcessHandlers:
                 names.append(name)
         return names
 
+    def _shell_executable_paths(
+        self,
+        cmd: str,
+        *,
+        privileged: bool,
+    ) -> tuple[list[Path], list[Path]]:
+        roots: list[Path] = []
+        bin_dirs: list[Path] = []
+        for program in self._shell_program_names(cmd):
+            resolved = self._resolve_program(
+                program,
+                privileged=privileged,
+                include_safe_path=False,
+            )
+            if not privileged:
+                continue
+            root = self.toolchains.readable_root_for_program(
+                program,
+                resolved,
+                privileged=True,
+            )
+            if root not in roots:
+                roots.append(root)
+            bin_dir = Path(resolved).parent.resolve()
+            if bin_dir not in bin_dirs:
+                bin_dirs.append(bin_dir)
+        return roots, bin_dirs
+
+    def _shell_launch_command(
+        self,
+        cmd: str,
+        *,
+        cwd: Path,
+        readable_roots: list[Path],
+    ) -> tuple[str | list[str], bool]:
+        if self.permission_mode == "dangerous":
+            return cmd, True
+        if os.name == "nt":
+            comspec = os.environ.get("COMSPEC", "cmd.exe")
+            command: list[str] = [comspec, "/d", "/s", "/c", cmd]
+        else:
+            command = ["/bin/sh", "-c", cmd]
+        return (
+            self.process_sandbox.wrap(
+                command,
+                cwd=cwd,
+                permissions=ACTIVE_PERMISSIONS.get(),
+                readable_roots=tuple(readable_roots),
+            ),
+            False,
+        )
+
     def exec_command(self, args: dict[str, Any]) -> dict[str, Any]:
         cmd = str(args["cmd"])
         timeout_ms = int(args.get("timeout_ms", 30_000))
@@ -440,93 +390,20 @@ class ProcessHandlers:
             str(key): str(value) for key, value in dict(args.get("env") or {}).items()
         }
         self._validate_command(cmd, env_overrides, timeout_ms)
-        cwd = self.workspace.existing(
-            str(args.get("cwd") or args.get("workdir", "."))
-        ).absolute
-        if not cwd.is_dir():
-            raise ToolError(
-                "NOT_DIRECTORY", "command workdir is not a directory", "filesystem"
-            )
-        privileged = self.permission_mode == "dangerous" or self._permission_granted(
-            "privileged_executable"
+        cwd = self._command_workdir(args, label="command")
+        privileged = self._privileged_execution()
+        command_roots, command_bins = self._shell_executable_paths(
+            cmd,
+            privileged=privileged,
         )
-        command_roots: list[Path] = []
-        command_bins: list[Path] = []
-        for program in self._shell_program_names(cmd):
-            program_key = os.path.normcase(program.strip())
-            if not privileged and program_key in self._privileged_program_misses:
-                raise ToolError(
-                    "EXECUTABLE_NOT_FOUND",
-                    f"宿主机用户环境已查询过，仍未找到 {program}；本次 MCP Server 会话不再重复请求环境权限。",
-                    "process",
-                    False,
-                    {
-                        "program": program,
-                        "elevated_lookup": True,
-                        "cached_miss": True,
-                        "hint": "安装或调整工具环境后，请重启当前 MCP Server 再重新检测。",
-                    },
-                )
-            resolved = self.toolchains.resolve_program(program, privileged=privileged)
-            if resolved is None:
-                if not privileged:
-                    raise ToolError(
-                        "PERMISSION_REQUIRED",
-                        f"沙箱执行 PATH 中未找到 {program}；需要读取用户工具环境后重试。",
-                        "permission",
-                        False,
-                        {
-                            "permission": "privileged_executable",
-                            "program": program,
-                            "sandbox_path": list(self.safe_exec_path),
-                        },
-                    )
-                self._privileged_program_misses.add(program_key)
-                raise ToolError(
-                    "EXECUTABLE_NOT_FOUND",
-                    f"program is not available in either the sandbox or elevated user environment: {program}",
-                    "process",
-                    False,
-                    {"program": program, "elevated_lookup": True},
-                )
-            if privileged:
-                self._privileged_program_misses.discard(program_key)
-                root = self.toolchains.readable_root_for_program(
-                    program,
-                    resolved,
-                    privileged=True,
-                )
-                if root not in command_roots:
-                    command_roots.append(root)
-                bin_dir = Path(resolved).parent.resolve()
-                if bin_dir not in command_bins:
-                    command_bins.append(bin_dir)
-        if self.permission_mode == "dangerous":
-            launch_command: str | list[str] = cmd
-            launch_shell = True
-        elif os.name == "nt":
-            comspec = os.environ.get("COMSPEC", "cmd.exe")
-            launch_command = [comspec, "/d", "/s", "/c", cmd]
-            launch_shell = False
-        else:
-            launch_command = ["/bin/sh", "-c", cmd]
-            launch_shell = False
-        if isinstance(launch_command, list):
-            launch_command = self.process_sandbox.wrap(
-                launch_command,
-                cwd=cwd,
-                permissions=ACTIVE_PERMISSIONS.get(),
-                readable_roots=tuple(command_roots),
-            )
+        launch_command, launch_shell = self._shell_launch_command(
+            cmd,
+            cwd=cwd,
+            readable_roots=command_roots,
+        )
         command_env = self._command_env(env_overrides)
         if privileged and command_bins:
-            command_env["HOME"] = str(self.toolchains.home)
-            command_env["PATH"] = os.pathsep.join(
-                [
-                    *(str(path) for path in command_bins),
-                    command_env.get("PATH", ""),
-                ]
-            )
+            self._apply_privileged_environment(command_env, command_bins)
         managed = self.commands.start(
             launch_command,
             cwd=cwd,

@@ -23,7 +23,6 @@ from .oauth_persistence import (
     OAuthPersistence,
     bind_server_oauth_issuer,
     canonical_oauth_issuer,
-    migrate_oauth_storage_to_issuer,
     prepare_ephemeral_oauth_persistence,
     prepare_issuer_oauth_persistence,
 )
@@ -225,17 +224,9 @@ class MCPLauncher:
                     )
                 else:
                     issuer = public_base_url
-                    migrated = migrate_oauth_storage_to_issuer(
-                        issuer,
-                        server_id=config.server_id,
-                    )
                     oauth_persistence = prepare_issuer_oauth_persistence(issuer)
                     if config.server_id:
                         bind_server_oauth_issuer(config.server_id, issuer)
-                    if migrated:
-                        self._log(
-                            f"OAuth 状态已迁移到 issuer 身份目录: {issuer}"
-                        )
                 self._oauth_persistence = oauth_persistence
                 env = os.environ.copy()
                 env.update(

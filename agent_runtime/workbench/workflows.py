@@ -306,16 +306,10 @@ class WorkflowValidationResult:
         }
 
 
-def validate_workflow(
+def _validate_graph_structure(
     workflow: WorkflowDefinition,
-    *,
-    prompt_ids: set[str] | None = None,
-    skill_ids: set[str] | None = None,
-    tool_names: set[str] | None = None,
-    tool_keys: set[str] | None = None,
-) -> WorkflowValidationResult:
+) -> tuple[list[WorkflowValidationIssue], set[str], dict[str, list[str]]]:
     errors: list[WorkflowValidationIssue] = []
-    warnings: list[WorkflowValidationIssue] = []
     node_ids = [node.id for node in workflow.nodes]
     edge_ids = [edge.id for edge in workflow.edges]
     node_id_set = set(node_ids)
@@ -354,170 +348,258 @@ def validate_workflow(
             continue
         outgoing[edge.source].append(edge.target)
 
-    if not errors:
-        # Use Kahn's algorithm instead of recursive DFS so large generated
-        # Workflows cannot hit Python's recursion limit during validation.
-        indegree: dict[str, int] = {node_id: 0 for node_id in node_id_set}
-        for source in node_id_set:
-            for target in outgoing.get(source, []):
-                indegree[target] += 1
-        ready = [node_id for node_id, degree in indegree.items() if degree == 0]
-        visited_count = 0
-        while ready:
-            node_id = ready.pop()
-            visited_count += 1
-            for target in outgoing.get(node_id, []):
-                indegree[target] -= 1
-                if indegree[target] == 0:
-                    ready.append(target)
+    return errors, node_id_set, outgoing
 
-        if visited_count != len(node_id_set):
-            errors.append(
-                WorkflowValidationIssue(
-                    "cycle_detected",
-                    "第一版 Workflow 必须是 DAG，普通 Edge 不允许形成环",
-                )
+
+def _validate_acyclic_graph(
+    node_ids: set[str],
+    outgoing: Mapping[str, list[str]],
+) -> list[WorkflowValidationIssue]:
+    # Use Kahn's algorithm instead of recursive DFS so large generated
+    # Workflows cannot hit Python's recursion limit during validation.
+    indegree = {node_id: 0 for node_id in node_ids}
+    for source in node_ids:
+        for target in outgoing.get(source, []):
+            indegree[target] += 1
+    ready = [node_id for node_id, degree in indegree.items() if degree == 0]
+    visited_count = 0
+    while ready:
+        node_id = ready.pop()
+        visited_count += 1
+        for target in outgoing.get(node_id, []):
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                ready.append(target)
+    if visited_count == len(node_ids):
+        return []
+    return [
+        WorkflowValidationIssue(
+            "cycle_detected",
+            "第一版 Workflow 必须是 DAG，普通 Edge 不允许形成环",
+        )
+    ]
+
+
+def _validate_reachability(
+    entry_node_id: str,
+    node_ids: set[str],
+    outgoing: Mapping[str, list[str]],
+) -> list[WorkflowValidationIssue]:
+    if entry_node_id not in node_ids:
+        return []
+    reachable: set[str] = set()
+    stack = [entry_node_id]
+    while stack:
+        node_id = stack.pop()
+        if node_id in reachable:
+            continue
+        reachable.add(node_id)
+        stack.extend(outgoing.get(node_id, []))
+    return [
+        WorkflowValidationIssue(
+            "unreachable_node",
+            "节点无法从 entry_node_id 到达",
+            node_id,
+        )
+        for node_id in sorted(node_ids - reachable)
+    ]
+
+
+def _validate_prompt_node(
+    node: WorkflowNode,
+    prompt_ids: set[str] | None,
+) -> list[WorkflowValidationIssue]:
+    prompt_id = str(node.config.get("prompt_id") or "").strip()
+    if not prompt_id:
+        return [WorkflowValidationIssue("missing_prompt", "Prompt 节点必须配置 prompt_id", node.id)]
+    if prompt_ids is not None and prompt_id not in prompt_ids:
+        return [WorkflowValidationIssue("unknown_prompt", "引用的 Prompt 不存在", node.id)]
+    return []
+
+
+def _validate_skill_node(
+    node: WorkflowNode,
+    skill_ids: set[str] | None,
+) -> list[WorkflowValidationIssue]:
+    skill_id = str(node.config.get("skill_id") or "").strip()
+    if not skill_id:
+        return [WorkflowValidationIssue("missing_skill", "Skill 节点必须配置 skill_id", node.id)]
+    if skill_ids is not None and skill_id not in skill_ids:
+        return [WorkflowValidationIssue("unknown_skill", "引用的 Skill 不存在", node.id)]
+    return []
+
+
+def _validate_tool_node(
+    node: WorkflowNode,
+    *,
+    tool_names: set[str] | None,
+    tool_keys: set[str] | None,
+) -> list[WorkflowValidationIssue]:
+    try:
+        reference = tool_reference_from_node_config(node.config)
+    except ValueError as exc:
+        return [WorkflowValidationIssue("invalid_tool_reference", str(exc), node.id)]
+    tool_name = reference.tool_name
+    if reference.provider == "system" and is_workbench_control_tool(tool_name):
+        return [
+            WorkflowValidationIssue(
+                "recursive_workflow_tool",
+                "Workflow Tool Node 不允许调用 Workbench 控制面 Tool",
+                node.id,
             )
-
-    if workflow.entry_node_id in node_id_set:
-        reachable: set[str] = set()
-        stack = [workflow.entry_node_id]
-        while stack:
-            node_id = stack.pop()
-            if node_id in reachable:
-                continue
-            reachable.add(node_id)
-            stack.extend(outgoing.get(node_id, []))
-        for node_id in sorted(node_id_set - reachable):
-            errors.append(
-                WorkflowValidationIssue(
-                    "unreachable_node",
-                    "节点无法从 entry_node_id 到达",
-                    node_id,
-                )
+        ]
+    if tool_keys is not None and reference.key not in tool_keys:
+        return [
+            WorkflowValidationIssue(
+                "unknown_tool",
+                "引用的 Tool 不存在、未发现或当前已禁用",
+                node.id,
             )
+        ]
+    if reference.provider == "mcp" and tool_keys is None:
+        return [
+            WorkflowValidationIssue(
+                "mcp_tool_unavailable",
+                "MCP Tool 需要 Effective Tool Catalog 才能验证",
+                node.id,
+            )
+        ]
+    if (
+        reference.provider == "system"
+        and tool_keys is None
+        and tool_names is not None
+        and tool_name not in tool_names
+    ):
+        return [WorkflowValidationIssue("unknown_tool", "引用的 Tool 不存在", node.id)]
+    return []
 
+
+def _validate_approval_node(node: WorkflowNode) -> list[WorkflowValidationIssue]:
+    title = str(node.config.get("title") or node.name).strip()
+    if title:
+        return []
+    return [WorkflowValidationIssue("invalid_approval", "Approval 节点必须有标题", node.id)]
+
+
+def _validate_condition_node(node: WorkflowNode) -> list[WorkflowValidationIssue]:
+    expression = str(node.config.get("expression") or "").strip()
+    if expression:
+        return []
+    return [
+        WorkflowValidationIssue(
+            "invalid_condition",
+            "Condition 节点必须配置受限 expression",
+            node.id,
+        )
+    ]
+
+
+def _validate_artifact_node(
+    node: WorkflowNode,
+    node_ids: set[str],
+) -> list[WorkflowValidationIssue]:
+    errors: list[WorkflowValidationIssue] = []
+    artifact_id = str(node.config.get("artifact_id") or "").strip()
+    source_node_id = str(node.config.get("source_node_id") or "").strip()
+    artifact_format = str(node.config.get("format") or "json").strip()
+    if not NODE_ID_PATTERN.fullmatch(artifact_id):
+        errors.append(
+            WorkflowValidationIssue(
+                "invalid_artifact_id",
+                "Artifact 节点必须配置合法 artifact_id",
+                node.id,
+            )
+        )
+    if source_node_id not in node_ids or source_node_id == node.id:
+        errors.append(
+            WorkflowValidationIssue(
+                "invalid_artifact_source",
+                "Artifact source_node_id 必须指向另一个现有节点",
+                node.id,
+            )
+        )
+    if artifact_format not in {"json", "text"}:
+        errors.append(
+            WorkflowValidationIssue(
+                "invalid_artifact_format",
+                "Artifact format 只支持 json/text",
+                node.id,
+            )
+        )
+    return errors
+
+
+def _validate_nodes(
+    workflow: WorkflowDefinition,
+    node_ids: set[str],
+    *,
+    prompt_ids: set[str] | None,
+    skill_ids: set[str] | None,
+    tool_names: set[str] | None,
+    tool_keys: set[str] | None,
+) -> list[WorkflowValidationIssue]:
+    errors: list[WorkflowValidationIssue] = []
     for node in workflow.nodes:
         if node.type == "prompt":
-            prompt_id = str(node.config.get("prompt_id") or "").strip()
-            if not prompt_id:
-                errors.append(
-                    WorkflowValidationIssue("missing_prompt", "Prompt 节点必须配置 prompt_id", node.id)
-                )
-            elif prompt_ids is not None and prompt_id not in prompt_ids:
-                errors.append(
-                    WorkflowValidationIssue("unknown_prompt", "引用的 Prompt 不存在", node.id)
-                )
+            errors.extend(_validate_prompt_node(node, prompt_ids))
         elif node.type == "skill":
-            skill_id = str(node.config.get("skill_id") or "").strip()
-            if not skill_id:
-                errors.append(
-                    WorkflowValidationIssue("missing_skill", "Skill 节点必须配置 skill_id", node.id)
-                )
-            elif skill_ids is not None and skill_id not in skill_ids:
-                errors.append(
-                    WorkflowValidationIssue("unknown_skill", "引用的 Skill 不存在", node.id)
-                )
+            errors.extend(_validate_skill_node(node, skill_ids))
         elif node.type == "tool":
-            try:
-                reference = tool_reference_from_node_config(node.config)
-            except ValueError as exc:
-                errors.append(
-                    WorkflowValidationIssue("invalid_tool_reference", str(exc), node.id)
-                )
-                continue
-            tool_name = reference.tool_name
-            if reference.provider == "system" and is_workbench_control_tool(tool_name):
-                errors.append(
-                    WorkflowValidationIssue(
-                        "recursive_workflow_tool",
-                        "Workflow Tool Node 不允许调用 Workbench 控制面 Tool",
-                        node.id,
-                    )
-                )
-            elif tool_keys is not None and reference.key not in tool_keys:
-                errors.append(
-                    WorkflowValidationIssue(
-                        "unknown_tool",
-                        "引用的 Tool 不存在、未发现或当前已禁用",
-                        node.id,
-                    )
-                )
-            elif reference.provider == "mcp" and tool_keys is None:
-                errors.append(
-                    WorkflowValidationIssue(
-                        "mcp_tool_unavailable",
-                        "MCP Tool 需要 Effective Tool Catalog 才能验证",
-                        node.id,
-                    )
-                )
-            elif (
-                reference.provider == "system"
-                and tool_keys is None
-                and tool_names is not None
-                and tool_name not in tool_names
-            ):
-                errors.append(
-                    WorkflowValidationIssue("unknown_tool", "引用的 Tool 不存在", node.id)
-                )
+            errors.extend(
+                _validate_tool_node(node, tool_names=tool_names, tool_keys=tool_keys)
+            )
         elif node.type == "approval":
-            title = str(node.config.get("title") or node.name).strip()
-            if not title:
-                errors.append(
-                    WorkflowValidationIssue("invalid_approval", "Approval 节点必须有标题", node.id)
-                )
+            errors.extend(_validate_approval_node(node))
         elif node.type == "condition":
-            expression = str(node.config.get("expression") or "").strip()
-            if not expression:
-                errors.append(
-                    WorkflowValidationIssue(
-                        "invalid_condition",
-                        "Condition 节点必须配置受限 expression",
-                        node.id,
-                    )
-                )
+            errors.extend(_validate_condition_node(node))
         elif node.type == "artifact":
-            artifact_id = str(node.config.get("artifact_id") or "").strip()
-            source_node_id = str(node.config.get("source_node_id") or "").strip()
-            artifact_format = str(node.config.get("format") or "json").strip()
-            if not NODE_ID_PATTERN.fullmatch(artifact_id):
-                errors.append(
-                    WorkflowValidationIssue(
-                        "invalid_artifact_id",
-                        "Artifact 节点必须配置合法 artifact_id",
-                        node.id,
-                    )
-                )
-            if source_node_id not in node_id_set or source_node_id == node.id:
-                errors.append(
-                    WorkflowValidationIssue(
-                        "invalid_artifact_source",
-                        "Artifact source_node_id 必须指向另一个现有节点",
-                        node.id,
-                    )
-                )
-            if artifact_format not in {"json", "text"}:
-                errors.append(
-                    WorkflowValidationIssue(
-                        "invalid_artifact_format",
-                        "Artifact format 只支持 json/text",
-                        node.id,
-                    )
-                )
+            errors.extend(_validate_artifact_node(node, node_ids))
+    return errors
 
+
+def _validate_artifact_uniqueness(
+    workflow: WorkflowDefinition,
+) -> list[WorkflowValidationIssue]:
     artifact_ids = [
         str(node.config.get("artifact_id") or "").strip()
         for node in workflow.nodes
         if node.type == "artifact"
     ]
     valid_artifact_ids = [item for item in artifact_ids if item]
-    if len(valid_artifact_ids) != len(set(valid_artifact_ids)):
-        errors.append(
-            WorkflowValidationIssue(
-                "duplicate_artifact_id",
-                "Workflow 中 artifact_id 必须唯一",
-            )
+    if len(valid_artifact_ids) == len(set(valid_artifact_ids)):
+        return []
+    return [
+        WorkflowValidationIssue(
+            "duplicate_artifact_id",
+            "Workflow 中 artifact_id 必须唯一",
         )
+    ]
+
+
+def validate_workflow(
+    workflow: WorkflowDefinition,
+    *,
+    prompt_ids: set[str] | None = None,
+    skill_ids: set[str] | None = None,
+    tool_names: set[str] | None = None,
+    tool_keys: set[str] | None = None,
+) -> WorkflowValidationResult:
+    errors, node_ids, outgoing = _validate_graph_structure(workflow)
+    warnings: list[WorkflowValidationIssue] = []
+    if not errors:
+        errors.extend(_validate_acyclic_graph(node_ids, outgoing))
+    errors.extend(_validate_reachability(workflow.entry_node_id, node_ids, outgoing))
+    errors.extend(
+        _validate_nodes(
+            workflow,
+            node_ids,
+            prompt_ids=prompt_ids,
+            skill_ids=skill_ids,
+            tool_names=tool_names,
+            tool_keys=tool_keys,
+        )
+    )
+    errors.extend(_validate_artifact_uniqueness(workflow))
 
     return WorkflowValidationResult(tuple(errors), tuple(warnings))
 
