@@ -84,7 +84,7 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
     <AppSidebar :version="version" />
 
     <main class="min-w-0 flex-1 overflow-auto">
-      <div class="mx-auto min-h-full w-full max-w-[1280px] px-8 py-10 max-[1050px]:px-6 max-[1050px]:py-8">
+      <div class="mx-auto flex min-h-full w-full max-w-none flex-col px-3 py-4 max-[1050px]:px-2.5 max-[1050px]:py-3">
         <div
           v-if="errorMessage"
           class="sticky top-2 z-30 mb-4 flex items-center justify-between gap-3 rounded-[7px] border border-destructive/25 bg-destructive/10 px-3 py-2.5 text-xs text-destructive"

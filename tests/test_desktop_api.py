@@ -10,6 +10,8 @@ from coding_tools_launcher.gateway_launcher import (
     GatewayDiagnosticReport,
     GatewayProfileDiagnostic,
 )
+from mcp_tools_server.local_permission_broker import LocalWorkflowApprovalBrokerClient
+from mcp_tools_server.runtime import Runtime
 
 
 class DesktopAPITests(unittest.TestCase):
@@ -37,6 +39,10 @@ class DesktopAPITests(unittest.TestCase):
             patch(
                 "coding_tools_launcher.desktop_api.save_settings",
                 side_effect=lambda value: self.settings.update(value),
+            ),
+            patch(
+                "coding_tools_launcher.desktop_api.settings_dir",
+                return_value=self.base,
             ),
         ]
         for item in self.patches:
@@ -108,6 +114,296 @@ class DesktopAPITests(unittest.TestCase):
         self.assertEqual(created["permission_mode"], "safe")
         self.assertFalse(created["running"])
         self.assertTrue(created["server_id"])
+
+    def test_clear_logs_removes_retained_entries_without_resetting_cursor(self) -> None:
+        self.api._append_log("first")
+        self.api._append_log("second")
+        before = self.api.get_logs()
+        self.assertEqual([item["message"] for item in before["entries"]], ["first", "second"])
+
+        cursor = self.api.clear_logs()
+        self.assertEqual(cursor, before["cursor"])
+        self.assertEqual(self.api.get_logs()["entries"], [])
+
+        self.api._append_log("third")
+        after = self.api.get_logs(cursor)
+        self.assertEqual([item["message"] for item in after["entries"]], ["third"])
+
+    def test_workflow_approval_bridge_lists_and_responds_signed_request(self) -> None:
+        created = self.api.create_server(self.payload())
+        server_id = str(created["server_id"])
+        client = LocalWorkflowApprovalBrokerClient.from_values(
+            directory=self.api.permission_broker.directory,
+            secret_hex=self.api.permission_broker.secret.hex(),
+            server_id=server_id,
+        )
+        request_id = client.publish(
+            run_id="c" * 24,
+            node_id="approval",
+            approval_id="approval_3",
+            title="确认实现",
+            description="确认后继续",
+        )
+
+        pending = self.api.list_workflow_approvals()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["request_id"], request_id)
+        self.assertEqual(pending[0]["server_name"], "Server A")
+        self.assertTrue(self.api.respond_workflow_approval(request_id, True))
+        self.assertTrue(
+            client.consume_response(
+                request_id,
+                run_id="c" * 24,
+                node_id="approval",
+                approval_id="approval_3",
+            )
+        )
+
+    def test_workbench_target_catalog_and_workflow_crud(self) -> None:
+        created = self.api.create_server(self.payload())
+        server_id = str(created["server_id"])
+        target_id = f"server:{server_id}"
+
+        targets = self.api.list_workbench_targets()
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["target_id"], target_id)
+        self.assertEqual(targets[0]["workspace"], str(self.base.resolve()))
+
+        catalog = self.api.get_workbench_catalog(target_id)
+        workflow_ids = {item["id"] for item in catalog["workflows"]}
+        self.assertIn("project-development", workflow_ids)
+        self.assertIn("reverse-engineering", {item["id"] for item in catalog["skills"]})
+
+        raw = {
+            "schema_version": 1,
+            "id": "desktop-flow",
+            "name": "Desktop Flow",
+            "description": "Desktop-managed code review workflow",
+            "version": 1,
+            "entry_node_id": "review",
+            "inputs_schema": {
+                "type": "object",
+                "properties": {"scope": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            "tags": ["review", "desktop"],
+            "nodes": [
+                {
+                    "id": "review",
+                    "type": "skill",
+                    "name": "Review",
+                    "position": {"x": 80, "y": 80},
+                    "config": {"skill_id": "code-review"},
+                }
+            ],
+            "edges": [],
+        }
+        validation = self.api.validate_workbench_workflow(target_id, raw)
+        self.assertTrue(validation["ok"])
+        saved = self.api.save_workbench_workflow(target_id, raw, 0)
+        self.assertTrue(saved["saved"])
+        loaded = self.api.get_workbench_workflow(target_id, "desktop-flow")
+        self.assertEqual(loaded["name"], "Desktop Flow")
+        self.assertEqual(loaded["scope"], "workspace")
+        self.assertEqual(loaded["tags"], ["review", "desktop"])
+        self.assertEqual(loaded["inputs_schema"]["properties"]["scope"]["type"], "string")
+
+        with self.assertRaisesRegex(RuntimeError, "version conflict"):
+            self.api.save_workbench_workflow(target_id, raw, 0)
+
+    def test_workbench_catalog_sees_workflow_authored_by_running_ai_runtime(self) -> None:
+        created = self.api.create_server(self.payload())
+        target_id = f"server:{created['server_id']}"
+        runtime = Runtime(
+            self.base,
+            global_asset_root=self.base / "workbench",
+        )
+        authored = {
+            "schema_version": 1,
+            "id": "ai-visible-in-gui",
+            "name": "AI Visible In GUI",
+            "description": "Analyse a requested project area and return reusable evidence.",
+            "version": 1,
+            "entry_node_id": "analysis",
+            "inputs_schema": {
+                "type": "object",
+                "properties": {"topic": {"type": "string"}},
+                "required": ["topic"],
+                "additionalProperties": False,
+            },
+            "tags": ["analysis", "ai-authored"],
+            "nodes": [
+                {
+                    "id": "analysis",
+                    "type": "skill",
+                    "name": "Project Analysis",
+                    "position": {"x": 80, "y": 80},
+                    "config": {"skill_id": "project-analysis", "arguments": {}},
+                }
+            ],
+            "edges": [],
+            "metadata": {"created_by": "ai"},
+        }
+        try:
+            saved = runtime.workflow_save(
+                {"workflow": authored, "expected_version": 0}
+            )
+        finally:
+            runtime.close()
+
+        self.assertTrue(saved["saved"])
+        catalog = self.api.get_workbench_catalog(target_id)
+        summary = next(
+            item for item in catalog["workflows"] if item["id"] == "ai-visible-in-gui"
+        )
+        self.assertEqual(summary["description"], authored["description"])
+        self.assertEqual(summary["tags"], ["analysis", "ai-authored"])
+        self.assertEqual(summary["inputs_schema"]["required"], ["topic"])
+
+        loaded = self.api.get_workbench_workflow(target_id, "ai-visible-in-gui")
+        self.assertEqual(loaded["nodes"][0]["config"]["skill_id"], "project-analysis")
+        self.assertEqual(loaded["metadata"]["created_by"], "ai")
+
+    def test_workbench_prompt_and_skill_domain_crud(self) -> None:
+        prompt = {
+            "schema_version": 1,
+            "id": "desktop-prompt",
+            "name": "Desktop Prompt",
+            "description": "Managed through the shared Workbench domain service",
+            "arguments": [],
+            "messages": [{"role": "user", "content": "Inspect the workspace"}],
+        }
+        validated_prompt = self.api.validate_workbench_prompt(prompt)
+        self.assertTrue(validated_prompt["ok"])
+        saved_prompt = self.api.save_workbench_prompt(prompt, 0)
+        self.assertTrue(saved_prompt["saved"])
+        self.assertEqual(saved_prompt["prompt"]["version"], 1)
+        self.assertEqual(saved_prompt["prompt"]["scope"], "global")
+
+        loaded_prompt = self.api.get_workbench_prompt("desktop-prompt")
+        self.assertEqual(loaded_prompt["name"], "Desktop Prompt")
+
+        prompt["name"] = "Desktop Prompt v2"
+        updated_prompt = self.api.save_workbench_prompt(prompt, 1)
+        self.assertEqual(updated_prompt["prompt"]["version"], 2)
+        with self.assertRaisesRegex(RuntimeError, "Prompt version conflict"):
+            self.api.save_workbench_prompt(prompt, 1)
+
+        skill = {
+            "schema_version": 1,
+            "id": "desktop-skill",
+            "name": "Desktop Skill",
+            "description": "Managed Skill",
+            "entry_prompt": "desktop-prompt",
+            "tool_references": [
+                {"provider": "system", "tool_name": "read_file"},
+                {"provider": "system", "tool_name": "search_text"},
+            ],
+            "artifacts": ["desktop-report.md"],
+            "method_document": "# Desktop Skill\n\nRead evidence and write the report.",
+        }
+        validated_skill = self.api.validate_workbench_skill(skill)
+        self.assertTrue(validated_skill["ok"])
+        saved_skill = self.api.save_workbench_skill(skill, 0)
+        self.assertTrue(saved_skill["saved"])
+        self.assertEqual(saved_skill["skill"]["version"], 1)
+        self.assertEqual(saved_skill["skill"]["scope"], "global")
+        self.assertEqual(
+            saved_skill["skill"]["tool_references"][0],
+            {"provider": "system", "tool_name": "read_file"},
+        )
+
+        catalog = self.api.get_workbench_capability_catalog()
+        prompt_summary = next(
+            item for item in catalog["prompts"] if item["id"] == "desktop-prompt"
+        )
+        skill_summary = next(
+            item for item in catalog["skills"] if item["id"] == "desktop-skill"
+        )
+        self.assertEqual(prompt_summary["version"], 2)
+        self.assertEqual(skill_summary["version"], 1)
+
+        created = self.api.create_server(self.payload())
+        target_id = f"server:{created['server_id']}"
+        workflow_catalog = self.api.get_workbench_catalog(target_id)
+        self.assertIn(
+            "desktop-prompt",
+            {item["id"] for item in workflow_catalog["prompts"]},
+        )
+        self.assertIn(
+            "desktop-skill",
+            {item["id"] for item in workflow_catalog["skills"]},
+        )
+
+        with self.assertRaisesRegex(ValueError, "referenced by Skills"):
+            self.api.delete_workbench_prompt("desktop-prompt")
+        self.assertTrue(self.api.delete_workbench_skill("desktop-skill"))
+        self.assertTrue(self.api.delete_workbench_prompt("desktop-prompt"))
+
+        refreshed = self.api.get_workbench_capability_catalog()
+        self.assertNotIn("desktop-prompt", {item["id"] for item in refreshed["prompts"]})
+        self.assertNotIn("desktop-skill", {item["id"] for item in refreshed["skills"]})
+
+    def test_workbench_mcp_connection_global_crud_and_catalog(self) -> None:
+        connection = {
+            "id": "desktop-mcp",
+            "name": "Desktop MCP",
+            "transport": "http",
+            "endpoint": "https://mcp.example.com/mcp",
+            "enabled": True,
+            "headers": {"Accept-Language": "zh-CN"},
+            "header_refs": {"Authorization": "env:DESKTOP_MCP_AUTH"},
+        }
+
+        validated = self.api.validate_workbench_mcp_connection(connection)
+        self.assertTrue(validated["ok"])
+
+        saved = self.api.save_workbench_mcp_connection(connection, 0)
+        self.assertTrue(saved["saved"])
+        self.assertEqual(saved["connection"]["version"], 1)
+        self.assertEqual(saved["connection"]["scope"], "global")
+
+        loaded = self.api.get_workbench_mcp_connection("desktop-mcp")
+        self.assertEqual(loaded["name"], "Desktop MCP")
+        self.assertEqual(loaded["header_refs"]["Authorization"], "env:DESKTOP_MCP_AUTH")
+
+        catalog = self.api.get_workbench_capability_catalog()
+        self.assertIn(
+            "desktop-mcp",
+            {item["id"] for item in catalog["mcp_connections"]},
+        )
+
+        connection["enabled"] = False
+        updated = self.api.save_workbench_mcp_connection(connection, 1)
+        self.assertEqual(updated["connection"]["version"], 2)
+        self.assertFalse(updated["connection"]["enabled"])
+
+        unsafe = dict(connection)
+        unsafe["id"] = "unsafe-mcp"
+        unsafe["headers"] = {"Authorization": "Bearer plaintext"}
+        with self.assertRaisesRegex(ValueError, "secret-bearing"):
+            self.api.validate_workbench_mcp_connection(unsafe)
+
+        self.assertTrue(self.api.delete_workbench_mcp_connection("desktop-mcp"))
+        refreshed = self.api.get_workbench_capability_catalog()
+        self.assertNotIn(
+            "desktop-mcp",
+            {item["id"] for item in refreshed["mcp_connections"]},
+        )
+
+    def test_workbench_gateway_profiles_are_separate_targets(self) -> None:
+        gateway = self.api.create_gateway(self.gateway_payload())
+        targets = self.api.list_workbench_targets()
+        gateway_targets = [
+            item
+            for item in targets
+            if str(item["target_id"]).startswith(f"gateway:{gateway['gateway_id']}:")
+        ]
+        self.assertEqual(len(gateway_targets), 2)
+        self.assertEqual(
+            {item["profile_name"] for item in gateway_targets},
+            {"Company", "Home"},
+        )
 
     def test_next_port_advances_after_profile_creation(self) -> None:
         self.api.create_server(self.payload())

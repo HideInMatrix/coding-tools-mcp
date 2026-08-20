@@ -6,6 +6,7 @@ from .git import GIT_TOOLS
 from .process import PROCESS_TOOLS
 from .system import SYSTEM_TOOLS
 from .toolchains import TOOLCHAIN_TOOLS
+from .workbench import WORKBENCH_TOOLS
 
 
 def build_tool_registry() -> ToolRegistry:
@@ -15,6 +16,7 @@ def build_tool_registry() -> ToolRegistry:
     registry.register_many(FILESYSTEM_TOOLS)
     registry.register_many(PROCESS_TOOLS)
     registry.register_many(GIT_TOOLS)
+    registry.register_many(WORKBENCH_TOOLS)
     return registry
 
 

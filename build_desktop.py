@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parent
 MACOS_BUNDLE_IDENTIFIER = "org.micromatrix.coding-tools-mcp"
 DEFAULT_WEB_DIR = ROOT / "coding_tools_launcher" / "web"
 DEFAULT_WEB_DIST = DEFAULT_WEB_DIR / "dist"
+WINDOWS_RUNTIME_TMPDIR = r"%LOCALAPPDATA%\Micromatrix\Coding Tools MCP\runtime"
 
 
 def build_web_frontend() -> None:
@@ -81,6 +82,23 @@ def pyinstaller_bundle_mode(platform_name: str | None = None) -> str:
     return "--onefile" if current.startswith("win") else "--onedir"
 
 
+def pyinstaller_runtime_tmpdir(platform_name: str | None = None) -> str | None:
+    """Return a writable extraction root for Windows onefile bundles.
+
+    PyInstaller's Windows onefile bootloader needs to create its ``_MEI``
+    directory before Python starts.  Some Windows installations expose an
+    unusable TMP/TEMP location, which otherwise terminates the application
+    with ``Could not create temporary directory!`` before our code can run.
+    ``%LOCALAPPDATA%`` is per-user and PyInstaller expands Windows environment
+    variables in ``--runtime-tmpdir`` itself.
+    """
+
+    current = (platform_name or sys.platform).lower()
+    if current.startswith("win"):
+        return WINDOWS_RUNTIME_TMPDIR
+    return None
+
+
 def resolve_build_version() -> str:
     """Resolve the version embedded into the desktop bundle.
 
@@ -130,6 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     version_file = write_build_version(build_version)
     separator = ";" if sys.platform.startswith("win") else ":"
     bundle_mode = pyinstaller_bundle_mode()
+    runtime_tmpdir = pyinstaller_runtime_tmpdir()
     command = [
         sys.executable,
         "-m",
@@ -153,6 +172,8 @@ def main(argv: list[str] | None = None) -> int:
         "--add-data",
         f"{web_dist}{separator}coding_tools_launcher/web/dist",
     ]
+    if runtime_tmpdir:
+        command.extend(["--runtime-tmpdir", runtime_tmpdir])
     if sys.platform == "darwin":
         command.extend(
             [

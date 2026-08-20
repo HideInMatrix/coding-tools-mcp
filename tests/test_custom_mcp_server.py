@@ -14,6 +14,7 @@ import time
 import unittest
 import urllib.parse
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from mcp_tools_server import __version__
@@ -158,7 +159,10 @@ class CustomMCPServerContractTests(unittest.TestCase):
     def test_cimd_https_connection_loads_certifi_ca_bundle(self) -> None:
         with (
             patch("mcp_tools_server.server.ssl.create_default_context") as create_context,
-            patch("mcp_tools_server.server.certifi.where", return_value="/tmp/cacert.pem"),
+            patch(
+                "mcp_tools_server.server.certifi",
+                SimpleNamespace(where=lambda: "/tmp/cacert.pem"),
+            ),
         ):
             context = create_context.return_value
             from mcp_tools_server.server import _PinnedHTTPSConnection
@@ -260,7 +264,9 @@ class CustomMCPServerContractTests(unittest.TestCase):
             finally:
                 runtime.close()
 
-        self.assertEqual(len(tools), 20)
+        names = {tool["name"] for tool in tools}
+        self.assertIn("server_info", names)
+        self.assertIn("workflow_authoring_context", names)
         for tool in tools:
             with self.subTest(tool=tool["name"]):
                 self.assertIsInstance(tool.get("inputSchema"), dict)
@@ -307,6 +313,9 @@ class CustomMCPServerContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary))
             try:
+                expected_tool_names = {
+                    tool["name"] for tool in runtime.list_tools()["tools"]
+                }
                 initialized = dispatch(
                     runtime,
                     {
@@ -328,12 +337,18 @@ class CustomMCPServerContractTests(unittest.TestCase):
                 runtime.close()
 
         self.assertEqual(initialized["result"]["protocolVersion"], "2025-11-25")
-        self.assertEqual(len(listed["result"]["tools"]), 20)
+        self.assertEqual(
+            {tool["name"] for tool in listed["result"]["tools"]},
+            expected_tool_names,
+        )
 
     def test_legacy_null_params_are_treated_as_empty_object(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary))
             try:
+                expected_tool_names = {
+                    tool["name"] for tool in runtime.list_tools()["tools"]
+                }
                 response = dispatch(
                     runtime,
                     {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": None},
@@ -341,7 +356,10 @@ class CustomMCPServerContractTests(unittest.TestCase):
             finally:
                 runtime.close()
 
-        self.assertEqual(len(response["result"]["tools"]), 20)
+        self.assertEqual(
+            {tool["name"] for tool in response["result"]["tools"]},
+            expected_tool_names,
+        )
 
     def test_invalid_json_rpc_id_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1838,6 +1856,8 @@ class RuntimeSafetyTests(unittest.TestCase):
                         "yield_time_ms": 100,
                     },
                 )
+                if started["structuredContent"].get("error", {}).get("code") == "TTY_UNSUPPORTED":
+                    self.skipTest("POSIX pseudo-terminal unavailable in the current sandbox")
                 command_id = started["structuredContent"]["command_id"]
                 completed = runtime.call_tool(
                     "write_stdin",
@@ -2409,7 +2429,10 @@ class HTTPTransportTests(unittest.TestCase):
                 payload = json.loads(response.read())
                 self.assertEqual(response.status, 200)
                 tools = payload["result"]["tools"]
-                self.assertEqual(len(tools), 20)
+                self.assertEqual(
+                    {tool["name"] for tool in tools},
+                    {tool["name"] for tool in runtime.list_tools()["tools"]},
+                )
                 self.assertTrue(all("outputSchema" in tool for tool in tools))
                 connection.close()
             finally:
@@ -2527,7 +2550,10 @@ class HTTPTransportTests(unittest.TestCase):
                 response = connection.getresponse()
                 payload = json.loads(response.read())
                 self.assertEqual(response.status, 200)
-                self.assertEqual(len(payload["result"]["tools"]), 20)
+                self.assertEqual(
+                    {tool["name"] for tool in payload["result"]["tools"]},
+                    {tool["name"] for tool in runtime.list_tools()["tools"]},
+                )
                 connection.close()
             finally:
                 server.shutdown()

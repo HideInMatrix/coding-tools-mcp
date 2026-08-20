@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -47,6 +48,16 @@ class RequestContext:
     input_responses: Mapping[str, Any] | None = None
     request_state: str | None = None
     principal: str = ""
+
+
+ACTIVE_REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
+    "coding_tools_mcp_request_context",
+    default=None,
+)
+
+
+def current_request_context() -> RequestContext | None:
+    return ACTIVE_REQUEST_CONTEXT.get()
 
 
 def _id(request: dict[str, Any]) -> str | int | None:
@@ -149,7 +160,7 @@ def _shape_modern(method: str, result: dict[str, Any], runtime: Any) -> dict[str
     meta = dict(raw_meta) if isinstance(raw_meta, dict) else {}
     meta[META_SERVER_INFO] = runtime.server_identity()
     shaped["_meta"] = meta
-    if method in {"server/discover", "tools/list"}:
+    if method in {"server/discover", "tools/list", "prompts/list"}:
         shaped["ttlMs"] = 0
         shaped["cacheScope"] = "private"
     return shaped
@@ -286,7 +297,10 @@ def _dispatch_modern(runtime: Any, method: str, params: dict[str, Any], context:
     if method == "server/discover":
         return {
             "supportedVersions": list(MODERN_PROTOCOL_VERSIONS),
-            "capabilities": {"tools": {"listChanged": False}},
+            "capabilities": {
+                "tools": {"listChanged": False},
+                "prompts": {"listChanged": False},
+            },
             "instructions": runtime.project_context.server_instructions(),
         }
     if method == "ping":
@@ -297,6 +311,10 @@ def _dispatch_modern(runtime: Any, method: str, params: dict[str, Any], context:
         return runtime.list_tools()
     if method == "tools/call":
         return _tool_call(runtime, params, context)
+    if method == "prompts/list":
+        return runtime.list_prompts()
+    if method == "prompts/get":
+        return _prompt_get(runtime, params)
     raise RpcError(-32601, f"Unknown method: {method}")
 
 
@@ -316,7 +334,10 @@ def _dispatch_legacy(
             requested = LATEST_LEGACY_PROTOCOL_VERSION
         return {
             "protocolVersion": requested,
-            "capabilities": {"tools": {"listChanged": False}},
+            "capabilities": {
+                "tools": {"listChanged": False},
+                "prompts": {"listChanged": False},
+            },
             "serverInfo": runtime.server_identity(),
             "instructions": runtime.project_context.server_instructions(),
         }
@@ -333,6 +354,10 @@ def _dispatch_legacy(
             params,
             RequestContext("legacy", version, principal=principal),
         )
+    if method == "prompts/list":
+        return runtime.list_prompts()
+    if method == "prompts/get":
+        return _prompt_get(runtime, params)
     raise RpcError(-32601, f"Unknown method: {method}")
 
 
@@ -344,3 +369,13 @@ def _tool_call(runtime: Any, params: dict[str, Any], context: RequestContext) ->
     if not isinstance(arguments, dict):
         raise RpcError(-32602, "tools/call arguments must be an object")
     return runtime.call_tool(name, arguments, context=context)
+
+
+def _prompt_get(runtime: Any, params: dict[str, Any]) -> dict[str, Any]:
+    name = params.get("name")
+    arguments = params.get("arguments")
+    if not isinstance(name, str) or not name:
+        raise RpcError(-32602, "prompts/get requires a prompt name")
+    if arguments is not None and not isinstance(arguments, dict):
+        raise RpcError(-32602, "prompts/get arguments must be an object")
+    return runtime.get_prompt(name, arguments)

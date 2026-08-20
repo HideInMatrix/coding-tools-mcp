@@ -35,8 +35,9 @@ from .updates import (
     fetch_latest_release,
     normalize_download_proxy_prefix,
 )
-from .user_settings import load_settings, save_settings
+from .user_settings import load_settings, save_settings, settings_dir
 from .version import current_version
+from .workbench_manager import DesktopWorkbenchManager
 
 
 SENSITIVE_NETWORK_OPTIONS = {"tunnel_token", "authtoken"}
@@ -71,10 +72,18 @@ class DesktopAPI:
             log=self._append_log,
             permission_broker=self.permission_broker,
         )
+        self.workbench_manager = DesktopWorkbenchManager(
+            server_store=self.store,
+            gateway_store=self.gateway_store,
+            server_manager=self.manager,
+            gateway_manager=self.gateway_manager,
+            global_root=settings_dir() / "workbench",
+        )
         self.update_manager = UpdateManager(log=self._append_log)
         self._latest_release = None
         self._window: Any | None = None
         self._permission_attention_id = ""
+        self._workflow_approval_attention_id = ""
         self._migrate_legacy_desktop_settings()
 
     def _bind_window(self, window: Any) -> None:
@@ -116,6 +125,182 @@ class DesktopAPI:
 
     def respond_permission_request(self, request_id: str, decision: str | bool) -> bool:
         return self.permission_broker.respond(str(request_id), decision)
+
+    def list_workflow_approvals(self) -> list[dict[str, object]]:
+        requests = self.permission_broker.pending_workflow_approvals()
+        names = {profile.server_id: profile.name for profile in self.store.list()}
+        for gateway in self.gateway_store.list():
+            names.update(
+                {member.server_id: member.name for member in gateway.members}
+            )
+        payload = [
+            {
+                **item,
+                "server_name": names.get(
+                    str(item.get("server_id") or ""),
+                    "MCP Server",
+                ),
+            }
+            for item in requests
+        ]
+        request_id = str(payload[0].get("request_id") or "") if payload else ""
+        if request_id and request_id != self._workflow_approval_attention_id:
+            self._workflow_approval_attention_id = request_id
+            window = self._window
+            if window is not None:
+                try:
+                    window.show()
+                    window.restore()
+                except Exception:
+                    pass
+        elif not request_id:
+            self._workflow_approval_attention_id = ""
+        return payload
+
+    def respond_workflow_approval(self, request_id: str, approved: bool) -> bool:
+        return self.permission_broker.respond_workflow_approval(
+            str(request_id),
+            bool(approved),
+        )
+
+    def list_workbench_targets(self) -> list[dict[str, object]]:
+        return [item.to_dict() for item in self.workbench_manager.targets()]
+
+    def get_workbench_catalog(self, target_id: str) -> dict[str, object]:
+        return self.workbench_manager.catalog(str(target_id))
+
+    def get_workbench_capability_catalog(self) -> dict[str, object]:
+        return self.workbench_manager.capability_catalog()
+
+    def get_workbench_mcp_connection(self, connection_id: str) -> dict[str, object]:
+        return self.workbench_manager.get_mcp_connection(str(connection_id))
+
+    def validate_workbench_mcp_connection(
+        self,
+        connection: dict[str, Any],
+    ) -> dict[str, object]:
+        return self.workbench_manager.validate_mcp_connection(connection)
+
+    def save_workbench_mcp_connection(
+        self,
+        connection: dict[str, Any],
+        expected_version: int,
+    ) -> dict[str, object]:
+        return self.workbench_manager.save_mcp_connection(
+            connection,
+            expected_version=int(expected_version),
+        )
+
+    def delete_workbench_mcp_connection(self, connection_id: str) -> bool:
+        return self.workbench_manager.delete_mcp_connection(str(connection_id))
+
+    def test_workbench_mcp_connection(
+        self,
+        connection_id: str,
+        timeout_seconds: int = 8,
+    ) -> dict[str, object]:
+        return self.workbench_manager.test_mcp_connection(
+            str(connection_id),
+            timeout_seconds=int(timeout_seconds),
+        )
+
+    def discover_workbench_mcp_connection_tools(
+        self,
+        connection_id: str,
+        timeout_seconds: int = 8,
+    ) -> dict[str, object]:
+        return self.workbench_manager.discover_mcp_connection_tools(
+            str(connection_id),
+            timeout_seconds=int(timeout_seconds),
+        )
+
+    def get_workbench_prompt(
+        self,
+        prompt_id: str,
+    ) -> dict[str, object]:
+        return self.workbench_manager.get_prompt(str(prompt_id))
+
+    def validate_workbench_prompt(
+        self,
+        prompt: dict[str, Any],
+    ) -> dict[str, object]:
+        return self.workbench_manager.validate_prompt(prompt)
+
+    def save_workbench_prompt(
+        self,
+        prompt: dict[str, Any],
+        expected_version: int,
+    ) -> dict[str, object]:
+        return self.workbench_manager.save_prompt(
+            prompt,
+            expected_version=int(expected_version),
+        )
+
+    def delete_workbench_prompt(self, prompt_id: str) -> bool:
+        return self.workbench_manager.delete_prompt(str(prompt_id))
+
+    def get_workbench_skill(
+        self,
+        skill_id: str,
+    ) -> dict[str, object]:
+        return self.workbench_manager.get_skill(str(skill_id))
+
+    def validate_workbench_skill(
+        self,
+        skill: dict[str, Any],
+    ) -> dict[str, object]:
+        return self.workbench_manager.validate_skill(skill)
+
+    def save_workbench_skill(
+        self,
+        skill: dict[str, Any],
+        expected_version: int,
+    ) -> dict[str, object]:
+        return self.workbench_manager.save_skill(
+            skill,
+            expected_version=int(expected_version),
+        )
+
+    def delete_workbench_skill(self, skill_id: str) -> bool:
+        return self.workbench_manager.delete_skill(str(skill_id))
+
+    def get_workbench_workflow(
+        self,
+        target_id: str,
+        workflow_id: str,
+    ) -> dict[str, object]:
+        return self.workbench_manager.get_workflow(
+            str(target_id),
+            str(workflow_id),
+        )
+
+    def validate_workbench_workflow(
+        self,
+        target_id: str,
+        workflow: dict[str, Any],
+    ) -> dict[str, object]:
+        return self.workbench_manager.validate_workflow(str(target_id), workflow)
+
+    def save_workbench_workflow(
+        self,
+        target_id: str,
+        workflow: dict[str, Any],
+        expected_version: int,
+    ) -> dict[str, object]:
+        return self.workbench_manager.save_workflow(
+            str(target_id),
+            workflow,
+            expected_version=int(expected_version),
+        )
+
+    def delete_workbench_workflow(self, target_id: str, workflow_id: str) -> bool:
+        return self.workbench_manager.delete_workflow(
+            str(target_id),
+            str(workflow_id),
+        )
+
+    def list_workbench_runs(self, target_id: str) -> list[dict[str, object]]:
+        return self.workbench_manager.runs(str(target_id))
 
     def _append_log(self, message: str) -> None:
         with self._log_lock:
@@ -1046,6 +1231,17 @@ class DesktopAPI:
         with self._log_lock:
             entries = [entry for entry in self._logs if int(entry["id"]) > int(after)]
             return {"cursor": self._log_cursor, "entries": entries}
+
+    def clear_logs(self) -> int:
+        """Clear retained desktop runtime logs and return the current cursor.
+
+        The cursor is intentionally not reset so a polling frontend can continue
+        from the clear boundary without replaying older entries or colliding with
+        IDs emitted immediately after the clear.
+        """
+        with self._log_lock:
+            self._logs.clear()
+            return self._log_cursor
 
     def detect_executable(self, product: str, configured: str = "") -> dict[str, object]:
         candidate = resolve_executable(product, configured=configured, auto_only=True)

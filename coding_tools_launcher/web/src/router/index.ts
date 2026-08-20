@@ -1,6 +1,14 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 
-export type AppRouteName = 'services' | 'oauth' | 'logs' | 'about'
+export type AppRouteName =
+  | 'services'
+  | 'workbench'
+  | 'workbench-prompts'
+  | 'workbench-skills'
+  | 'workbench-mcp-connections'
+  | 'oauth'
+  | 'logs'
+  | 'about'
 
 export const router = createRouter({
   history: createWebHashHistory(),
@@ -13,6 +21,26 @@ export const router = createRouter({
       path: '/services',
       name: 'services',
       component: () => import('../components/ServiceView.vue'),
+    },
+    {
+      path: '/workbench',
+      name: 'workbench',
+      component: () => import('../components/WorkflowWorkbenchView.vue'),
+    },
+    {
+      path: '/workbench/prompts',
+      name: 'workbench-prompts',
+      component: () => import('../components/PromptManagerView.vue'),
+    },
+    {
+      path: '/workbench/skills',
+      name: 'workbench-skills',
+      component: () => import('../components/SkillManagerView.vue'),
+    },
+    {
+      path: '/workbench/mcp-connections',
+      name: 'workbench-mcp-connections',
+      component: () => import('../components/MCPConnectionManagerView.vue'),
     },
     {
       path: '/oauth',

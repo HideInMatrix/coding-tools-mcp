@@ -15,7 +15,8 @@ from .core import SERVER_NAME, SERVER_TITLE, ToolDispatcher
 from .errors import RpcError, ToolError
 from .processes import CommandManager
 from .project_context import ProjectContext, load_project_context
-from .protocol import RequestContext
+from .local_permission_broker import LocalWorkflowApprovalBrokerClient
+from .protocol import ACTIVE_REQUEST_CONTEXT, RequestContext, current_request_context
 from .permissions import (
     ACTIVE_PERMISSIONS,
     ELICITABLE_PERMISSIONS,
@@ -32,8 +33,18 @@ from .tools.git import GitHandlers
 from .tools.process import ProcessHandlers
 from .tools.system import SystemHandlers
 from .tools.toolchains import ToolchainHandlers
+from .tools.workbench import WorkbenchHandlers
 from .toolchains import ToolchainResolver
 from .workspace import Workspace
+from .workbench import (
+    CapabilityAssetService,
+    MCPConnectionService,
+    WorkflowEngine,
+    WorkflowRunManager,
+    WorkflowStore,
+    build_workflow_registry,
+    is_workbench_control_tool,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -45,6 +56,7 @@ class Runtime(
     GitHandlers,
     SystemHandlers,
     ToolchainHandlers,
+    WorkbenchHandlers,
 ):
     def __init__(
         self,
@@ -59,12 +71,36 @@ class Runtime(
         project_context: ProjectContext | None = None,
         permission_broker: Any | None = None,
         permission_broker_from_env: bool = True,
+        global_asset_root: Path | None = None,
     ) -> None:
         if permission_mode not in PERMISSION_MODES:
             raise ValueError(f"unknown permission mode: {permission_mode}")
         if fake_readonly_annotations and permission_mode != "dangerous":
             raise ValueError("fake_readonly_annotations requires dangerous permission mode")
         self.workspace = Workspace(workspace)
+        self.tool_registry = build_tool_registry()
+        asset_tool_names = tuple(
+            definition.name
+            for definition in self.tool_registry.definitions(
+                # Global Skills are reusable across targets. Validate them
+                # against the full system capability vocabulary; the actual
+                # Runtime still intersects the allowlist with enabled tools.
+                enabled_features=frozenset({"view_image"})
+            )
+            if not is_workbench_control_tool(definition.name)
+        )
+        self.mcp_connections = MCPConnectionService(global_root=global_asset_root)
+        self.capability_assets = CapabilityAssetService(
+            known_tool_names=asset_tool_names,
+            known_mcp_tool_keys=self.mcp_connections.tool_keys(),
+            global_root=global_asset_root,
+        )
+        self.prompt_registry = self.capability_assets.prompt_registry
+        self.skill_registry = self.capability_assets.skill_registry
+        self.workflow_store = WorkflowStore(self.workspace.root)
+        self.workflow_registry = build_workflow_registry(
+            store=self.workflow_store,
+        )
         self.permission_mode = permission_mode
         self.permission_profile = permission_profile(permission_mode)
         self.permission_policy = PermissionPolicy(self.permission_profile)
@@ -143,7 +179,6 @@ class Runtime(
             network=self.allow_network,
             backend=self.process_sandbox.state,
         )
-        self.tool_registry = build_tool_registry()
         enabled_features = frozenset({"view_image"}) if enable_view_image else frozenset()
         self.tool_dispatcher = ToolDispatcher(
             self.tool_registry,
@@ -151,6 +186,13 @@ class Runtime(
             enabled_features=enabled_features,
         )
         self._tools = self.tool_dispatcher.definitions
+        self.workflow_engine = WorkflowEngine(self)
+        self.workflow_runs = WorkflowRunManager(
+            self.workspace.root,
+            engine=self.workflow_engine,
+            registry=self.workflow_registry,
+            approval_broker=LocalWorkflowApprovalBrokerClient.from_env(),
+        )
 
     @property
     def local_permission_broker(self) -> Any | None:
@@ -257,6 +299,23 @@ class Runtime(
             ]
         }
 
+    def list_prompts(self) -> dict[str, Any]:
+        self.capability_assets.refresh_prompts()
+        return self.prompt_registry.mcp_list()
+
+    def get_prompt(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self.capability_assets.refresh_prompts()
+        try:
+            return self.prompt_registry.render(name, arguments)
+        except KeyError as exc:
+            raise RpcError(-32602, f"Unknown prompt: {name}") from exc
+        except ValueError as exc:
+            raise RpcError(-32602, str(exc)) from exc
+
     def _permission_granted(self, permission: str) -> bool:
         return (
             permission in ACTIVE_PERMISSIONS.get()
@@ -270,6 +329,8 @@ class Runtime(
         *,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
+        if context is None:
+            context = current_request_context()
         definition, handler = self.tool_dispatcher.resolve(name, arguments)
         missing_capabilities = self.permission_policy.missing_capabilities(
             definition.capabilities
@@ -357,6 +418,7 @@ class Runtime(
                     },
                 )
         permission_token = ACTIVE_PERMISSIONS.set(granted)
+        request_context_token = ACTIVE_REQUEST_CONTEXT.set(context)
         try:
             try:
                 payload = handler(arguments)
@@ -498,6 +560,7 @@ class Runtime(
                     },
                 }
         finally:
+            ACTIVE_REQUEST_CONTEXT.reset(request_context_token)
             ACTIVE_PERMISSIONS.reset(permission_token)
         return make_tool_result(name, payload, image=image)
 

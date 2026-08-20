@@ -15,6 +15,7 @@ from mcp_tools_server.tools.git import GitHandlers
 from mcp_tools_server.tools.process import ProcessHandlers
 from mcp_tools_server.tools.system import SystemHandlers
 from mcp_tools_server.tools.toolchains import ToolchainHandlers
+from mcp_tools_server.tools.workbench import WorkbenchHandlers
 
 
 class _Handlers:
@@ -23,13 +24,12 @@ class _Handlers:
 
 
 class ToolFrameworkTests(unittest.TestCase):
-    def test_default_registry_contains_unique_twenty_tools(self) -> None:
+    def test_default_registry_contains_unique_tool_names(self) -> None:
         registry = build_tool_registry()
         definitions = registry.definitions(enabled_features=frozenset({"view_image"}))
 
-        self.assertEqual(len(registry), 20)
-        self.assertEqual(len(definitions), 20)
-        self.assertEqual(len({item.name for item in definitions}), 20)
+        self.assertEqual(len(definitions), len(registry))
+        self.assertEqual(len({item.name for item in definitions}), len(registry))
 
     def test_view_image_is_a_feature_gated_tool(self) -> None:
         registry = build_tool_registry()
@@ -37,7 +37,8 @@ class ToolFrameworkTests(unittest.TestCase):
         without_image = registry.definitions()
         with_image = registry.definitions(enabled_features=frozenset({"view_image"}))
 
-        self.assertEqual(len(without_image), 19)
+        self.assertEqual(len(without_image), len(registry) - 1)
+        self.assertEqual(len(with_image), len(registry))
         self.assertNotIn("view_image", {item.name for item in without_image})
         self.assertIn("view_image", {item.name for item in with_image})
 
@@ -107,7 +108,7 @@ class ToolFrameworkTests(unittest.TestCase):
         self.assertEqual(info["permission_session"]["scope"], "runtime_profile")
         self.assertTrue(info["permission_session"]["principal_isolated"])
         self.assertTrue(info["permission_session"]["request_state_single_use"])
-        self.assertEqual(info["tool_count"], 20)
+        self.assertEqual(info["tool_count"], len(build_tool_registry()))
         self.assertIn("filesystem.read", info["tool_capabilities"]["read_file"])
         self.assertIn("process.execute", info["tool_capabilities"]["exec_process"])
         self.assertNotIn("compatibility_baseline", info)
@@ -127,6 +128,7 @@ class ToolFrameworkTests(unittest.TestCase):
         self.assertTrue(issubclass(Runtime, GitHandlers))
         self.assertTrue(issubclass(Runtime, SystemHandlers))
         self.assertTrue(issubclass(Runtime, ToolchainHandlers))
+        self.assertTrue(issubclass(Runtime, WorkbenchHandlers))
 
         handler_owners = {
             "read_file": FilesystemHandlers,
