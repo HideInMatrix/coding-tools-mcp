@@ -10,7 +10,7 @@ from .context import ACTIVE_PERMISSIONS
 from .grants import PermissionGrantStore
 from .policy import PermissionPolicy
 from .session import PermissionSession
-from .state import PermissionStateStore, arguments_digest
+from .state import PermissionStateStore
 
 __all__ = [
     "ACTIVE_PERMISSIONS",
@@ -23,6 +23,5 @@ __all__ = [
     "PermissionGrantStore",
     "PermissionSession",
     "PermissionStateStore",
-    "arguments_digest",
     "permission_profile",
 ]

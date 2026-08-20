@@ -10,7 +10,7 @@ import secrets
 import urllib.parse
 from typing import Any, Protocol
 
-from .core import ENDPOINT_PATH
+from .core.constants import ENDPOINT_PATH
 from .errors import RpcError
 from .protocol import (
     HEADER_MISMATCH,

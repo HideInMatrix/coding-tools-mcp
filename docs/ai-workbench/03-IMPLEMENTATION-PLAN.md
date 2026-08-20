@@ -74,21 +74,17 @@ Workspace Prompt 可以覆盖 Built-in Prompt
 
 1. SkillDefinition；
 2. `SKILL.md` loader；
-3. Skill tool allowlist；
-4. Built-in / Global / Workspace 合并；
+3. Skill 方法文档与校验；
+4. Global Skill 加载与持久化；
 5. `skill_list` / `skill_get`；
-6. 内置：
-   - `project-analysis`
-   - `bug-investigation`
-   - `reverse-engineering`
-   - `code-review`
-7. 单测。
+6. 默认 Skill Catalog 为空；
+7. 单测覆盖用户 Skill 的创建、读取、删除及空默认目录。
 
 完成标准：
 
 - AI 能发现 Skill；
-- Skill 可以引用 Prompt；
-- Skill allowlist 只能收紧权限。
+- AI 能读取 Skill 的完整方法文档；
+- 没有用户 Skill 时不注入任何 Built-in Skill。
 
 ---
 
@@ -669,3 +665,28 @@ Release CI 继续统一使用 npm；本地开发允许使用 pnpm。
 
 只有用户明确要求“提交”时才执行 Git 写操作。
 
+
+---
+
+## Phase 16：Prompt 移除与 Skill 执行模型收敛
+
+按 ADR-033 执行最终 0.3.x Contract 收敛。
+
+### 16.1 Domain Model
+
+- 删除 SkillDefinition.entry_prompt、tool_references 和 effective_tools()。
+- Skill persistence 不再输出上述字段。
+- build_skill_registry() 不再依赖 Prompt Registry 或 Tool Catalog。
+- 删除 Prompt Definition / Registry / Store。
+
+### 16.2 Runtime / Engine
+
+- Runtime 不再持有 prompt_registry。
+- 删除 MCP Prompt Protocol。
+- Skill ModelAction 直接携带 method_document。
+- Skill 不再生成 prompt_id 或 Tool allowlist。
+- Permission、Sandbox、Workspace、Secret、Approval 保持不变。
+
+### 16.3-16.7 Remaining Scope
+
+删除 Prompt Workflow/Authoring/Desktop 全链路；同步更新测试，并以无 entry_prompt、无 Skill tool_references、无 prompt Node、Python/前端门禁通过及最终 diff 无循环依赖/重复 abstraction 为完成条件。

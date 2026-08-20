@@ -208,31 +208,6 @@ class DesktopAPI:
             timeout_seconds=int(timeout_seconds),
         )
 
-    def get_workbench_prompt(
-        self,
-        prompt_id: str,
-    ) -> dict[str, object]:
-        return self.workbench_manager.get_prompt(str(prompt_id))
-
-    def validate_workbench_prompt(
-        self,
-        prompt: dict[str, Any],
-    ) -> dict[str, object]:
-        return self.workbench_manager.validate_prompt(prompt)
-
-    def save_workbench_prompt(
-        self,
-        prompt: dict[str, Any],
-        expected_version: int,
-    ) -> dict[str, object]:
-        return self.workbench_manager.save_prompt(
-            prompt,
-            expected_version=int(expected_version),
-        )
-
-    def delete_workbench_prompt(self, prompt_id: str) -> bool:
-        return self.workbench_manager.delete_prompt(str(prompt_id))
-
     def get_workbench_skill(
         self,
         skill_id: str,

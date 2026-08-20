@@ -190,29 +190,17 @@ class MCPConnectionDomainTests(unittest.TestCase):
                 finally:
                     safe_runtime.close()
 
-                assets = CapabilityAssetService(
-                    known_tool_names={item.name for item in system_tools},
-                    known_mcp_tool_keys=service.tool_keys(),
-                    global_root=base / "local-assets",
-                )
+                assets = CapabilityAssetService(global_root=base / "local-assets")
                 mcp_skill = {
                     "schema_version": 1,
                     "id": "external-reader",
                     "name": "External Reader",
                     "description": "Use the external MCP read_file capability",
-                    "entry_prompt": "project-analysis",
-                    "tool_references": [
-                        {
-                            "provider": "mcp",
-                            "connection_id": "external",
-                            "tool_name": "read_file",
-                        }
-                    ],
                     "artifacts": [],
                     "method_document": "# External Reader\n\nUse the configured external MCP tool.",
                 }
                 saved_skill = assets.save_skill(mcp_skill, expected_version=0)
-                self.assertEqual(saved_skill.tool_references[0].key, "mcp:external:read_file")
+                self.assertNotIn("tool_references", saved_skill.to_dict())
 
                 skill_workspace = base / "skill-workspace"
                 skill_workspace.mkdir()
@@ -246,25 +234,10 @@ class MCPConnectionDomainTests(unittest.TestCase):
                         skill_state,
                         "external-skill",
                     )
-                    self.assertEqual(
-                        action.allowed_tool_references,
-                        (
-                            {
-                                "provider": "mcp",
-                                "tool_name": "read_file",
-                                "connection_id": "external",
-                            },
-                        ),
-                    )
-                    self.assertIn("mcp_connection_call_tool", action.allowed_tools)
+                    self.assertNotIn("allowed_tool_references", action.to_dict())
+                    self.assertNotIn("allowed_tools", action.to_dict())
                 finally:
                     skill_runtime.close()
-
-                with self.assertRaisesRegex(ValueError, "referenced by Skills"):
-                    service.delete(
-                        "external",
-                        skill_definitions=assets.skill_registry.list(),
-                    )
 
                 disabled_raw = discovered.to_dict()
                 disabled_raw["enabled"] = False
@@ -272,11 +245,7 @@ class MCPConnectionDomainTests(unittest.TestCase):
                 catalog_after_disable = build_effective_tool_catalog(system_tools, service.list())
                 self.assertNotIn("mcp:external:read_file", {item.key for item in catalog_after_disable})
                 self.assertFalse(disabled.enabled)
-                reloaded_assets = CapabilityAssetService(
-                    known_tool_names={item.name for item in system_tools},
-                    known_mcp_tool_keys=service.tool_keys(),
-                    global_root=base / "local-assets",
-                )
+                reloaded_assets = CapabilityAssetService(global_root=base / "local-assets")
                 self.assertIsNotNone(reloaded_assets.skill_registry.get("external-reader"))
 
                 disabled_workspace = base / "disabled-workspace"

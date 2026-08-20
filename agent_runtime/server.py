@@ -26,8 +26,8 @@ from .gateway import GatewayProfile, GatewayRuntimePool
 from .gateway.config import build_gateway_runtime_pool, load_gateway_config
 from .http_mcp import MCPHTTPController
 from .http_oauth import OAuthHTTPController
-from .core import ENDPOINT_PATH
-from .permissions import PERMISSION_MODES
+from .core.constants import ENDPOINT_PATH
+from .permissions.capabilities import PERMISSION_MODES
 from .runtime import Runtime
 from .route_probe import (
     ROUTE_PROBE_HEADER,

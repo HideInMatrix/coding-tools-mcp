@@ -10,7 +10,7 @@ from typing import Any
 
 from .global_assets import global_asset_root
 from .mcp_connections import MCPConnectionDefinition
-from .models import PROMPT_ID_PATTERN, ResourceScope
+from .models import ResourceScope, WORKBENCH_ID_PATTERN
 from .recovery import quarantine_path, should_quarantine_error
 
 
@@ -34,7 +34,7 @@ class MCPConnectionStore:
 
     def _path(self, connection_id: str) -> Path:
         value = connection_id.strip()
-        if not PROMPT_ID_PATTERN.fullmatch(value):
+        if not WORKBENCH_ID_PATTERN.fullmatch(value):
             raise ValueError(f"invalid MCP connection id: {connection_id!r}")
         return self.directory / f"{value}.json"
 

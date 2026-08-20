@@ -8,6 +8,7 @@ from unittest.mock import patch
 from agent_runtime.protocol import RequestContext
 from agent_runtime.runtime import Runtime
 from agent_runtime.workbench import WorkflowDefinition
+from tests.workbench_fixtures import install_project_development_fixture
 
 
 def tool_then_approval_workflow() -> WorkflowDefinition:
@@ -97,6 +98,7 @@ class WorkflowRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary))
             try:
+                install_project_development_fixture(runtime)
                 for workflow_id, workflow_inputs in inputs.items():
                     with self.subTest(workflow=workflow_id):
                         run = runtime.workflow_runs.start(
@@ -127,6 +129,7 @@ class WorkflowRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary))
             try:
+                install_project_development_fixture(runtime)
                 run = runtime.workflow_runs.start("project-development")
                 self.assertEqual(run.status, "waiting_model")
                 model_node_id = str(run.pending_action["node_id"])
@@ -158,6 +161,7 @@ class WorkflowRunTests(unittest.TestCase):
             workspace = Path(temporary)
             runtime = Runtime(workspace)
             try:
+                install_project_development_fixture(runtime)
                 run = runtime.workflow_runs.start("project-development")
                 old_name = run.workflow_snapshot["name"]
 
@@ -297,10 +301,11 @@ class WorkflowRunTests(unittest.TestCase):
         self.assertEqual(by_tool["workflow_start"], "oauth-client:test-client")
         self.assertEqual(by_tool["server_info"], "oauth-client:test-client")
 
-    def test_spec_workflow_uses_run_inputs_for_prompt_arguments(self) -> None:
+    def test_spec_workflow_waits_on_skill_model_action_and_preserves_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary))
             try:
+                install_project_development_fixture(runtime)
                 result = runtime.call_tool(
                     "workflow_start",
                     {
@@ -313,14 +318,18 @@ class WorkflowRunTests(unittest.TestCase):
                 runtime.close()
 
         self.assertEqual(run["status"], "waiting_model")
-        message = run["pending_action"]["messages"][0]["content"]["text"]
-        self.assertIn("visual workflow editor", message)
+        self.assertEqual(run["inputs"], {"feature": "visual workflow editor"})
+        self.assertEqual(run["pending_action"]["node_type"], "skill")
+        self.assertIn("method_document", run["pending_action"]["skill"])
+        self.assertNotIn("prompt_id", run["pending_action"])
+        self.assertNotIn("allowed_tools", run["pending_action"])
 
     def test_cancel_is_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             runtime = Runtime(workspace)
             try:
+                install_project_development_fixture(runtime)
                 run = runtime.workflow_runs.start("project-development")
                 cancelled = runtime.workflow_runs.cancel(run.run_id)
                 self.assertEqual(cancelled.status, "cancelled")

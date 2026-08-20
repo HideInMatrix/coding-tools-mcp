@@ -8,7 +8,6 @@ import {
   Copy,
   FileOutput,
   GitBranch,
-  MessageSquareText,
   PanelLeftOpen,
   PanelRightOpen,
   Plus,
@@ -113,7 +112,6 @@ const nodeDefinitions: Record<WorkflowNodeKind, {
   label: string
   description: string
 }> = {
-  prompt: { label: 'Prompt', description: '高级：直接渲染 Prompt 并等待 AI 返回结果' },
   skill: { label: 'Skill', description: '调用用户定义的 AI 方法论与能力包' },
   tool: { label: 'Tool', description: '执行 System Tool 或外部 MCP Tool' },
   approval: { label: 'Approval', description: '等待 Desktop 用户签名批准' },
@@ -132,11 +130,6 @@ const nodeGroups: Array<{
     label: 'Flow Control',
     description: '控制分支、人工边界与结果沉淀。',
     kinds: ['condition', 'approval', 'artifact'],
-  },
-  {
-    label: 'Advanced',
-    description: '底层模型指令节点，普通流程优先使用 Skill。',
-    kinds: ['prompt'],
   },
 ]
 
@@ -176,20 +169,6 @@ const canDeleteWorkflow = computed(() => (
     item => item.id === editor.workflowId.value && item.scope === 'workspace',
   )
 ))
-const selectedPrompt = computed(() => {
-  if (!selectedNode.value || selectedNode.value.data.kind !== 'prompt') return null
-  const id = String(selectedNode.value.data.config.prompt_id ?? '')
-  return editor.catalog.value.prompts.find(item => item.id === id) ?? null
-})
-const filteredPrompts = computed(() => {
-  const query = capabilityQuery.value.trim().toLowerCase()
-  if (!query) return editor.catalog.value.prompts
-  const selectedId = String(selectedNode.value?.data.config.prompt_id ?? '')
-  return editor.catalog.value.prompts.filter(item => (
-    item.id === selectedId
-    || [item.id, item.name, item.description].some(value => value.toLowerCase().includes(query))
-  ))
-})
 const selectedSkill = computed(() => {
   if (!selectedNode.value || selectedNode.value.data.kind !== 'skill') return null
   const id = String(selectedNode.value.data.config.skill_id ?? '')
@@ -233,14 +212,6 @@ const filteredSystemTools = computed(() => {
 })
 const selectedArgumentSchema = computed<Record<string, unknown>>(() => {
   if (!selectedNode.value) return { type: 'object', properties: {} }
-  if (selectedNode.value.data.kind === 'prompt') {
-    return promptArgumentsSchema(selectedPrompt.value?.arguments ?? [])
-  }
-  if (selectedNode.value.data.kind === 'skill') {
-    const promptId = selectedSkill.value?.entry_prompt
-    const prompt = editor.catalog.value.prompts.find(item => item.id === promptId)
-    return promptArgumentsSchema(prompt?.arguments ?? [])
-  }
   if (selectedNode.value.data.kind === 'tool') {
     return selectedTool.value?.input_schema ?? { type: 'object', properties: {} }
   }
@@ -259,18 +230,6 @@ const selectedNodeRole = computed<WorkflowNodeRole>(() => {
   if (!selectedNode.value) return 'process'
   return nodeRole(selectedNode.value.id, selectedNode.value.data.config)
 })
-
-function promptArgumentsSchema(argumentsList: Array<{ name: string; description?: string; required?: boolean }>): Record<string, unknown> {
-  return {
-    type: 'object',
-    properties: Object.fromEntries(argumentsList.map(argument => [
-      argument.name,
-      { type: 'string', description: argument.description ?? '' },
-    ])),
-    required: argumentsList.filter(argument => argument.required).map(argument => argument.name),
-    additionalProperties: false,
-  }
-}
 
 function validationIssues(subject: string) {
   return [
@@ -342,11 +301,8 @@ function changeSelectedNodeRole(event: Event) {
 }
 
 function defaultConfig(kind: WorkflowNodeKind): Record<string, unknown> {
-  if (kind === 'prompt') {
-    return { prompt_id: editor.catalog.value.prompts[0]?.id ?? '', arguments: {} }
-  }
   if (kind === 'skill') {
-    return { skill_id: editor.catalog.value.skills[0]?.id ?? '', arguments: {} }
+    return { skill_id: editor.catalog.value.skills[0]?.id ?? '' }
   }
   if (kind === 'tool') {
     const first = editor.catalog.value.effective_tools.find(item => item.provider === 'system')
@@ -625,7 +581,6 @@ function setEdgeCondition(value: WorkflowEdgeDto['condition']) {
 
 function nodeIcon(kind: WorkflowNodeKind) {
   return {
-    prompt: MessageSquareText,
     skill: Sparkles,
     tool: Wrench,
     approval: ShieldCheck,
@@ -636,7 +591,6 @@ function nodeIcon(kind: WorkflowNodeKind) {
 
 function nodeKindBorderClass(kind: WorkflowNodeKind) {
   return {
-    prompt: 'border-sky-500/80 dark:border-sky-400/80',
     skill: 'border-violet-500/80 dark:border-violet-400/80',
     tool: 'border-blue-500/80 dark:border-blue-400/80',
     approval: 'border-amber-500/80 dark:border-amber-400/80',
@@ -766,6 +720,20 @@ onBeforeUnmount(() => {
           @click="removeWorkflow"
         ><Trash2 :size="14" />删除</Button>
       </div>
+    </div>
+
+    <div class="grid grid-cols-[minmax(220px,0.7fr)_minmax(320px,1.3fr)] gap-3 rounded-lg border border-border bg-card p-3">
+      <label class="field">
+        <span>名称</span>
+        <input v-model="editor.workflowName.value" placeholder="Workflow 名称" />
+      </label>
+      <label class="field">
+        <span>Workflow 描述（AI Discovery 必填）</span>
+        <input
+          v-model="editor.workflowDescription.value"
+          placeholder="说明这个 Workflow 解决什么问题、何时应该使用"
+        />
+      </label>
     </div>
 
     <div ref="canvasHost" class="relative min-h-[560px] flex-1 overflow-hidden rounded-lg border border-border bg-background">
@@ -936,26 +904,13 @@ onBeforeUnmount(() => {
           </label>
           <div v-if="nodeRoleError" class="text-[10px] leading-4 text-destructive">{{ nodeRoleError }}</div>
 
-          <label v-if="['prompt', 'skill', 'tool'].includes(selectedNode.data.kind)" class="field">
+          <label v-if="['skill', 'tool'].includes(selectedNode.data.kind)" class="field">
             <span>搜索能力</span>
             <div class="relative">
               <Search :size="13" class="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-muted-foreground" />
               <input v-model="capabilityQuery" class="pl-8" placeholder="按名称、ID 或说明筛选" />
             </div>
           </label>
-
-          <template v-if="selectedNode.data.kind === 'prompt'">
-            <label class="field">
-              <span>Prompt</span>
-              <select :value="selectedNode.data.config.prompt_id" @change="setNodeConfig('prompt_id', ($event.target as HTMLSelectElement).value)">
-                <option v-for="prompt in filteredPrompts" :key="prompt.id" :value="prompt.id">{{ prompt.name }}</option>
-              </select>
-            </label>
-            <div v-if="selectedPrompt" class="text-[10px] leading-4 text-muted-foreground">{{ selectedPrompt.description }}</div>
-            <div v-else-if="selectedNode.data.config.prompt_id" class="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-[10px] leading-4 text-destructive">
-              当前 Prompt 引用已失效。请重新选择 Prompt。
-            </div>
-          </template>
 
           <template v-if="selectedNode.data.kind === 'skill'">
             <label class="field">
@@ -966,10 +921,6 @@ onBeforeUnmount(() => {
             </label>
             <div v-if="selectedSkill" class="rounded-md border border-border bg-secondary/40 p-2 text-[10px] leading-4 text-muted-foreground">
               <div>{{ selectedSkill.description }}</div>
-              <div class="mt-1 font-mono">
-                Tools:
-                {{ selectedSkill.tool_references.map(item => item.provider === 'mcp' ? `mcp:${item.connection_id}:${item.tool_name}` : `system:${item.tool_name}`).join(', ') || 'none' }}
-              </div>
             </div>
             <div v-else-if="selectedNode.data.config.skill_id" class="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-[10px] leading-4 text-destructive">
               当前 Skill 引用已失效。请重新选择 Skill。
@@ -1042,7 +993,7 @@ onBeforeUnmount(() => {
             </div>
           </template>
 
-          <template v-if="['prompt', 'skill', 'tool'].includes(selectedNode.data.kind)">
+          <template v-if="selectedNode.data.kind === 'tool'">
             <div class="grid gap-2">
               <div class="text-[10px] font-medium text-muted-foreground">Arguments</div>
               <SchemaValueEditor
@@ -1112,8 +1063,6 @@ onBeforeUnmount(() => {
 
         <div v-else class="grid gap-3">
           <label class="field"><span>Workflow ID</span><input v-model="editor.workflowId.value" /></label>
-          <label class="field"><span>名称</span><input v-model="editor.workflowName.value" /></label>
-          <label class="field"><span>说明（AI Discovery 必填）</span><input v-model="editor.workflowDescription.value" /></label>
           <label class="field">
             <span>Tags（逗号分隔）</span>
             <input

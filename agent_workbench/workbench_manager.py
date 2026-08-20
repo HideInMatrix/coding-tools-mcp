@@ -124,36 +124,25 @@ class DesktopWorkbenchManager:
 
     def _global_asset_service(self) -> tuple[CapabilityAssetService, set[str]]:
         tool_names = self._all_system_tool_names()
-        mcp_tool_keys = self._mcp_connection_service().tool_keys()
-        assets = CapabilityAssetService(
-            known_tool_names=tool_names,
-            known_mcp_tool_keys=mcp_tool_keys,
-            global_root=self.global_root,
-        )
-        return assets, tool_names
+        return CapabilityAssetService(global_root=self.global_root), tool_names
 
     def _asset_service(self, target: WorkbenchTarget) -> tuple[CapabilityAssetService, set[str]]:
         tool_names = self._tool_names(
             enable_view_image=target.enable_view_image,
         )
-        assets = CapabilityAssetService(
-            known_tool_names=self._all_system_tool_names(),
-            known_mcp_tool_keys=self._mcp_connection_service().tool_keys(),
-            global_root=self.global_root,
-        )
+        assets = CapabilityAssetService(global_root=self.global_root)
         return assets, tool_names
 
     def _context(self, target: WorkbenchTarget):
         assets, tool_names = self._asset_service(target)
-        prompts = assets.prompt_registry
         skills = assets.skill_registry
         store = WorkflowStore(target.workspace)
         workflows = build_workflow_registry(store=store)
-        return prompts, skills, tool_names, store, workflows
+        return skills, tool_names, store, workflows
 
     def catalog(self, target_id: str) -> dict[str, object]:
         target = self.target(target_id)
-        prompts, skills, tools, _store, workflows = self._context(target)
+        skills, tools, _store, workflows = self._context(target)
         connections = self._mcp_connection_service().list()
         effective_tools = build_effective_tool_catalog(
             self._system_tool_definitions(enable_view_image=target.enable_view_image),
@@ -161,17 +150,6 @@ class DesktopWorkbenchManager:
         )
         return {
             "target": target.to_dict(),
-            "prompts": [
-                {
-                    "id": item.id,
-                    "name": item.name,
-                    "description": item.description,
-                    "version": item.version,
-                    "scope": item.scope.value,
-                    "arguments": [arg.mcp_definition() for arg in item.arguments],
-                }
-                for item in prompts.list()
-            ],
             "skills": [item.summary() for item in skills.list()],
             "tools": sorted(tools),
             "effective_tools": [item.to_dict() for item in effective_tools],
@@ -187,17 +165,6 @@ class DesktopWorkbenchManager:
             connections,
         )
         return {
-            "prompts": [
-                {
-                    "id": item.id,
-                    "name": item.name,
-                    "description": item.description,
-                    "version": item.version,
-                    "scope": item.scope.value,
-                    "arguments": [arg.mcp_definition() for arg in item.arguments],
-                }
-                for item in assets.prompt_registry.list()
-            ],
             "skills": [item.summary() for item in assets.skill_registry.list()],
             "tools": sorted(tools),
             "effective_tools": [item.to_dict() for item in effective_tools],
@@ -227,11 +194,7 @@ class DesktopWorkbenchManager:
         return {"ok": True, "saved": True, "connection": saved.to_dict()}
 
     def delete_mcp_connection(self, connection_id: str) -> bool:
-        assets, _tool_names = self._global_asset_service()
-        return self._mcp_connection_service().delete(
-            connection_id.strip(),
-            skill_definitions=assets.skill_registry.list(),
-        )
+        return self._mcp_connection_service().delete(connection_id.strip())
 
     def test_mcp_connection(
         self,
@@ -276,50 +239,6 @@ class DesktopWorkbenchManager:
             "error": probe.error,
         }
 
-    def get_prompt(self, prompt_id: str) -> dict[str, object]:
-        assets, _tool_names = self._global_asset_service()
-        definition = assets.prompt_registry.get(prompt_id.strip())
-        if definition is None:
-            raise KeyError(f"找不到 Prompt: {prompt_id}")
-        return {
-            **definition.to_dict(),
-            "scope": definition.scope.value,
-            "source": definition.source,
-        }
-
-    def validate_prompt(self, raw: dict[str, Any]) -> dict[str, object]:
-        assets, _tool_names = self._global_asset_service()
-        definition = assets.validate_prompt(raw)
-        return {
-            "ok": True,
-            "prompt": {
-                **definition.to_dict(),
-                "scope": definition.scope.value,
-            },
-        }
-
-    def save_prompt(
-        self,
-        raw: dict[str, Any],
-        *,
-        expected_version: int,
-    ) -> dict[str, object]:
-        assets, _tool_names = self._global_asset_service()
-        saved = assets.save_prompt(raw, expected_version=expected_version)
-        return {
-            "ok": True,
-            "saved": True,
-            "prompt": {
-                **saved.to_dict(),
-                "scope": saved.scope.value,
-                "source": saved.source,
-            },
-        }
-
-    def delete_prompt(self, prompt_id: str) -> bool:
-        assets, _tool_names = self._global_asset_service()
-        return assets.delete_prompt(prompt_id.strip())
-
     def get_skill(self, skill_id: str) -> dict[str, object]:
         assets, _tool_names = self._global_asset_service()
         definition = assets.skill_registry.get(skill_id.strip())
@@ -356,7 +275,7 @@ class DesktopWorkbenchManager:
 
     def validate_workflow(self, target_id: str, raw: dict[str, Any]) -> dict[str, object]:
         target = self.target(target_id)
-        prompts, skills, tools, _store, _workflows = self._context(target)
+        skills, tools, _store, _workflows = self._context(target)
         effective_tools = build_effective_tool_catalog(
             self._system_tool_definitions(enable_view_image=target.enable_view_image),
             self._mcp_connection_service().list(),
@@ -364,7 +283,6 @@ class DesktopWorkbenchManager:
         workflow = WorkflowDefinition.from_mapping(raw)
         result = validate_workflow(
             workflow,
-            prompt_ids={item.id for item in prompts.list()},
             skill_ids={item.id for item in skills.list()},
             tool_names=set(tools),
             tool_keys={item.key for item in effective_tools},
@@ -379,7 +297,7 @@ class DesktopWorkbenchManager:
         expected_version: int,
     ) -> dict[str, object]:
         target = self.target(target_id)
-        prompts, skills, tools, store, _workflows = self._context(target)
+        skills, tools, store, _workflows = self._context(target)
         effective_tools = build_effective_tool_catalog(
             self._system_tool_definitions(enable_view_image=target.enable_view_image),
             self._mcp_connection_service().list(),
@@ -387,7 +305,6 @@ class DesktopWorkbenchManager:
         workflow = WorkflowDefinition.from_mapping(raw)
         result = validate_workflow(
             workflow,
-            prompt_ids={item.id for item in prompts.list()},
             skill_ids={item.id for item in skills.list()},
             tool_names=set(tools),
             tool_keys={item.key for item in effective_tools},

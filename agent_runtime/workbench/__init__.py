@@ -1,7 +1,5 @@
-from .models import PromptArgument, PromptDefinition, PromptMessage, ResourceScope
-from .prompts import PromptRegistry, build_prompt_registry
+from .models import ResourceScope
 from .skills import SkillDefinition, SkillRegistry, build_skill_registry
-from .prompt_store import PromptStore, PromptVersionConflictError
 from .skill_store import SkillStore, SkillVersionConflictError
 from .capability_assets import CapabilityAssetService
 from .global_assets import GLOBAL_ASSET_ROOT_ENV, global_asset_root
@@ -40,14 +38,7 @@ from .workflows import (
 )
 
 __all__ = [
-    "PromptArgument",
-    "PromptDefinition",
-    "PromptMessage",
     "ResourceScope",
-    "PromptRegistry",
-    "build_prompt_registry",
-    "PromptStore",
-    "PromptVersionConflictError",
     "SkillDefinition",
     "SkillRegistry",
     "build_skill_registry",

@@ -47,25 +47,7 @@ class MCPConnectionService:
             expected_version=expected_version,
         )
 
-    def delete(
-        self,
-        connection_id: str,
-        *,
-        skill_definitions: Iterable[Any] = (),
-    ) -> bool:
-        dependants = sorted(
-            {
-                str(skill.id)
-                for skill in skill_definitions
-                for reference in getattr(skill, "tool_references", ())
-                if getattr(reference, "provider", "") == "mcp"
-                and getattr(reference, "connection_id", None) == connection_id
-            }
-        )
-        if dependants:
-            raise ValueError(
-                f"MCP Connection {connection_id} is referenced by Skills: {dependants}"
-            )
+    def delete(self, connection_id: str) -> bool:
         return self.store.delete(connection_id)
 
     def test(self, connection_id: str, *, timeout: float = 8.0) -> MCPConnectionProbe:

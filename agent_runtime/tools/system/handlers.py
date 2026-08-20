@@ -4,9 +4,9 @@ import os
 from typing import Any
 
 from ... import __version__
-from ...core import ENDPOINT_PATH, SERVER_NAME, SERVER_TITLE
+from ...core.constants import ENDPOINT_PATH, SERVER_NAME, SERVER_TITLE
 from ...errors import ToolError
-from ...permissions import ELICITABLE_PERMISSIONS
+from ...permissions.capabilities import ELICITABLE_PERMISSIONS
 from ...processes import STREAM_HEAD_BYTES, STREAM_LIMIT_BYTES
 from ...protocol import KNOWN_PROTOCOL_VERSIONS
 

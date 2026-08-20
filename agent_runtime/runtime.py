@@ -11,41 +11,39 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from . import __version__
-from .core import SERVER_NAME, SERVER_TITLE, ToolDispatcher
+from .core.constants import SERVER_NAME, SERVER_TITLE
+from .core.dispatcher import ToolDispatcher
 from .errors import RpcError, ToolError
 from .processes import CommandManager
 from .project_context import ProjectContext, load_project_context
 from .local_permission_broker import LocalWorkflowApprovalBrokerClient
 from .oauth_service import OAuthService
 from .protocol import ACTIVE_REQUEST_CONTEXT, RequestContext, current_request_context
-from .permissions import (
-    ACTIVE_PERMISSIONS,
+from .permissions.capabilities import (
     ELICITABLE_PERMISSIONS,
     PERMISSION_MODES,
-    PermissionPolicy,
-    PermissionSession,
     permission_profile,
 )
+from .permissions.context import ACTIVE_PERMISSIONS
+from .permissions.policy import PermissionPolicy
+from .permissions.session import PermissionSession
 from .results import make_tool_result
 from .sandbox import build_sandbox_profile, create_process_sandbox
 from .tools import build_tool_registry
-from .tools.filesystem import FilesystemHandlers
-from .tools.git import GitHandlers
-from .tools.process import ProcessHandlers
-from .tools.system import SystemHandlers
-from .tools.toolchains import ToolchainHandlers
-from .tools.workbench import WorkbenchHandlers
+from .tools.filesystem.handlers import FilesystemHandlers
+from .tools.git.handlers import GitHandlers
+from .tools.process.handlers import ProcessHandlers
+from .tools.system.handlers import SystemHandlers
+from .tools.toolchains.handlers import ToolchainHandlers
+from .tools.workbench.handlers import WorkbenchHandlers
 from .toolchains import ToolchainResolver
 from .workspace import Workspace
-from .workbench import (
-    CapabilityAssetService,
-    MCPConnectionService,
-    WorkflowEngine,
-    WorkflowRunManager,
-    WorkflowStore,
-    build_workflow_registry,
-    is_workbench_control_tool,
-)
+from .workbench.capability_assets import CapabilityAssetService
+from .workbench.engine import WorkflowEngine
+from .workbench.mcp_connection_service import MCPConnectionService
+from .workbench.registry import build_workflow_registry
+from .workbench.runs import WorkflowRunManager
+from .workbench.store import WorkflowStore
 
 
 LOGGER = logging.getLogger(__name__)
@@ -80,23 +78,8 @@ class Runtime(
             raise ValueError("fake_readonly_annotations requires dangerous permission mode")
         self.workspace = Workspace(workspace)
         self.tool_registry = build_tool_registry()
-        asset_tool_names = tuple(
-            definition.name
-            for definition in self.tool_registry.definitions(
-                # Global Skills are reusable across targets. Validate them
-                # against the full system capability vocabulary; the actual
-                # Runtime still intersects the allowlist with enabled tools.
-                enabled_features=frozenset({"view_image"})
-            )
-            if not is_workbench_control_tool(definition.name)
-        )
         self.mcp_connections = MCPConnectionService(global_root=global_asset_root)
-        self.capability_assets = CapabilityAssetService(
-            known_tool_names=asset_tool_names,
-            known_mcp_tool_keys=self.mcp_connections.tool_keys(),
-            global_root=global_asset_root,
-        )
-        self.prompt_registry = self.capability_assets.prompt_registry
+        self.capability_assets = CapabilityAssetService(global_root=global_asset_root)
         self.skill_registry = self.capability_assets.skill_registry
         self.workflow_store = WorkflowStore(self.workspace.root)
         self.workflow_registry = build_workflow_registry(
@@ -299,23 +282,6 @@ class Runtime(
                 for definition in self._tools
             ]
         }
-
-    def list_prompts(self) -> dict[str, Any]:
-        self.capability_assets.refresh_prompts()
-        return self.prompt_registry.mcp_list()
-
-    def get_prompt(
-        self,
-        name: str,
-        arguments: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        self.capability_assets.refresh_prompts()
-        try:
-            return self.prompt_registry.render(name, arguments)
-        except KeyError as exc:
-            raise RpcError(-32602, f"Unknown prompt: {name}") from exc
-        except ValueError as exc:
-            raise RpcError(-32602, str(exc)) from exc
 
     def _permission_granted(self, permission: str) -> bool:
         return (

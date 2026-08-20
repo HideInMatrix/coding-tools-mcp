@@ -10,7 +10,7 @@ const definition: WorkflowDefinitionDto = {
   name: 'Graph Test',
   description: 'round trip',
   version: 3,
-  entry_node_id: 'prompt',
+  entry_node_id: 'skill',
   inputs_schema: {
     type: 'object',
     properties: { goal: { type: 'string' } },
@@ -20,11 +20,11 @@ const definition: WorkflowDefinitionDto = {
   tags: ['analysis', 'test'],
   nodes: [
     {
-      id: 'prompt',
-      type: 'prompt',
-      name: 'Prompt',
+      id: 'skill',
+      type: 'skill',
+      name: 'Skill',
       position: { x: 10, y: 20 },
-      config: { prompt_id: 'project-analysis', arguments: { goal: 'map' } },
+      config: { skill_id: 'project-analysis' },
       policy: { approval: 'none', on_error: 'stop' },
     },
     {
@@ -38,8 +38,8 @@ const definition: WorkflowDefinitionDto = {
   ],
   edges: [
     {
-      id: 'prompt-approval',
-      source: 'prompt',
+      id: 'skill-approval',
+      source: 'skill',
       target: 'approval',
       condition: 'success',
     },
@@ -68,10 +68,10 @@ test('Workflow Definition round-trips through the Vue Flow canvas model', () => 
   )
 
   assert.equal(rebuilt.nodes[0].position.x, 88)
-  assert.equal(rebuilt.nodes[0].config.prompt_id, 'project-analysis')
+  assert.equal(rebuilt.nodes[0].config.skill_id, 'project-analysis')
   assert.equal(rebuilt.nodes[1].policy.approval, 'required')
   assert.equal(rebuilt.edges[0].condition, 'failure')
-  assert.equal(rebuilt.entry_node_id, 'prompt')
+  assert.equal(rebuilt.entry_node_id, 'skill')
   assert.deepEqual(rebuilt.inputs_schema, definition.inputs_schema)
   assert.deepEqual(rebuilt.tags, definition.tags)
   assert.deepEqual(rebuilt.metadata, definition.metadata)

@@ -170,9 +170,8 @@ class DesktopAPITests(unittest.TestCase):
         self.assertEqual(targets[0]["workspace"], str(self.base.resolve()))
 
         catalog = self.api.get_workbench_catalog(target_id)
-        workflow_ids = {item["id"] for item in catalog["workflows"]}
-        self.assertIn("project-development", workflow_ids)
-        self.assertIn("reverse-engineering", {item["id"] for item in catalog["skills"]})
+        self.assertEqual([], catalog["workflows"])
+        self.assertEqual([], catalog["skills"])
 
         raw = {
             "schema_version": 1,
@@ -190,10 +189,14 @@ class DesktopAPITests(unittest.TestCase):
             "nodes": [
                 {
                     "id": "review",
-                    "type": "skill",
+                    "type": "tool",
                     "name": "Review",
                     "position": {"x": 80, "y": 80},
-                    "config": {"skill_id": "code-review"},
+                    "config": {
+                        "provider": "system",
+                        "tool_name": "server_info",
+                        "arguments": {},
+                    },
                 }
             ],
             "edges": [],
@@ -235,10 +238,14 @@ class DesktopAPITests(unittest.TestCase):
             "nodes": [
                 {
                     "id": "analysis",
-                    "type": "skill",
+                    "type": "tool",
                     "name": "Project Analysis",
                     "position": {"x": 80, "y": 80},
-                    "config": {"skill_id": "project-analysis", "arguments": {}},
+                    "config": {
+                        "provider": "system",
+                        "tool_name": "server_info",
+                        "arguments": {},
+                    },
                 }
             ],
             "edges": [],
@@ -261,44 +268,15 @@ class DesktopAPITests(unittest.TestCase):
         self.assertEqual(summary["inputs_schema"]["required"], ["topic"])
 
         loaded = self.api.get_workbench_workflow(target_id, "ai-visible-in-gui")
-        self.assertEqual(loaded["nodes"][0]["config"]["skill_id"], "project-analysis")
+        self.assertEqual(loaded["nodes"][0]["config"]["tool_name"], "server_info")
         self.assertEqual(loaded["metadata"]["created_by"], "ai")
 
-    def test_workbench_prompt_and_skill_domain_crud(self) -> None:
-        prompt = {
-            "schema_version": 1,
-            "id": "desktop-prompt",
-            "name": "Desktop Prompt",
-            "description": "Managed through the shared Workbench domain service",
-            "arguments": [],
-            "messages": [{"role": "user", "content": "Inspect the workspace"}],
-        }
-        validated_prompt = self.api.validate_workbench_prompt(prompt)
-        self.assertTrue(validated_prompt["ok"])
-        saved_prompt = self.api.save_workbench_prompt(prompt, 0)
-        self.assertTrue(saved_prompt["saved"])
-        self.assertEqual(saved_prompt["prompt"]["version"], 1)
-        self.assertEqual(saved_prompt["prompt"]["scope"], "global")
-
-        loaded_prompt = self.api.get_workbench_prompt("desktop-prompt")
-        self.assertEqual(loaded_prompt["name"], "Desktop Prompt")
-
-        prompt["name"] = "Desktop Prompt v2"
-        updated_prompt = self.api.save_workbench_prompt(prompt, 1)
-        self.assertEqual(updated_prompt["prompt"]["version"], 2)
-        with self.assertRaisesRegex(RuntimeError, "Prompt version conflict"):
-            self.api.save_workbench_prompt(prompt, 1)
-
+    def test_workbench_skill_domain_crud(self) -> None:
         skill = {
             "schema_version": 1,
             "id": "desktop-skill",
             "name": "Desktop Skill",
             "description": "Managed Skill",
-            "entry_prompt": "desktop-prompt",
-            "tool_references": [
-                {"provider": "system", "tool_name": "read_file"},
-                {"provider": "system", "tool_name": "search_text"},
-            ],
             "artifacts": ["desktop-report.md"],
             "method_document": "# Desktop Skill\n\nRead evidence and write the report.",
         }
@@ -308,40 +286,28 @@ class DesktopAPITests(unittest.TestCase):
         self.assertTrue(saved_skill["saved"])
         self.assertEqual(saved_skill["skill"]["version"], 1)
         self.assertEqual(saved_skill["skill"]["scope"], "global")
-        self.assertEqual(
-            saved_skill["skill"]["tool_references"][0],
-            {"provider": "system", "tool_name": "read_file"},
-        )
+        self.assertNotIn("entry_prompt", saved_skill["skill"])
+        self.assertNotIn("tool_references", saved_skill["skill"])
 
         catalog = self.api.get_workbench_capability_catalog()
-        prompt_summary = next(
-            item for item in catalog["prompts"] if item["id"] == "desktop-prompt"
-        )
         skill_summary = next(
             item for item in catalog["skills"] if item["id"] == "desktop-skill"
         )
-        self.assertEqual(prompt_summary["version"], 2)
         self.assertEqual(skill_summary["version"], 1)
+        self.assertNotIn("prompts", catalog)
 
         created = self.api.create_server(self.payload())
         target_id = f"server:{created['server_id']}"
         workflow_catalog = self.api.get_workbench_catalog(target_id)
         self.assertIn(
-            "desktop-prompt",
-            {item["id"] for item in workflow_catalog["prompts"]},
-        )
-        self.assertIn(
             "desktop-skill",
             {item["id"] for item in workflow_catalog["skills"]},
         )
+        self.assertNotIn("prompts", workflow_catalog)
 
-        with self.assertRaisesRegex(ValueError, "referenced by Skills"):
-            self.api.delete_workbench_prompt("desktop-prompt")
         self.assertTrue(self.api.delete_workbench_skill("desktop-skill"))
-        self.assertTrue(self.api.delete_workbench_prompt("desktop-prompt"))
 
         refreshed = self.api.get_workbench_capability_catalog()
-        self.assertNotIn("desktop-prompt", {item["id"] for item in refreshed["prompts"]})
         self.assertNotIn("desktop-skill", {item["id"] for item in refreshed["skills"]})
 
     def test_workbench_mcp_connection_global_crud_and_catalog(self) -> None:

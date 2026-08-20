@@ -160,7 +160,7 @@ def _shape_modern(method: str, result: dict[str, Any], runtime: Any) -> dict[str
     meta = dict(raw_meta) if isinstance(raw_meta, dict) else {}
     meta[META_SERVER_INFO] = runtime.server_identity()
     shaped["_meta"] = meta
-    if method in {"server/discover", "tools/list", "prompts/list"}:
+    if method in {"server/discover", "tools/list"}:
         shaped["ttlMs"] = 0
         shaped["cacheScope"] = "private"
     return shaped
@@ -215,7 +215,7 @@ def validate_mirror_headers(
             "Mcp-Method is required and must match the request method",
             {"header": "Mcp-Method", "reason": "missing" if method_header is None else "mismatch"},
         )
-    subject_key = {"tools/call": "name", "resources/read": "uri", "prompts/get": "name"}.get(method)
+    subject_key = {"tools/call": "name", "resources/read": "uri"}.get(method)
     if subject_key is None:
         return
     if name_header is None or decode_mirror_header(name_header) != params.get(subject_key):
@@ -299,7 +299,6 @@ def _dispatch_modern(runtime: Any, method: str, params: dict[str, Any], context:
             "supportedVersions": list(MODERN_PROTOCOL_VERSIONS),
             "capabilities": {
                 "tools": {"listChanged": False},
-                "prompts": {"listChanged": False},
             },
             "instructions": runtime.project_context.server_instructions(),
         }
@@ -311,10 +310,6 @@ def _dispatch_modern(runtime: Any, method: str, params: dict[str, Any], context:
         return runtime.list_tools()
     if method == "tools/call":
         return _tool_call(runtime, params, context)
-    if method == "prompts/list":
-        return runtime.list_prompts()
-    if method == "prompts/get":
-        return _prompt_get(runtime, params)
     raise RpcError(-32601, f"Unknown method: {method}")
 
 
@@ -336,7 +331,6 @@ def _dispatch_legacy(
             "protocolVersion": requested,
             "capabilities": {
                 "tools": {"listChanged": False},
-                "prompts": {"listChanged": False},
             },
             "serverInfo": runtime.server_identity(),
             "instructions": runtime.project_context.server_instructions(),
@@ -354,10 +348,6 @@ def _dispatch_legacy(
             params,
             RequestContext("legacy", version, principal=principal),
         )
-    if method == "prompts/list":
-        return runtime.list_prompts()
-    if method == "prompts/get":
-        return _prompt_get(runtime, params)
     raise RpcError(-32601, f"Unknown method: {method}")
 
 
@@ -370,12 +360,3 @@ def _tool_call(runtime: Any, params: dict[str, Any], context: RequestContext) ->
         raise RpcError(-32602, "tools/call arguments must be an object")
     return runtime.call_tool(name, arguments, context=context)
 
-
-def _prompt_get(runtime: Any, params: dict[str, Any]) -> dict[str, Any]:
-    name = params.get("name")
-    arguments = params.get("arguments")
-    if not isinstance(name, str) or not name:
-        raise RpcError(-32602, "prompts/get requires a prompt name")
-    if arguments is not None and not isinstance(arguments, dict):
-        raise RpcError(-32602, "prompts/get arguments must be an object")
-    return runtime.get_prompt(name, arguments)

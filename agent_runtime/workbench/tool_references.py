@@ -9,7 +9,6 @@ TOOL_PROVIDER_VALUES = frozenset({"system", "mcp"})
 CONNECTION_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 WORKBENCH_CONTROL_TOOL_PREFIXES = (
     "workflow_",
-    "prompt_",
     "skill_",
     "mcp_connection_",
 )

@@ -8,8 +8,6 @@ from agent_runtime.workbench import (
     ResourceScope,
     WorkflowDefinition,
     WorkflowStore,
-    build_prompt_registry,
-    build_skill_registry,
     build_workflow_registry,
     validate_workflow,
 )
@@ -28,10 +26,10 @@ def workflow_payload() -> dict[str, object]:
         "nodes": [
             {
                 "id": "inspect",
-                "type": "prompt",
+                "type": "skill",
                 "name": "Inspect",
                 "position": {"x": 100, "y": 100},
-                "config": {"prompt_id": "project-analysis"},
+                "config": {"skill_id": "project-analysis"},
             },
             {
                 "id": "review",
@@ -55,7 +53,7 @@ def workflow_payload() -> dict[str, object]:
 class WorkflowSchemaTests(unittest.TestCase):
     def test_valid_dag_round_trips(self) -> None:
         workflow = WorkflowDefinition.from_mapping(workflow_payload())
-        result = validate_workflow(workflow, prompt_ids={"project-analysis"})
+        result = validate_workflow(workflow, skill_ids={"project-analysis"})
 
         self.assertTrue(result.ok)
         self.assertEqual(workflow.to_dict()["entry_node_id"], "inspect")
@@ -79,12 +77,12 @@ class WorkflowSchemaTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("cycle_detected", {item.code for item in result.errors})
 
-    def test_unknown_prompt_is_rejected(self) -> None:
-        workflow = WorkflowDefinition.from_mapping(workflow_payload())
-        result = validate_workflow(workflow, prompt_ids={"another-prompt"})
-
-        self.assertFalse(result.ok)
-        self.assertIn("unknown_prompt", {item.code for item in result.errors})
+    def test_prompt_node_is_rejected_by_schema(self) -> None:
+        payload = workflow_payload()
+        payload["nodes"][0]["type"] = "prompt"
+        payload["nodes"][0]["config"] = {"prompt_id": "project-analysis"}
+        with self.assertRaisesRegex(ValueError, "unsupported workflow node type"):
+            WorkflowDefinition.from_mapping(payload)
 
     def test_unreachable_node_is_rejected(self) -> None:
         payload = workflow_payload()
@@ -98,7 +96,7 @@ class WorkflowSchemaTests(unittest.TestCase):
             }
         )
         workflow = WorkflowDefinition.from_mapping(payload)
-        result = validate_workflow(workflow, prompt_ids={"project-analysis"})
+        result = validate_workflow(workflow, skill_ids={"project-analysis"})
 
         self.assertFalse(result.ok)
         self.assertIn("unreachable_node", {item.code for item in result.errors})
@@ -198,64 +196,32 @@ class WorkflowSchemaTests(unittest.TestCase):
 
 
 class WorkflowRegistryTests(unittest.TestCase):
-    def test_builtin_workflows_are_available_and_valid(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            workspace = Path(temporary)
-            store = WorkflowStore(workspace)
-            prompts = build_prompt_registry()
-            known_tools = {
-                "apply_patch",
-                "server_info",
-                "list_dir",
-                "list_files",
-                "read_file",
-                "search_text",
-                "exec_process",
-                "git_diff",
-                "git_show",
-            }
-            skills = build_skill_registry(
-                prompt_registry=prompts,
-                known_tool_names=known_tools,
-            )
-            registry = build_workflow_registry(store=store)
-
-        ids = {item.id for item in registry.list()}
-        self.assertEqual({"project-development"}, ids)
-        for definition in registry.list():
-            result = validate_workflow(
-                definition,
-                prompt_ids={item.id for item in prompts.list()},
-                skill_ids={item.id for item in skills.list()},
-                tool_names=known_tools,
-            )
-            self.assertTrue(result.ok, definition.id)
-            self.assertEqual(definition.scope, ResourceScope.BUILTIN)
-            self.assertIn("acceptance", definition.metadata)
-            self.assertIn("example_run", definition.metadata)
-
-    def test_workspace_override_wins_and_delete_can_reveal_builtin(self) -> None:
+    def test_registry_has_no_default_workflows(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             store = WorkflowStore(workspace)
             registry = build_workflow_registry(store=store)
-            builtin = registry.get("project-development")
-            assert builtin is not None
 
-            raw = builtin.to_dict()
-            raw["name"] = "Workspace Bug Flow"
+        self.assertEqual((), registry.list())
+
+    def test_workspace_workflow_delete_does_not_reveal_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            store = WorkflowStore(workspace)
+            registry = build_workflow_registry(store=store)
+            raw = workflow_payload()
+            raw["id"] = "project-development"
+            raw["name"] = "Workspace Project Flow"
             saved = store.save(WorkflowDefinition.from_mapping(raw))
             registry.register(saved, replace=True)
             selected = registry.get("project-development")
             assert selected is not None
             self.assertEqual(selected.scope, ResourceScope.WORKSPACE)
-            self.assertEqual(selected.name, "Workspace Bug Flow")
+            self.assertEqual(selected.name, "Workspace Project Flow")
 
             self.assertTrue(store.delete("project-development"))
             registry.remove("project-development", scope=ResourceScope.WORKSPACE)
-            restored = registry.get("project-development")
-            assert restored is not None
-            self.assertEqual(restored.scope, ResourceScope.BUILTIN)
+            self.assertIsNone(registry.get("project-development"))
 
     def test_store_versions_and_rejects_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

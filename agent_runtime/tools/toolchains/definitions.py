@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from ...core import ToolAnnotations, ToolDefinition
-from ...permissions import Capability
+from ...core.tool import ToolAnnotations, ToolDefinition
+from ...permissions.capabilities import Capability
 from ...schemas import S, obj
 
 

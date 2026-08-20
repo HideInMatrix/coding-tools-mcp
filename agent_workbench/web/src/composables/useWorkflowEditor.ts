@@ -24,7 +24,6 @@ const emptyCatalog = (): WorkbenchCatalogDto => ({
     workspace: '',
     running: false,
   },
-  prompts: [],
   skills: [],
   tools: [],
   effective_tools: [],
@@ -179,6 +178,17 @@ export function useWorkflowEditor() {
     resetHistory()
   }
 
+  function validateRequiredMetadata() {
+    const description = workflowDescription.value.trim()
+    if (!description) {
+      error.value = '请输入 Workflow 描述。'
+      notice.value = ''
+      return false
+    }
+    workflowDescription.value = description
+    return true
+  }
+
   async function applyHistorySnapshot(snapshot: string) {
     historyApplying = true
     try {
@@ -255,6 +265,7 @@ export function useWorkflowEditor() {
 
   async function validate() {
     if (!targetId.value) return null
+    if (!validateRequiredMetadata()) return null
     busy.value = true
     error.value = ''
     try {
@@ -276,6 +287,7 @@ export function useWorkflowEditor() {
 
   async function save() {
     if (!targetId.value) return null
+    if (!validateRequiredMetadata()) return null
     busy.value = true
     error.value = ''
     try {

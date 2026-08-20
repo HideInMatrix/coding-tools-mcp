@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..permissions import PERMISSION_MODES
+from ..permissions.capabilities import PERMISSION_MODES
 
 
 def normalize_instance_path(value: str) -> str:

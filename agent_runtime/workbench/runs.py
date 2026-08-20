@@ -902,7 +902,7 @@ class WorkflowRunManager:
             node_id = state.ready[0]
             node = self._node(workflow, node_id)
 
-            if node.type in {"prompt", "skill"}:
+            if node.type == "skill":
                 return self._wait_for_model(run, workflow, node)
 
             if node.type == "approval":

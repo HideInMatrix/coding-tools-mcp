@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from ..core import ToolRegistry
-from .filesystem import FILESYSTEM_TOOLS
-from .git import GIT_TOOLS
-from .process import PROCESS_TOOLS
-from .system import SYSTEM_TOOLS
-from .toolchains import TOOLCHAIN_TOOLS
-from .workbench import WORKBENCH_TOOLS
+from ..core.registry import ToolRegistry
+from .filesystem.definitions import FILESYSTEM_TOOLS
+from .git.definitions import GIT_TOOLS
+from .process.definitions import PROCESS_TOOLS
+from .system.definitions import SYSTEM_TOOLS
+from .toolchains.definitions import TOOLCHAIN_TOOLS
+from .workbench.definitions import WORKBENCH_TOOLS
 
 
 def build_tool_registry() -> ToolRegistry:

@@ -172,7 +172,6 @@ export interface PermissionRequestDto {
 }
 
 export type WorkflowNodeKind =
-  | 'prompt'
   | 'skill'
   | 'tool'
   | 'approval'
@@ -188,28 +187,6 @@ export interface WorkbenchTargetDto {
   running: boolean
 }
 
-export interface PromptSummaryDto {
-  id: string
-  name: string
-  description: string
-  version: number
-  scope: 'built-in' | 'global'
-  arguments: Array<{
-    name: string
-    description?: string
-    required?: boolean
-  }>
-}
-
-export interface PromptDefinitionDto extends PromptSummaryDto {
-  schema_version: number
-  messages: Array<{
-    role: 'user' | 'assistant'
-    content: string
-  }>
-  source?: string
-}
-
 export interface ToolReferenceDto {
   provider: 'system' | 'mcp'
   tool_name: string
@@ -222,8 +199,6 @@ export interface SkillSummaryDto {
   description: string
   version: number
   scope: 'built-in' | 'global'
-  entry_prompt: string | null
-  tool_references: ToolReferenceDto[]
   artifacts: string[]
 }
 
@@ -231,12 +206,6 @@ export interface SkillDefinitionDto extends SkillSummaryDto {
   schema_version: number
   source?: string
   method_document: string
-}
-
-export interface PromptValidationDto {
-  ok: boolean
-  saved?: boolean
-  prompt: PromptDefinitionDto
 }
 
 export interface SkillValidationDto {
@@ -360,7 +329,6 @@ export interface WorkflowValidationDto {
 
 export interface WorkbenchCatalogDto {
   target: WorkbenchTargetDto
-  prompts: PromptSummaryDto[]
   skills: SkillSummaryDto[]
   tools: string[]
   effective_tools: EffectiveToolDto[]
@@ -369,7 +337,6 @@ export interface WorkbenchCatalogDto {
 }
 
 export interface CapabilityCatalogDto {
-  prompts: PromptSummaryDto[]
   skills: SkillSummaryDto[]
   tools: string[]
   effective_tools: EffectiveToolDto[]
@@ -460,10 +427,6 @@ export interface DesktopBridge {
   delete_workbench_mcp_connection(connectionId: string): Promise<boolean>
   test_workbench_mcp_connection(connectionId: string, timeoutSeconds?: number): Promise<MCPConnectionProbeDto>
   discover_workbench_mcp_connection_tools(connectionId: string, timeoutSeconds?: number): Promise<MCPConnectionProbeDto>
-  get_workbench_prompt(promptId: string): Promise<PromptDefinitionDto>
-  validate_workbench_prompt(prompt: PromptDefinitionDto): Promise<PromptValidationDto>
-  save_workbench_prompt(prompt: PromptDefinitionDto, expectedVersion: number): Promise<PromptValidationDto>
-  delete_workbench_prompt(promptId: string): Promise<boolean>
   get_workbench_skill(skillId: string): Promise<SkillDefinitionDto>
   validate_workbench_skill(skill: SkillDefinitionDto): Promise<SkillValidationDto>
   save_workbench_skill(skill: SkillDefinitionDto, expectedVersion: number): Promise<SkillValidationDto>

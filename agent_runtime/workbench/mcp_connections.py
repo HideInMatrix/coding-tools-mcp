@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from .models import PROMPT_ID_PATTERN, ResourceScope
+from .models import ResourceScope, WORKBENCH_ID_PATTERN
 
 
 SENSITIVE_KEY_PATTERN = re.compile(
@@ -101,7 +101,7 @@ class MCPConnectionDefinition:
             raise ValueError(f"unsupported MCP connection schema_version: {schema_version}")
 
         connection_id = str(value.get("id") or "").strip()
-        if not PROMPT_ID_PATTERN.fullmatch(connection_id):
+        if not WORKBENCH_ID_PATTERN.fullmatch(connection_id):
             raise ValueError(f"invalid MCP connection id: {connection_id!r}")
         name = str(value.get("name") or connection_id).strip()
         if not name:

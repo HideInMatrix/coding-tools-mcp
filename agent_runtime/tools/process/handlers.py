@@ -13,7 +13,7 @@ from ...local_permission_broker import (
     BROKER_SECRET_ENV,
     BROKER_SERVER_ID_ENV,
 )
-from ...permissions import ACTIVE_PERMISSIONS
+from ...permissions.context import ACTIVE_PERMISSIONS
 from ...processes import command_payload
 from ...route_probe import ROUTE_PROBE_TOKEN_ENV
 from .._shared import truncate_text

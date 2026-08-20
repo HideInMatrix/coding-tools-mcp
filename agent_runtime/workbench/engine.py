@@ -58,9 +58,6 @@ class ModelAction:
     node_id: str
     node_type: str
     messages: tuple[dict[str, Any], ...]
-    prompt_id: str | None = None
-    allowed_tools: tuple[str, ...] = ()
-    allowed_tool_references: tuple[dict[str, str], ...] = ()
     skill: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -69,13 +66,7 @@ class ModelAction:
             "node_id": self.node_id,
             "node_type": self.node_type,
             "messages": [dict(item) for item in self.messages],
-            "allowed_tools": list(self.allowed_tools),
-            "allowed_tool_references": [
-                dict(item) for item in self.allowed_tool_references
-            ],
         }
-        if self.prompt_id is not None:
-            payload["prompt_id"] = self.prompt_id
         if self.skill is not None:
             payload["skill"] = dict(self.skill)
         return payload
@@ -153,7 +144,6 @@ class WorkflowEngine:
     def validate(self, workflow: WorkflowDefinition):
         return validate_workflow(
             workflow,
-            prompt_ids={item.id for item in self.runtime.prompt_registry.list()},
             skill_ids={item.id for item in self.runtime.skill_registry.list()},
             tool_names=set(self._available_tool_names()),
             tool_keys=set(self._available_tool_keys()),
@@ -231,70 +221,15 @@ class WorkflowEngine:
         if node_id not in state.ready:
             raise ValueError(f"node is not ready: {node_id}")
         node = self._node(workflow, node_id)
-        arguments = node.config.get("arguments")
-        if arguments is not None and not isinstance(arguments, dict):
-            raise ValueError("model node arguments must be an object")
-
-        def arguments_for_prompt(prompt_id: str) -> dict[str, Any] | None:
-            definition = self.runtime.prompt_registry.get(prompt_id)
-            selected = dict(arguments) if isinstance(arguments, dict) else {}
-            if definition is not None and inputs:
-                selected.update(
-                    {
-                        argument.name: inputs[argument.name]
-                        for argument in definition.arguments
-                        if argument.name in inputs
-                    }
-                )
-            return selected or None
-
-        if node.type == "prompt":
-            prompt_id = str(node.config.get("prompt_id") or "")
-            rendered = self.runtime.prompt_registry.render(
-                prompt_id,
-                arguments_for_prompt(prompt_id),
-            )
-            return ModelAction(
-                node_id=node.id,
-                node_type="prompt",
-                messages=tuple(rendered["messages"]),
-                prompt_id=prompt_id,
-            )
-
         if node.type == "skill":
             skill_id = str(node.config.get("skill_id") or "")
             skill = self.runtime.skill_registry.get(skill_id)
             if skill is None:
                 raise ValueError(f"unknown skill: {skill_id}")
-            messages: tuple[dict[str, Any], ...] = ()
-            if skill.entry_prompt:
-                rendered = self.runtime.prompt_registry.render(
-                    skill.entry_prompt,
-                    arguments_for_prompt(skill.entry_prompt),
-                )
-                messages = tuple(rendered["messages"])
-            available_keys = self._available_tool_keys()
-            effective_references = tuple(
-                reference
-                for reference in skill.tool_references
-                if reference.key in available_keys
-            )
-            allowed = tuple(
-                reference.tool_name
-                for reference in effective_references
-                if reference.provider == "system"
-            )
-            if any(reference.provider == "mcp" for reference in effective_references):
-                allowed = (*allowed, "mcp_connection_call_tool")
             return ModelAction(
                 node_id=node.id,
                 node_type="skill",
-                messages=messages,
-                prompt_id=skill.entry_prompt,
-                allowed_tools=allowed,
-                allowed_tool_references=tuple(
-                    reference.to_dict() for reference in effective_references
-                ),
+                messages=(),
                 skill={
                     "id": skill.id,
                     "name": skill.name,

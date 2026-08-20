@@ -6,6 +6,8 @@ from pathlib import Path
 
 from agent_runtime.runtime import Runtime
 from agent_runtime.workbench import (
+    ResourceScope,
+    SkillDefinition,
     WorkflowDefinition,
     WorkflowEngine,
     evaluate_condition,
@@ -66,45 +68,14 @@ class WorkflowEngineTests(unittest.TestCase):
         self.assertEqual(next_state.ready, ("b", "c"))
         self.assertEqual(next_state.completed, ("a",))
 
-    def test_prompt_node_produces_model_action_without_calling_model(self) -> None:
-        workflow = workflow_with_nodes(
-            [
-                {
-                    "id": "prompt",
-                    "type": "prompt",
-                    "name": "Prompt",
-                    "config": {
-                        "prompt_id": "project-analysis",
-                        "arguments": {"goal": "map runtime"},
-                    },
-                }
-            ],
-            [],
-        )
-        with tempfile.TemporaryDirectory() as temporary:
-            runtime = Runtime(Path(temporary))
-            try:
-                engine = WorkflowEngine(runtime)
-                state = engine.start(workflow)
-                action = engine.model_action(workflow, state, "prompt")
-            finally:
-                runtime.close()
-
-        self.assertEqual(action.node_type, "prompt")
-        self.assertIn("map runtime", action.messages[0]["content"]["text"])
-        self.assertEqual(action.allowed_tools, ())
-
-    def test_skill_node_exposes_only_effective_allowlist(self) -> None:
+    def test_skill_node_exposes_method_without_prompt_or_allowlist(self) -> None:
         workflow = workflow_with_nodes(
             [
                 {
                     "id": "review",
                     "type": "skill",
                     "name": "Review",
-                    "config": {
-                        "skill_id": "code-review",
-                        "arguments": {"target": "runtime.py"},
-                    },
+                    "config": {"skill_id": "code-review"},
                 }
             ],
             [],
@@ -112,16 +83,34 @@ class WorkflowEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary))
             try:
+                runtime.skill_registry.register(
+                    SkillDefinition.from_mapping(
+                        {
+                            "schema_version": 1,
+                            "id": "code-review",
+                            "name": "Code Review",
+                            "description": "Test-only review skill",
+                            "artifacts": [],
+                        },
+                        method_document="# Code Review\n\nReview the supplied changes.",
+                        scope=ResourceScope.GLOBAL,
+                        source="test-fixture",
+                    ),
+                    replace=True,
+                )
                 engine = WorkflowEngine(runtime)
                 action = engine.model_action(workflow, engine.start(workflow), "review")
-                runtime_tools = {item.name for item in runtime._tools}
             finally:
                 runtime.close()
 
         self.assertEqual(action.node_type, "skill")
         self.assertIsNotNone(action.skill)
-        self.assertEqual(set(action.allowed_tools), {"read_file", "search_text", "git_diff", "git_show"} & runtime_tools)
-        self.assertNotIn("exec_command", action.allowed_tools)
+        assert action.skill is not None
+        self.assertIn("method_document", action.skill)
+        payload = action.to_dict()
+        self.assertNotIn("prompt_id", payload)
+        self.assertNotIn("allowed_tools", payload)
+        self.assertNotIn("allowed_tool_references", payload)
 
     def test_tool_node_reuses_runtime_call_tool_and_advances(self) -> None:
         workflow = workflow_with_nodes(

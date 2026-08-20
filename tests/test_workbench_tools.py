@@ -21,7 +21,7 @@ def workflow() -> dict[str, object]:
         "name": "AI Generated",
         "description": "AI-authored workflow used for Workbench contract tests",
         "version": 1,
-        "entry_node_id": "prompt",
+        "entry_node_id": "tool",
         "inputs_schema": {
             "type": "object",
             "properties": {"goal": {"type": "string"}},
@@ -30,25 +30,18 @@ def workflow() -> dict[str, object]:
         "tags": ["ai", "test"],
         "nodes": [
             {
-                "id": "prompt",
-                "type": "prompt",
-                "name": "Spec",
+                "id": "tool",
+                "type": "tool",
+                "name": "Info",
                 "position": {"x": 0, "y": 0},
-                "config": {"prompt_id": "spec-development"},
+                "config": {
+                    "provider": "system",
+                    "tool_name": "server_info",
+                    "arguments": {},
+                },
             }
         ],
         "edges": [],
-    }
-
-
-def prompt_asset() -> dict[str, object]:
-    return {
-        "schema_version": 1,
-        "id": "ai-prompt",
-        "name": "AI Prompt",
-        "description": "Prompt created through MCP authoring tools",
-        "arguments": [],
-        "messages": [{"role": "user", "content": "Inspect the workspace"}],
     }
 
 
@@ -58,11 +51,6 @@ def skill_asset() -> dict[str, object]:
         "id": "ai-skill",
         "name": "AI Skill",
         "description": "Skill created through MCP authoring tools",
-        "entry_prompt": "ai-prompt",
-        "tool_references": [
-            {"provider": "system", "tool_name": "read_file"},
-            {"provider": "system", "tool_name": "search_text"},
-        ],
         "artifacts": ["ai-report.md"],
         "method_document": "# AI Skill\n\nRead evidence first, then produce the report.",
     }
@@ -151,7 +139,7 @@ class WorkflowToolTests(unittest.TestCase):
                 external_runtime.close()
                 thread.join(timeout=2)
 
-    def test_global_prompt_and_skill_are_visible_across_workspaces(self) -> None:
+    def test_global_skill_is_visible_across_workspaces(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             global_root = root / "global-assets"
@@ -162,29 +150,21 @@ class WorkflowToolTests(unittest.TestCase):
             runtime_a = Runtime(workspace_a, global_asset_root=global_root)
             runtime_b = Runtime(workspace_b, global_asset_root=global_root)
             try:
-                saved_prompt = runtime_a.prompt_save(
-                    {"prompt": prompt_asset(), "expected_version": 0}
-                )
                 saved_skill = runtime_a.skill_save(
                     {"skill": skill_asset(), "expected_version": 0}
                 )
 
-                prompts_b = runtime_b.prompt_list({})
                 skills_b = runtime_b.skill_list({})
-                loaded_prompt = runtime_b.prompt_get({"prompt_id": "ai-prompt"})
                 loaded_skill = runtime_b.skill_get({"skill_id": "ai-skill"})
             finally:
                 runtime_a.close()
                 runtime_b.close()
 
-        self.assertTrue(saved_prompt["saved"])
         self.assertTrue(saved_skill["saved"])
-        self.assertIn("ai-prompt", {item["id"] for item in prompts_b["prompts"]})
         self.assertIn("ai-skill", {item["id"] for item in skills_b["skills"]})
-        self.assertEqual(loaded_prompt["prompt"]["scope"], "global")
         self.assertEqual(loaded_skill["skill"]["scope"], "global")
 
-    def test_ai_can_author_prompt_and_skill_with_version_conflicts(self) -> None:
+    def test_ai_can_author_skill_with_version_conflicts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             runtime = Runtime(
@@ -193,21 +173,8 @@ class WorkflowToolTests(unittest.TestCase):
             )
             try:
                 tool_names = {item["name"] for item in runtime.list_tools()["tools"]}
-                self.assertIn("prompt_save", tool_names)
                 self.assertIn("skill_save", tool_names)
-
-                prompt_validation = runtime.call_tool(
-                    "prompt_validate",
-                    {"prompt": prompt_asset()},
-                )["structuredContent"]
-                saved_prompt = runtime.call_tool(
-                    "prompt_save",
-                    {"prompt": prompt_asset(), "expected_version": 0},
-                )["structuredContent"]
-                prompt_conflict = runtime.call_tool(
-                    "prompt_save",
-                    {"prompt": prompt_asset(), "expected_version": 0},
-                )["structuredContent"]
+                self.assertNotIn("prompt_save", tool_names)
 
                 skill_validation = runtime.call_tool(
                     "skill_validate",
@@ -222,53 +189,29 @@ class WorkflowToolTests(unittest.TestCase):
                     {"skill": skill_asset(), "expected_version": 0},
                 )["structuredContent"]
 
-                listed_prompts = runtime.call_tool("prompt_list", {})["structuredContent"]
-                loaded_prompt = runtime.call_tool(
-                    "prompt_get",
-                    {"prompt_id": "ai-prompt"},
-                )["structuredContent"]
                 listed_skills = runtime.call_tool("skill_list", {})["structuredContent"]
                 loaded_skill = runtime.call_tool(
                     "skill_get",
                     {"skill_id": "ai-skill"},
                 )["structuredContent"]
 
-                blocked_delete = runtime.call_tool(
-                    "prompt_delete",
-                    {"prompt_id": "ai-prompt"},
-                )["structuredContent"]
                 deleted_skill = runtime.call_tool(
                     "skill_delete",
                     {"skill_id": "ai-skill"},
                 )["structuredContent"]
-                deleted_prompt = runtime.call_tool(
-                    "prompt_delete",
-                    {"prompt_id": "ai-prompt"},
-                )["structuredContent"]
             finally:
                 runtime.close()
 
-        self.assertTrue(prompt_validation["ok"])
-        self.assertTrue(saved_prompt["saved"])
-        self.assertEqual(saved_prompt["prompt"]["version"], 1)
-        self.assertFalse(prompt_conflict["ok"])
-        self.assertEqual(prompt_conflict["error"]["code"], "PROMPT_VERSION_CONFLICT")
-        self.assertEqual(prompt_conflict["error"]["details"]["actual_version"], 1)
         self.assertTrue(skill_validation["ok"])
         self.assertTrue(saved_skill["saved"])
         self.assertEqual(saved_skill["skill"]["version"], 1)
         self.assertFalse(skill_conflict["ok"])
         self.assertEqual(skill_conflict["error"]["code"], "SKILL_VERSION_CONFLICT")
-        self.assertIn("ai-prompt", {item["id"] for item in listed_prompts["prompts"]})
-        self.assertEqual(loaded_prompt["prompt"]["scope"], "global")
         self.assertIn("ai-skill", {item["id"] for item in listed_skills["skills"]})
         self.assertEqual(loaded_skill["skill"]["scope"], "global")
-        self.assertFalse(blocked_delete["ok"])
-        self.assertEqual(blocked_delete["error"]["code"], "PROMPT_DELETE_BLOCKED")
         self.assertTrue(deleted_skill["deleted"])
-        self.assertTrue(deleted_prompt["deleted"])
 
-    def test_ai_can_author_prompt_skill_workflow_discover_and_start_end_to_end(self) -> None:
+    def test_ai_can_author_skill_workflow_discover_and_start_end_to_end(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             runtime = Runtime(
@@ -310,10 +253,6 @@ class WorkflowToolTests(unittest.TestCase):
                 "metadata": {"created_by": "ai"},
             }
             try:
-                saved_prompt = runtime.call_tool(
-                    "prompt_save",
-                    {"prompt": prompt_asset(), "expected_version": 0},
-                )["structuredContent"]
                 saved_skill = runtime.call_tool(
                     "skill_save",
                     {"skill": skill_asset(), "expected_version": 0},
@@ -367,7 +306,6 @@ class WorkflowToolTests(unittest.TestCase):
             finally:
                 runtime.close()
 
-        self.assertTrue(saved_prompt["saved"])
         self.assertTrue(saved_skill["saved"])
         self.assertTrue(validated["ok"])
         self.assertTrue(saved["saved"])
@@ -386,23 +324,13 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertEqual(loaded["workflow"]["version"], 2)
         self.assertEqual(loaded["workflow"]["metadata"]["created_by"], "ai")
 
-    def test_running_runtime_refreshes_prompt_and_skill_assets_written_externally(self) -> None:
+    def test_running_runtime_refreshes_skill_assets_written_externally(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             global_root = workspace / "global-assets"
             runtime = Runtime(workspace, global_asset_root=global_root)
-            external = CapabilityAssetService(
-                known_tool_names={definition.name for definition in runtime._tools},
-                global_root=global_root,
-            )
+            external = CapabilityAssetService(global_root=global_root)
             try:
-                external.save_prompt(prompt_asset(), expected_version=0)
-                native_prompts = runtime.list_prompts()
-                self.assertIn(
-                    "ai-prompt",
-                    {item["name"] for item in native_prompts["prompts"]},
-                )
-
                 external.save_skill(skill_asset(), expected_version=0)
                 runtime_skills = runtime.skill_list({})
                 self.assertIn(
@@ -410,16 +338,8 @@ class WorkflowToolTests(unittest.TestCase):
                     {item["id"] for item in runtime_skills["skills"]},
                 )
 
-                ai_prompt = prompt_asset()
-                ai_prompt["id"] = "runtime-prompt"
-                ai_prompt["name"] = "Runtime Prompt"
-                runtime.prompt_save({"prompt": ai_prompt, "expected_version": 0})
-
-                desktop_view = CapabilityAssetService(
-                    known_tool_names={definition.name for definition in runtime._tools},
-                    global_root=global_root,
-                )
-                persisted = desktop_view.prompt_registry.get("runtime-prompt")
+                desktop_view = CapabilityAssetService(global_root=global_root)
+                persisted = desktop_view.skill_registry.get("ai-skill")
                 assert persisted is not None
                 self.assertEqual(persisted.scope.value, "global")
             finally:
@@ -489,12 +409,12 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertTrue(validated["ok"])
         self.assertTrue(saved["saved"])
         self.assertEqual(saved["workflow"]["version"], 1)
-        self.assertGreaterEqual(listed["count"], 2)
+        self.assertEqual(listed["count"], 1)
         self.assertIn("ai-generated", {item["id"] for item in listed["workflows"]})
         self.assertEqual(loaded["workflow"]["id"], "ai-generated")
         self.assertEqual(second_save["workflow"]["version"], 2)
 
-    def test_builtin_workflow_can_be_read_without_copying_to_workspace(self) -> None:
+    def test_default_workflow_is_not_exposed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary))
             try:
@@ -502,9 +422,7 @@ class WorkflowToolTests(unittest.TestCase):
             finally:
                 runtime.close()
 
-        self.assertEqual(loaded["workflow"]["scope"], "built-in")
-        self.assertEqual(loaded["workflow"]["id"], "project-development")
-        self.assertEqual(loaded["workflow"]["version"], 1)
+        self.assertFalse(loaded["ok"])
 
     def test_workflow_authoring_context_and_optimistic_concurrency(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -530,8 +448,9 @@ class WorkflowToolTests(unittest.TestCase):
             ["description", "inputs_schema", "tags"],
         )
         self.assertIn("skill", context["node_types"])
+        self.assertNotIn("prompt", context["node_types"])
+        self.assertNotIn("prompts", context)
         self.assertIn("approved", context["edge_conditions"])
-        self.assertIn("workflow-authoring", {item["name"] for item in context["prompts"]})
         self.assertTrue(first["saved"])
         self.assertFalse(conflict["ok"])
         self.assertEqual(conflict["error"]["code"], "WORKFLOW_VERSION_CONFLICT")
@@ -540,7 +459,8 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_invalid_reference_is_not_saved(self) -> None:
         raw = workflow()
-        raw["nodes"][0]["config"] = {"prompt_id": "missing-prompt"}
+        raw["nodes"][0]["type"] = "skill"
+        raw["nodes"][0]["config"] = {"skill_id": "missing-skill"}
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary))
             try:
@@ -551,12 +471,13 @@ class WorkflowToolTests(unittest.TestCase):
                 runtime.close()
 
         self.assertFalse(result["saved"])
-        self.assertIn("unknown_prompt", {item["code"] for item in result["errors"]})
+        self.assertIn("unknown_skill", {item["code"] for item in result["errors"]})
 
     def test_plain_secret_is_rejected(self) -> None:
         raw = workflow()
         raw["nodes"][0]["config"] = {
-            "prompt_id": "spec-development",
+            "provider": "system",
+            "tool_name": "server_info",
             "api_key": "secret-value",
         }
         with tempfile.TemporaryDirectory() as temporary:

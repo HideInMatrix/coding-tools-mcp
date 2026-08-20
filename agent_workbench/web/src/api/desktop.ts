@@ -10,8 +10,6 @@ import type {
   MCPConnectionValidationDto,
   OAuthClientDto,
   PermissionRequestDto,
-  PromptDefinitionDto,
-  PromptValidationDto,
   SkillDefinitionDto,
   SkillValidationDto,
   WorkbenchCatalogDto,
@@ -173,18 +171,6 @@ export const desktopApi = {
   },
   async discoverWorkbenchMCPConnectionTools(connectionId: string, timeoutSeconds = 8): Promise<MCPConnectionProbeDto> {
     return (await bridge()).discover_workbench_mcp_connection_tools(connectionId, timeoutSeconds)
-  },
-  async workbenchPrompt(promptId: string): Promise<PromptDefinitionDto> {
-    return (await bridge()).get_workbench_prompt(promptId)
-  },
-  async validateWorkbenchPrompt(prompt: PromptDefinitionDto): Promise<PromptValidationDto> {
-    return (await bridge()).validate_workbench_prompt(prompt)
-  },
-  async saveWorkbenchPrompt(prompt: PromptDefinitionDto, expectedVersion: number): Promise<PromptValidationDto> {
-    return (await bridge()).save_workbench_prompt(prompt, expectedVersion)
-  },
-  async deleteWorkbenchPrompt(promptId: string): Promise<boolean> {
-    return (await bridge()).delete_workbench_prompt(promptId)
   },
   async workbenchSkill(skillId: string): Promise<SkillDefinitionDto> {
     return (await bridge()).get_workbench_skill(skillId)

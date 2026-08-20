@@ -13,7 +13,7 @@ from .tool_references import is_workbench_control_tool, tool_reference_from_node
 WORKFLOW_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 NODE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 WORKFLOW_NODE_TYPES = frozenset(
-    {"prompt", "skill", "tool", "approval", "condition", "artifact"}
+    {"skill", "tool", "approval", "condition", "artifact"}
 )
 WORKFLOW_EDGE_CONDITIONS = frozenset(
     {"success", "failure", "approved", "rejected", "true", "false"}
@@ -405,18 +405,6 @@ def _validate_reachability(
     ]
 
 
-def _validate_prompt_node(
-    node: WorkflowNode,
-    prompt_ids: set[str] | None,
-) -> list[WorkflowValidationIssue]:
-    prompt_id = str(node.config.get("prompt_id") or "").strip()
-    if not prompt_id:
-        return [WorkflowValidationIssue("missing_prompt", "Prompt 节点必须配置 prompt_id", node.id)]
-    if prompt_ids is not None and prompt_id not in prompt_ids:
-        return [WorkflowValidationIssue("unknown_prompt", "引用的 Prompt 不存在", node.id)]
-    return []
-
-
 def _validate_skill_node(
     node: WorkflowNode,
     skill_ids: set[str] | None,
@@ -533,16 +521,13 @@ def _validate_nodes(
     workflow: WorkflowDefinition,
     node_ids: set[str],
     *,
-    prompt_ids: set[str] | None,
     skill_ids: set[str] | None,
     tool_names: set[str] | None,
     tool_keys: set[str] | None,
 ) -> list[WorkflowValidationIssue]:
     errors: list[WorkflowValidationIssue] = []
     for node in workflow.nodes:
-        if node.type == "prompt":
-            errors.extend(_validate_prompt_node(node, prompt_ids))
-        elif node.type == "skill":
+        if node.type == "skill":
             errors.extend(_validate_skill_node(node, skill_ids))
         elif node.type == "tool":
             errors.extend(
@@ -579,7 +564,6 @@ def _validate_artifact_uniqueness(
 def validate_workflow(
     workflow: WorkflowDefinition,
     *,
-    prompt_ids: set[str] | None = None,
     skill_ids: set[str] | None = None,
     tool_names: set[str] | None = None,
     tool_keys: set[str] | None = None,
@@ -593,7 +577,6 @@ def validate_workflow(
         _validate_nodes(
             workflow,
             node_ids,
-            prompt_ids=prompt_ids,
             skill_ids=skill_ids,
             tool_names=tool_names,
             tool_keys=tool_keys,

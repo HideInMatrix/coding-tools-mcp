@@ -690,29 +690,13 @@ Workflow 不能把 Git Write 变成自动授权。
 
 ---
 
-## 11. Built-in Workflow
+## 11. 默认资产策略
 
-Workbench 以用户自定义 Workflow 为主，只保留一个默认 Workflow：
+Workbench 不注册 Built-in Skill，也不注册 Built-in Workflow。
 
-### project-development
+运行时能力目录只来自实际资产：Global Skill、Workspace Workflow，以及 System / MCP Effective Tools。用户未创建 Skill 或 Workflow 时，对应列表为空。
 
-```text
-Spec 驱动开发 Skill
-→ 保存交付报告 Artifact
-→ 人工确认 Approval
-```
-
-`Spec 驱动开发` Skill 内部方法论对应当前项目实际采用且已经验证稳定的主流程：
-
-```text
-Requirements
-→ Design
-→ Tasks
-→ Implementation
-→ Test & Acceptance
-```
-
-Bug Investigation、Code Review、Reverse Engineering、Release Validation 等继续作为 Prompt / Skill 能力存在，但不再默认占用 Workflow 列表。用户需要时可以自由组合成 Workspace Workflow。
+测试或演示需要 `Skill -> Artifact -> Approval` 等流程时，应显式创建测试 fixture；fixture 不进入产品运行时 Registry。删除用户资产后也不存在 Built-in fallback。
 
 ---
 
@@ -1113,3 +1097,56 @@ Undo / Redo 以序列化 Workflow Definition snapshot 实现，最多保留 100 
 
 损坏 Catalog 条目进入 `.quarantine`，但 future schema 永远留在原位置，仅记录 skip。MCP rediscovery 失败保留最后一次成功 discovered tools，并更新 `last_error`，避免暂时网络故障让引用该 Connection 的 Skill / Workflow 永久丢失能力定义。
 
+
+---
+
+## 13. 0.3.x 最终能力模型收敛
+
+本节按 ADR-033 覆盖本文此前所有 Prompt 一等资产、Prompt Node、Skill `entry_prompt` 和 Skill Tool Allowlist 的设计。
+
+### 13.1 最终资产关系
+
+```text
+Application Global
+├── Skill
+└── MCP Connection
+
+Runtime Provided
+└── System Tools
+
+Workspace
+├── Workflow
+└── Workflow Runs
+```
+
+Workbench 不再维护 Prompt Registry、Prompt Store 或 Prompt Catalog。模型指令统一由 Skill 的 `method_document`（持久化载体为 `SKILL.md`）提供。
+
+### 13.2 Skill Definition
+
+Skill 是完整 AI 执行单元，而不是“Prompt + Tool Allowlist”的包装层。最终 SkillDefinition 不再包含 entry_prompt、tool_references、allowed_tools。method_document 必须非空，Skill 保存和加载不依赖 Prompt Registry 或 Effective Tool Catalog。
+
+### 13.3 Skill 执行语义
+
+Skill Node 执行时，Engine 读取 Skill.method_document 生成 ModelAction，不渲染 Prompt、不计算 Skill allowlist；当前 MCP Client / AI 使用 Runtime 当前可见的全部有效 Tool。真实权限继续由 Runtime、Permission Broker、Sandbox、Workspace、MCP Connection 与 Secret 规则控制。
+
+### 13.4 Workflow Node Vocabulary
+
+最终 Node Kind 为 skill / tool / approval / condition / artifact。prompt Node 从 schema、validation、registry、engine、authoring context、GUI Palette 和 Inspector 中完全删除。Workflow validation 不再接收 prompt_ids，也不存在 missing_prompt / unknown_prompt 分支。
+
+### 13.5 Capability Asset Service
+
+CapabilityAssetService 最终只负责 SkillStore / SkillRegistry；MCPConnectionService 独立负责 MCPConnectionStore / Effective Tool Catalog。Skill 保存后只刷新 Skill Registry，MCP rediscovery 不再触发 Skill 重载。Prompt 删除依赖检查、Prompt/Skill 联动刷新全部删除。
+
+### 13.6 MCP Authoring Surface
+
+Workbench authoring tools 删除所有 prompt_*。skill_validate 只校验 Skill 自身，不再验证 Prompt reference 或 Tool allowlist。Workflow authoring context 返回 Skill、Tool、MCP Connection、Node/Edge 规则，不再返回 Prompt Catalog。
+
+### 13.7 Desktop / Vue Flow
+
+桌面 Workbench 不再包含 Prompt Manager。Skill Manager 只编辑 Name、Description、Method / Instructions、Artifacts，不显示 Entry Prompt 或 Allowed Tools。Workflow Palette 不再显示 Prompt；Skill Inspector 不再根据 Prompt arguments 生成参数表单。
+
+Workflow 的 `name` 与 `description` 属于常用基础元数据，必须在画布主编辑区始终可见、可编辑，不能只放在依赖当前选中状态的 Inspector 中。`description` 继续作为 AI Discovery 必填字段；前端在验证或保存前必须先检查非空并给出明确的本地提示，避免把领域模型异常直接暴露给用户。
+
+### 13.8 删除而非兼容
+
+0.3.x 尚未发布，因此 Global/Built-in Prompt、Skill entry_prompt、Skill tool_references / allowed_tools、Workflow Prompt Node、Prompt arguments 驱动的 Skill Node 配置全部直接删除，不做 migration。测试数据清理后重新初始化，代码中不得留下 fallback、legacy parser、双字段读取或暂时保留的兼容分支。

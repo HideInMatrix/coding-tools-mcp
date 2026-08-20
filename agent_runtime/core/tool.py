@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..permissions import Capability
+from ..permissions.capabilities import Capability
 from ..schemas import output_schema
 
 

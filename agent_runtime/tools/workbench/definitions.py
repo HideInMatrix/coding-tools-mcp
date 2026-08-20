@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from ...core import ToolAnnotations, ToolDefinition
-from ...permissions import Capability
+from ...core.tool import ToolAnnotations, ToolDefinition
+from ...permissions.capabilities import Capability
 from ...schemas import I, S, obj
 
 
 WORKFLOW_OBJECT = {"type": "object", "additionalProperties": True}
-PROMPT_OBJECT = {"type": "object", "additionalProperties": True}
 SKILL_OBJECT = {"type": "object", "additionalProperties": True}
 MCP_CONNECTION_OBJECT = {"type": "object", "additionalProperties": True}
 
@@ -15,62 +14,11 @@ WORKBENCH_TOOLS = (
     ToolDefinition(
         "workflow_authoring_context",
         "Workflow authoring context",
-        "Return the Workflow schema vocabulary, Prompt/Skill/Tool catalogs, existing workflows, condition language, and authoring safety rules for AI-generated workflows.",
+        "Return the Workflow schema vocabulary, Skill/Tool catalogs, existing workflows, condition language, and authoring safety rules for AI-generated workflows.",
         obj(),
         "workflow_authoring_context",
         frozenset({Capability.FILESYSTEM_READ}),
         ToolAnnotations(read_only=True, idempotent=True),
-    ),
-    ToolDefinition(
-        "prompt_list",
-        "List prompts",
-        "List effective AI Workbench Prompt assets visible in the current Workspace.",
-        obj(),
-        "prompt_list",
-        frozenset({Capability.FILESYSTEM_READ}),
-        ToolAnnotations(read_only=True, idempotent=True),
-    ),
-    ToolDefinition(
-        "prompt_get",
-        "Get prompt",
-        "Return one effective Prompt asset including messages, version and scope.",
-        obj({"prompt_id": {**S, "minLength": 1}}, ("prompt_id",)),
-        "prompt_get",
-        frozenset({Capability.FILESYSTEM_READ}),
-        ToolAnnotations(read_only=True, idempotent=True),
-    ),
-    ToolDefinition(
-        "prompt_validate",
-        "Validate prompt",
-        "Validate a Workspace Prompt draft without persisting it.",
-        obj({"prompt": PROMPT_OBJECT}, ("prompt",)),
-        "prompt_validate",
-        frozenset({Capability.FILESYSTEM_READ}),
-        ToolAnnotations(read_only=True, idempotent=True),
-    ),
-    ToolDefinition(
-        "prompt_save",
-        "Save prompt",
-        "Validate and persist a Workspace Prompt using expected_version optimistic concurrency.",
-        obj(
-            {
-                "prompt": PROMPT_OBJECT,
-                "expected_version": {**I, "minimum": 0},
-            },
-            ("prompt", "expected_version"),
-        ),
-        "prompt_save",
-        frozenset({Capability.FILESYSTEM_WRITE}),
-        ToolAnnotations(),
-    ),
-    ToolDefinition(
-        "prompt_delete",
-        "Delete prompt",
-        "Delete a Workspace Prompt override/asset by id. Referenced Prompts without fallback are protected.",
-        obj({"prompt_id": {**S, "minLength": 1}}, ("prompt_id",)),
-        "prompt_delete",
-        frozenset({Capability.FILESYSTEM_WRITE}),
-        ToolAnnotations(destructive=True, idempotent=True),
     ),
     ToolDefinition(
         "skill_list",
@@ -84,7 +32,7 @@ WORKBENCH_TOOLS = (
     ToolDefinition(
         "skill_get",
         "Get skill",
-        "Return one AI Workbench Skill including its method document and tool allowlist.",
+        "Return one AI Workbench Skill including its method document and artifacts.",
         obj({"skill_id": {**S, "minLength": 1}}, ("skill_id",)),
         "skill_get",
         frozenset({Capability.FILESYSTEM_READ}),
@@ -93,7 +41,7 @@ WORKBENCH_TOOLS = (
     ToolDefinition(
         "skill_validate",
         "Validate skill",
-        "Validate a Workspace Skill draft, Prompt reference and system Tool allowlist without persisting it.",
+        "Validate a Skill draft without persisting it.",
         obj({"skill": SKILL_OBJECT}, ("skill",)),
         "skill_validate",
         frozenset({Capability.FILESYSTEM_READ}),
@@ -102,7 +50,7 @@ WORKBENCH_TOOLS = (
     ToolDefinition(
         "skill_save",
         "Save skill",
-        "Validate and persist a Workspace Skill using expected_version optimistic concurrency.",
+        "Validate and persist a global Skill using expected_version optimistic concurrency.",
         obj(
             {
                 "skill": SKILL_OBJECT,
@@ -117,7 +65,7 @@ WORKBENCH_TOOLS = (
     ToolDefinition(
         "skill_delete",
         "Delete skill",
-        "Delete a Workspace Skill override/asset by id.",
+        "Delete a global Skill override/asset by id.",
         obj({"skill_id": {**S, "minLength": 1}}, ("skill_id",)),
         "skill_delete",
         frozenset({Capability.FILESYSTEM_WRITE}),

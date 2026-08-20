@@ -7,9 +7,7 @@ import unittest
 from pathlib import Path
 
 from agent_runtime.runtime import Runtime
-from agent_runtime.tools import build_tool_registry
 from agent_runtime.workbench import (
-    PromptDefinition,
     ResourceScope,
     RunStore,
     SkillDefinition,
@@ -18,7 +16,6 @@ from agent_runtime.workbench import (
     WorkflowRegistry,
     WorkflowRun,
     WorkflowStore,
-    build_prompt_registry,
     build_skill_registry,
     build_workflow_registry,
     validate_workflow,
@@ -49,24 +46,12 @@ def simple_workflow(workflow_id: str = "stable-flow") -> dict[str, object]:
 
 class WorkbenchSchemaVersionTests(unittest.TestCase):
     def test_missing_and_pre_release_schema_versions_are_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "prompt schema_version is required"):
-            PromptDefinition.from_mapping(
-                {
-                    "id": "missing-schema-prompt",
-                    "name": "Missing Schema Prompt",
-                    "messages": [{"role": "user", "content": "hello"}],
-                },
-                scope=ResourceScope.GLOBAL,
-                source="test",
-            )
-
         with self.assertRaisesRegex(ValueError, "unsupported skill schema_version: 0"):
             SkillDefinition.from_mapping(
                 {
                     "schema_version": 0,
                     "id": "pre-release-skill",
                     "name": "Pre-release Skill",
-                    "tool_references": [],
                 },
                 method_document="# Pre-release",
                 scope=ResourceScope.GLOBAL,
@@ -79,23 +64,11 @@ class WorkbenchSchemaVersionTests(unittest.TestCase):
             WorkflowDefinition.from_mapping(workflow_payload)
 
     def test_future_schema_is_rejected_for_all_persisted_types(self) -> None:
-        with self.assertRaisesRegex(ValueError, "future prompt schema_version"):
-            PromptDefinition.from_mapping(
-                {
-                    "schema_version": 999,
-                    "id": "future-prompt",
-                    "messages": [{"role": "user", "content": "future"}],
-                },
-                scope=ResourceScope.GLOBAL,
-                source="test",
-            )
-
         with self.assertRaisesRegex(ValueError, "future skill schema_version"):
             SkillDefinition.from_mapping(
                 {
                     "schema_version": 999,
                     "id": "future-skill",
-                    "tool_references": [],
                 },
                 method_document="# Future",
                 scope=ResourceScope.GLOBAL,
@@ -130,17 +103,6 @@ class WorkbenchSchemaVersionTests(unittest.TestCase):
 
 
 class WorkbenchCorruptionRecoveryTests(unittest.TestCase):
-    def test_corrupt_prompt_is_skipped_without_breaking_registry(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            prompt_dir = Path(temporary) / "global-prompts"
-            prompt_dir.mkdir(parents=True)
-            (prompt_dir / "broken.json").write_text("{broken", encoding="utf-8")
-
-            registry = build_prompt_registry(global_prompt_roots=(prompt_dir,))
-            self.assertIsNotNone(registry.get("project-analysis"))
-            self.assertIsNone(registry.get("broken"))
-            self.assertTrue((prompt_dir / ".quarantine" / "broken.json").is_file())
-
     def test_corrupt_skill_is_skipped_without_breaking_registry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             global_skills = Path(temporary) / "global-skills"
@@ -148,19 +110,10 @@ class WorkbenchCorruptionRecoveryTests(unittest.TestCase):
             skill_dir.mkdir(parents=True)
             (skill_dir / "skill.json").write_text("{broken", encoding="utf-8")
             (skill_dir / "SKILL.md").write_text("# Broken", encoding="utf-8")
-            prompts = build_prompt_registry()
-            known_tools = {
-                item.name
-                for item in build_tool_registry().definitions(
-                    enabled_features=frozenset({"view_image"})
-                )
-            }
             registry = build_skill_registry(
-                prompt_registry=prompts,
-                known_tool_names=known_tools,
                 global_skill_roots=(global_skills,),
             )
-            self.assertIsNotNone(registry.get("reverse-engineering"))
+            self.assertEqual((), registry.list())
             self.assertIsNone(registry.get("broken"))
             self.assertTrue((global_skills / ".quarantine" / "broken").is_dir())
 
@@ -177,7 +130,7 @@ class WorkbenchCorruptionRecoveryTests(unittest.TestCase):
             self.assertTrue((workflow_dir / ".quarantine" / "broken.json").is_file())
             registry = build_workflow_registry(store=store)
 
-        self.assertIsNotNone(registry.get("project-development"))
+        self.assertEqual((), registry.list())
 
     def test_future_workflow_schema_is_skipped_without_quarantine(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

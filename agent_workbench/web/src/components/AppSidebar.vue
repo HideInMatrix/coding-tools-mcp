@@ -3,7 +3,6 @@ import { onMounted, ref } from 'vue'
 import {
   Info,
   KeyRound,
-  MessageSquareText,
   PanelLeftClose,
   PanelLeftOpen,
   ScrollText,
@@ -106,15 +105,6 @@ function subNavClass(name: AppRouteName): string[] {
         <span v-if="!collapsed" class="leading-none">AI 工作台</span>
       </Button>
       <template v-if="!collapsed">
-        <Button
-          variant="ghost"
-          size="sm"
-          :class="subNavClass('workbench-prompts')"
-          @click="router.push({ name: 'workbench-prompts' })"
-        >
-          <MessageSquareText class="flex-none" :size="14" :stroke-width="1.8" />
-          <span class="leading-none">Prompts</span>
-        </Button>
         <Button
           variant="ghost"
           size="sm"

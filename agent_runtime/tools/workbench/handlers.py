@@ -5,17 +5,13 @@ from typing import Any
 
 from ...errors import ToolError
 from ...protocol import current_request_context
-from ...workbench import (
-    MCPConnectionVersionConflictError,
-    PromptVersionConflictError,
-    ResourceScope,
-    SkillVersionConflictError,
-    WorkflowDefinition,
-    WorkflowVersionConflictError,
-    build_effective_tool_catalog,
-    is_workbench_control_tool,
-    validate_workflow,
-)
+from ...workbench.effective_tools import build_effective_tool_catalog
+from ...workbench.mcp_connection_store import MCPConnectionVersionConflictError
+from ...workbench.models import ResourceScope
+from ...workbench.skill_store import SkillVersionConflictError
+from ...workbench.store import WorkflowVersionConflictError
+from ...workbench.tool_references import is_workbench_control_tool
+from ...workbench.workflows import WorkflowDefinition, validate_workflow
 
 
 def _contains_plain_secret(value: Any, *, parent_key: str = "") -> bool:
@@ -39,9 +35,6 @@ class WorkbenchHandlers:
     def _refresh_capability_assets(self) -> None:
         assets = getattr(self, "capability_assets", None)
         if assets is not None:
-            connections = getattr(self, "mcp_connections", None)
-            if connections is not None:
-                assets.set_known_mcp_tool_keys(connections.tool_keys())
             assets.refresh()
 
     def _refresh_workspace_workflows(self) -> None:
@@ -85,8 +78,7 @@ class WorkbenchHandlers:
                 },
             },
             "node_types": {
-                "prompt": {"required_config": ["prompt_id"], "optional_config": ["arguments"]},
-                "skill": {"required_config": ["skill_id"], "optional_config": ["arguments"]},
+                "skill": {"required_config": ["skill_id"], "optional_config": []},
                 "tool": {
                     "required_config": ["provider", "tool_name"],
                     "optional_config": ["connection_id", "arguments"],
@@ -114,7 +106,6 @@ class WorkbenchHandlers:
                 'path.to.value == "literal"',
                 'path.to.value != "literal"',
             ],
-            "prompts": [item.mcp_definition() for item in self.prompt_registry.list()],
             "skills": [item.summary() for item in self.skill_registry.list()],
             "tools": [item.to_dict() for item in effective_tools],
             "mcp_connections": [item.summary() for item in connections],
@@ -133,98 +124,6 @@ class WorkbenchHandlers:
             "ok": True,
         }
 
-    def prompt_list(self, _arguments: dict[str, Any]) -> dict[str, Any]:
-        self._refresh_capability_assets()
-        prompts = self.prompt_registry.list()
-        return {
-            "prompts": [item.summary() for item in prompts],
-            "count": len(prompts),
-            "ok": True,
-        }
-
-    def prompt_get(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        self._refresh_capability_assets()
-        prompt_id = str(arguments.get("prompt_id") or "").strip()
-        prompt = self.prompt_registry.get(prompt_id)
-        if prompt is None:
-            raise ToolError("PROMPT_NOT_FOUND", f"找不到 Prompt: {prompt_id}")
-        return {
-            "prompt": {
-                **prompt.to_dict(),
-                "scope": prompt.scope.value,
-                "source": prompt.source,
-            },
-            "ok": True,
-        }
-
-    def _parse_prompt(self, arguments: dict[str, Any]):
-        raw = arguments.get("prompt")
-        if not isinstance(raw, dict):
-            raise ToolError("PROMPT_INVALID", "prompt must be an object")
-        if _contains_plain_secret(raw):
-            raise ToolError(
-                "PROMPT_SECRET",
-                "Prompt 不能保存 Password/Token/Secret/API Key 明文；请使用引用或移除敏感值。",
-            )
-        try:
-            return self.capability_assets.validate_prompt(raw)
-        except (TypeError, ValueError) as exc:
-            raise ToolError("PROMPT_INVALID", f"Prompt 定义无效: {exc}") from exc
-
-    def prompt_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        self._refresh_capability_assets()
-        prompt = self._parse_prompt(arguments)
-        return {
-            "prompt": {
-                **prompt.to_dict(),
-                "scope": prompt.scope.value,
-            },
-            "ok": True,
-        }
-
-    def prompt_save(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        self._refresh_capability_assets()
-        prompt = self._parse_prompt(arguments)
-        expected_version = int(arguments.get("expected_version", 0))
-        try:
-            saved = self.capability_assets.save_prompt(
-                prompt.to_dict(),
-                expected_version=expected_version,
-            )
-        except PromptVersionConflictError as exc:
-            raise ToolError(
-                "PROMPT_VERSION_CONFLICT",
-                str(exc),
-                category="conflict",
-                details={
-                    "prompt_id": exc.prompt_id,
-                    "expected_version": exc.expected,
-                    "actual_version": exc.actual,
-                },
-            ) from exc
-        return {
-            "saved": True,
-            "prompt": {
-                **saved.to_dict(),
-                "scope": saved.scope.value,
-                "source": saved.source,
-            },
-            "ok": True,
-        }
-
-    def prompt_delete(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        self._refresh_capability_assets()
-        prompt_id = str(arguments.get("prompt_id") or "").strip()
-        try:
-            deleted = self.capability_assets.delete_prompt(prompt_id)
-        except ValueError as exc:
-            raise ToolError(
-                "PROMPT_DELETE_BLOCKED",
-                str(exc),
-                category="conflict",
-            ) from exc
-        return {"prompt_id": prompt_id, "deleted": deleted, "ok": True}
-
     def skill_list(self, _arguments: dict[str, Any]) -> dict[str, Any]:
         self._refresh_capability_assets()
         skills = self.skill_registry.list()
@@ -240,14 +139,7 @@ class WorkbenchHandlers:
         skill = self.skill_registry.get(skill_id)
         if skill is None:
             raise ToolError("SKILL_NOT_FOUND", f"找不到 Skill: {skill_id}")
-        available = frozenset(definition.name for definition in self._tools)
-        return {
-            "skill": {
-                **skill.to_dict(),
-                "effective_tools": list(skill.effective_tools(available)),
-            },
-            "ok": True,
-        }
+        return {"skill": skill.to_dict(), "ok": True}
 
     def _parse_skill(self, arguments: dict[str, Any]):
         raw = arguments.get("skill")
@@ -502,7 +394,6 @@ class WorkbenchHandlers:
         )
         return validate_workflow(
             workflow,
-            prompt_ids={item.id for item in self.prompt_registry.list()},
             skill_ids={item.id for item in self.skill_registry.list()},
             tool_names={
                 definition.name

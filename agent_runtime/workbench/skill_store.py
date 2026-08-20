@@ -8,7 +8,7 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from .models import PROMPT_ID_PATTERN, ResourceScope
+from .models import ResourceScope, WORKBENCH_ID_PATTERN
 from .recovery import quarantine_path, should_quarantine_error
 from .skills import SkillDefinition
 
@@ -49,7 +49,7 @@ class SkillStore:
 
     def _directory(self, skill_id: str) -> Path:
         value = skill_id.strip()
-        if not PROMPT_ID_PATTERN.fullmatch(value):
+        if not WORKBENCH_ID_PATTERN.fullmatch(value):
             raise ValueError(f"invalid skill id: {skill_id!r}")
         return self.directory / value
 

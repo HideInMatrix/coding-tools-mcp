@@ -387,7 +387,7 @@ Workspace Workflow Store 当前版本定义为：
 
 保存条件：`expected_version == 当前 Workspace Workflow version`。否则返回版本冲突，调用方必须重新读取 Definition 后再合并修改。
 
-Built-in Workflow 第一次保存为 Workspace Override 时使用 `expected_version = 0`，不把 Built-in 版本误当成 Workspace 当前版本。
+系统不再提供 Built-in Workflow，因此新建 Workspace Workflow 时当前版本统一从 `0` 开始，不存在 Built-in Override 语义。
 
 禁止 last-write-wins 静默覆盖。
 
@@ -405,18 +405,13 @@ workflow_authoring_context
 
 Server 提供 Prompt/Skill/Tool/Node/Edge 约束和安全规则；AI 负责把用户自然语言转换成 Definition。
 
-### ADR-022：Workflow 以用户自定义为主，系统只保留一个项目开发默认流程
+### ADR-022：Workflow 与 Skill 均不提供默认资产
 
-AI Client 本身已经具备规划和多步执行能力，因此 AI Workbench 不应通过大量 Built-in Workflow 重复实现一套固定“AI 工作方式”。Workflow 的产品定位是让用户把自己的可重复流程显式化、保存、编辑并交给 AI 调用。
+AI Client 本身已经具备规划和多步执行能力，因此 AI Workbench 不应通过 Built-in Workflow 或 Built-in Skill 固化一套系统预设的“AI 工作方式”。Workflow 的产品定位是让用户把自己的可重复流程显式化、保存、编辑并交给 AI 调用；Skill 则由用户或 AI 根据实际工作方法创建。
 
-系统只保留一个 `project-development` 默认 Workflow，作用是：
+系统启动时不注入任何默认 Skill，也不注入 `project-development` 或其他默认 Workflow。新 Runtime / 新 Workspace 在用户尚未创建资产时，对应 Catalog 应为空。
 
-1. 新用户第一次进入 Workbench 时有一个完整、可运行的示例；
-2. 展示 Skill -> Artifact -> Approval 的基本组合；
-3. 抽象当前项目已经验证良好的开发方式：Requirements -> Design -> Tasks -> Implementation -> Test & Acceptance -> Human Confirmation；
-4. 不再把 Bug Investigation、Code Review、Reverse Engineering、Release Validation 等场景各自固化成 Built-in Workflow。这些能力继续作为 Prompt / Skill 提供，用户可按需要组合成自己的 Workspace Workflow。
-
-默认 Workflow 不是产品功能边界，用户创建的 Workspace Workflow 才是主要资源。
+文档、测试和演示若需要示例流程，必须显式创建 fixture，不得通过产品运行时 Built-in Registry 提供。删除用户资产后也不存在 Built-in fallback。
 
 ### ADR-023：Workbench 资产模型固定为 Prompt / Skill / MCP Connection / Workflow，System Tool 由程序提供
 
@@ -649,6 +644,84 @@ Workflow description required
 删除内部试验兼容代码和迁移测试，测试机器上的旧数据通过人工清理重新初始化。正式发布后才为已经公开的数据格式建立版本迁移策略。
 
 本 ADR 不影响真正的运行时稳定性和外部协议兼容：Catalog corruption quarantine、future schema protection、optimistic concurrency、Permission/Sandbox/Secret 规则，以及对第三方 MCP Server 协议版本的互操作能力继续保留。
+
+### ADR-033：移除 Prompt 一等资产，Skill 成为完整 AI 执行单元且不配置 Tool Allowlist
+
+0.3.x 发布前最终模型进一步收敛。此前把 Prompt 与 Skill 分成两层，并让 Skill 通过 `entry_prompt` 和 `tool_references` 组合执行能力，造成了重复 abstraction：Prompt 承担“给模型的指令”，Skill 的 `SKILL.md` 同样承担“给模型的方法和指令”；同时 Skill Tool Allowlist 又在 Runtime Permission/Sandbox 之外形成第二套能力边界。
+
+最终决定：**Workbench 不再提供 Prompt 一等资产；Skill 自身就是完整的模型执行指令与方法文档。Skill 不声明 Tool 列表，执行 Skill 时默认可以使用当前 Runtime 可见的全部有效 Tool。**
+
+最终职责边界固定为：
+
+```text
+Skill
+  = 可复用 AI 方法 / 指令 / 执行规范
+  = SKILL.md + 元数据 + Artifact 声明
+  = 不引用 Prompt
+  = 不保存 Tool allowlist
+
+System Tool / MCP Tool
+  = 原子执行能力
+  = 是否真正可执行仍由 Runtime Permission、Sandbox、Connection 状态决定
+
+Workflow
+  = 编排 Skill / Tool / Approval / Condition / Artifact
+
+Workflow Run
+  = 保存真实执行状态、结果和审计历史
+```
+
+“Skill 默认使用全部 Tool”只取消 Skill 自己的二次 allowlist，不改变安全模型。最终有效权限仍然满足：
+
+```text
+Host / Runtime 当前可见 Tool
+        ↓
+Runtime Permission Profile
+        ↓
+Permission Broker / User Approval
+        ↓
+Sandbox / Workspace Boundary
+        ↓
+实际执行
+```
+
+因此 Skill 不能通过自身定义扩大 Runtime 权限，也不需要通过自身定义主动缩小 Tool 集合。若某个 Workflow 需要确定性调用某个 Tool，应使用显式 Tool Node，而不是把 Tool 白名单塞进 Skill。
+
+0.3.x 最终 Contract 更新为：
+
+```text
+Global Capability Asset  Skill / MCP Connection
+Workspace Asset          Workflow
+Skill                    method_document + metadata + artifacts
+Skill Prompt             不存在
+Skill Tool Allowlist     不存在
+Workflow Node Kind       skill / tool / approval / condition / artifact
+Prompt Node              不存在
+Tool Node                provider + tool_name (+ connection_id for MCP)
+schema_version           required and current
+```
+
+相应删除：
+
+- Prompt Registry / Store / Definition / authoring tools；
+- Desktop Prompt 管理页面和 Prompt Catalog；
+- Workflow Prompt Node；
+- Skill `entry_prompt`；
+- Skill `tool_references`；
+- Skill 对 Prompt / Tool Reference 的保存期校验；
+- Prompt/Skill 联动刷新、Prompt 删除依赖保护等耦合逻辑。
+
+保留：
+
+- `SKILL.md` 作为 Skill 的唯一模型指令来源；
+- Skill Artifact 声明；
+- Workflow Tool Node 的 `ToolReference`，因为它表达的是确定性执行目标，而不是 Skill 能力限制；
+- MCP Connection 与 Effective Tool Catalog；
+- Runtime Permission、Sandbox、Secret、Approval 等真实安全边界。
+
+本 ADR 覆盖 ADR-007 中“Skill allowlist”、ADR-011 中 `Prompt -> Skill` 领域依赖、ADR-013 中 Prompt Node/Skill `entry_prompt` 组合语义、ADR-023/027 中 Prompt 作为 Capability Asset、ADR-026 中保留 Prompt Node、ADR-028 中 Skill Allowed Tools，以及 ADR-032 中包含 Prompt 和 Skill `tool_references[]` 的旧 0.3.x Contract。
+
+由于 0.3.x 尚未发布，不建立旧 Prompt、`entry_prompt`、Skill `tool_references` 或 Prompt Node 的 migration/compatibility layer。开发测试数据直接清理并按最终 Contract 重新初始化。
 
 ---
 

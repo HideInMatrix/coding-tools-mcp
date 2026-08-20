@@ -10,6 +10,7 @@ from unittest.mock import patch
 from agent_workbench.permission_broker import DesktopPermissionBroker
 from agent_runtime.local_permission_broker import LocalWorkflowApprovalBrokerClient
 from agent_runtime.runtime import Runtime
+from tests.workbench_fixtures import install_project_development_fixture
 
 
 class WorkflowApprovalBrokerTests(unittest.TestCase):
@@ -98,6 +99,7 @@ class WorkflowApprovalBrokerTests(unittest.TestCase):
                 with patch.dict(os.environ, environment, clear=False):
                     runtime = Runtime(workspace)
                     try:
+                        install_project_development_fixture(runtime)
                         started = runtime.call_tool(
                             "workflow_start",
                             {"workflow_id": "project-development"},
@@ -163,6 +165,7 @@ class WorkflowApprovalBrokerTests(unittest.TestCase):
                 ):
                     runtime = Runtime(workspace)
                     try:
+                        install_project_development_fixture(runtime)
                         run = runtime.workflow_runs.start("project-development")
                         run = runtime.workflow_runs.continue_model(
                             run.run_id,

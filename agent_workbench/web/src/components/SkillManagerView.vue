@@ -5,14 +5,12 @@ import { desktopApi } from '../api/desktop'
 import { Button } from '@/components/ui/button'
 import type {
   CapabilityCatalogDto,
-  SkillDefinitionDto,
-  ToolReferenceDto,
+  SkillDefinitionDto
 } from '../types'
 
 const catalog = ref<CapabilityCatalogDto | null>(null)
 const selectedId = ref('')
 const draft = ref<SkillDefinitionDto>(emptySkill())
-const selectedToolKeys = ref<string[]>([])
 const artifactsText = ref('')
 const busy = ref(false)
 const error = ref('')
@@ -26,8 +24,6 @@ function emptySkill(): SkillDefinitionDto {
     description: '',
     version: 1,
     scope: 'global',
-    entry_prompt: null,
-    tool_references: [],
     artifacts: [],
     method_document: '# Skill\n\n1. Describe the method.',
   }
@@ -37,15 +33,10 @@ const selectedSummary = computed(
   () => catalog.value?.skills.find(item => item.id === selectedId.value) ?? null,
 )
 const canDelete = computed(() => selectedSummary.value?.scope === 'global')
-const unavailableSelectedToolKeys = computed(() => {
-  const available = new Set((catalog.value?.effective_tools ?? []).map(item => item.key))
-  return selectedToolKeys.value.filter(key => !available.has(key))
-})
 
 function applySkill(value: SkillDefinitionDto) {
   draft.value = { ...value }
   selectedId.value = value.id
-  selectedToolKeys.value = value.tool_references.map(toolReferenceKey)
   artifactsText.value = value.artifacts.join('\n')
 }
 
@@ -77,38 +68,9 @@ async function selectSkill(skillId: string) {
 function newSkill() {
   selectedId.value = ''
   draft.value = emptySkill()
-  selectedToolKeys.value = []
   artifactsText.value = ''
   error.value = ''
   notice.value = '新 Skill 尚未保存。'
-}
-
-function toolReferenceKey(reference: ToolReferenceDto) {
-  return reference.provider === 'mcp'
-    ? `mcp:${reference.connection_id}:${reference.tool_name}`
-    : `system:${reference.tool_name}`
-}
-
-function toggleTool(toolKey: string, checked: boolean) {
-  const next = new Set(selectedToolKeys.value)
-  if (checked) next.add(toolKey)
-  else next.delete(toolKey)
-  selectedToolKeys.value = [...next].sort()
-}
-
-function selectedToolReferences(): ToolReferenceDto[] {
-  const available = new Map(
-    (catalog.value?.effective_tools ?? []).map(tool => [
-      tool.key,
-      tool.provider === 'mcp'
-        ? { provider: 'mcp' as const, connection_id: tool.connection_id, tool_name: tool.tool_name }
-        : { provider: 'system' as const, tool_name: tool.tool_name },
-    ]),
-  )
-  const existing = new Map(draft.value.tool_references.map(item => [toolReferenceKey(item), item]))
-  return selectedToolKeys.value
-    .map(key => available.get(key) ?? existing.get(key))
-    .filter((item): item is ToolReferenceDto => Boolean(item))
 }
 
 function definition(): SkillDefinitionDto {
@@ -116,10 +78,8 @@ function definition(): SkillDefinitionDto {
     .split('\n')
     .map(item => item.trim())
     .filter(Boolean)
-  const references = selectedToolReferences()
   return {
     ...draft.value,
-    tool_references: references,
     artifacts,
   }
 }
@@ -187,7 +147,7 @@ onMounted(() => refreshCatalog())
       <div>
         <h1 class="m-0 text-xl font-medium tracking-[-0.02em]">Skills</h1>
         <p class="mt-1 mb-0 text-xs leading-[18px] text-muted-foreground">
-          管理 AI 的方法论、入口 Prompt、可用 Tool 和预期 Artifact。
+          管理完整的 AI 方法论、执行指令和预期 Artifact。
         </p>
       </div>
       <div class="flex items-center gap-2">
@@ -242,16 +202,6 @@ onMounted(() => refreshCatalog())
           </label>
 
           <label class="field">
-            <span>Entry Prompt</span>
-            <select v-model="draft.entry_prompt">
-              <option :value="null">无入口 Prompt</option>
-              <option v-for="prompt in catalog?.prompts ?? []" :key="prompt.id" :value="prompt.id">
-                {{ prompt.name }} · {{ prompt.id }}
-              </option>
-            </select>
-          </label>
-
-          <label class="field">
             <span>Method / Instructions</span>
             <textarea v-model="draft.method_document" class="min-h-48 resize-y" spellcheck="false" />
           </label>
@@ -260,33 +210,6 @@ onMounted(() => refreshCatalog())
             <span>Artifacts（每行一个相对路径）</span>
             <textarea v-model="artifactsText" class="min-h-24 resize-y font-mono" spellcheck="false" />
           </label>
-
-          <div class="grid gap-2">
-            <div class="text-[11px] font-medium">Allowed Tools</div>
-            <div class="grid max-h-64 grid-cols-2 gap-1 overflow-y-auto rounded-md border border-border bg-background p-2 lg:grid-cols-3">
-              <label
-                v-for="tool in catalog?.effective_tools ?? []"
-                :key="tool.key"
-                class="flex min-w-0 items-center gap-2 rounded px-2 py-1.5 text-[10px] hover:bg-secondary/60"
-              >
-                <input
-                  type="checkbox"
-                  :checked="selectedToolKeys.includes(tool.key)"
-                  @change="toggleTool(tool.key, ($event.target as HTMLInputElement).checked)"
-                />
-                <span class="min-w-0 flex-1 truncate font-mono">
-                  {{ tool.provider === 'mcp' ? `${tool.connection_name} / ${tool.tool_name}` : tool.tool_name }}
-                </span>
-                <span class="flex-none text-[9px] text-muted-foreground">{{ tool.provider === 'mcp' ? 'MCP' : 'System' }}</span>
-              </label>
-            </div>
-            <div v-if="unavailableSelectedToolKeys.length" class="text-[10px] text-amber-600 dark:text-amber-400">
-              当前 Skill 还有 {{ unavailableSelectedToolKeys.length }} 个暂不可用 Tool 引用；禁用 MCP 服务不会自动删除 Skill 引用。
-            </div>
-            <div class="text-[10px] text-muted-foreground">
-              System Tool 由程序提供；MCP Tool 来自全局 MCP 服务 Discovery。Skill 只保存稳定 Tool Reference。
-            </div>
-          </div>
 
           <div class="flex items-center justify-between border-t border-border pt-3">
             <div class="text-[10px] text-muted-foreground">

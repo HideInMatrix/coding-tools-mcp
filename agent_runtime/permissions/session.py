@@ -13,7 +13,7 @@ from ..protocol import RequestContext
 from .broker import PermissionBroker
 from .capabilities import ELICITABLE_PERMISSIONS
 from .grants import PermissionGrantStore
-from .state import PermissionStateStore, arguments_digest
+from .state import PermissionStateStore
 
 
 class PermissionSession:
@@ -39,10 +39,6 @@ class PermissionSession:
     @broker_client.setter
     def broker_client(self, value: Any | None) -> None:
         self.broker.client = value
-
-    @staticmethod
-    def arguments_digest(name: str, arguments: dict[str, Any]) -> str:
-        return arguments_digest(name, arguments)
 
     def store_grant(
         self,
