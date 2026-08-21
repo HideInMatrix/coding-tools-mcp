@@ -174,7 +174,7 @@ WORKBENCH_TOOLS = (
     ToolDefinition(
         "workflow_list",
         "List workflows",
-        "List Workflow discovery summaries including description, inputs_schema, tags, version, scope, and graph size.",
+        "Call at the beginning of each new user task to discover user-authored operating procedures, then start a clearly matching Workflow before ad-hoc task tool use. Returns description, inputs_schema, tags, version, scope, and graph size.",
         obj(),
         "workflow_list",
         frozenset({Capability.FILESYSTEM_READ}),
@@ -258,7 +258,7 @@ WORKBENCH_TOOLS = (
     ToolDefinition(
         "workflow_start",
         "Start workflow",
-        "Start a Workflow Run, validate inputs against the Workflow inputs_schema, and advance until a model or approval boundary is reached.",
+        "Start the user-authored Workflow that matches the current task before ad-hoc task tool use. Validates inputs against inputs_schema and advances until a model or approval boundary is reached; execute pending skill instructions and advance with workflow_continue.",
         obj(
             {
                 "workflow_id": {**S, "minLength": 1},
@@ -406,4 +406,3 @@ WORKBENCH_TOOLS = tuple(
     else replace(tool, mcp_exposed=False)
     for tool in _WORKBENCH_FINE_GRAINED_TOOLS
 ) + _WORKBENCH_MCP_FACADES
-

@@ -271,6 +271,11 @@ class Runtime(
     def server_identity(self) -> dict[str, str]:
         return {"name": SERVER_NAME, "title": SERVER_TITLE, "version": __version__}
 
+    def server_instructions(self) -> str:
+        """Return MCP guidance with the latest user-authored Workflow catalog."""
+        self._refresh_workspace_workflows()
+        return self.project_context.server_instructions(self.workflow_registry.list())
+
     def auth_enabled(self) -> bool:
         return bool(self.auth_token or self.oauth_service)
 
@@ -565,5 +570,4 @@ class Runtime(
             ACTIVE_REQUEST_CONTEXT.reset(request_context_token)
             ACTIVE_PERMISSIONS.reset(permission_token)
         return make_tool_result(name, payload, image=image)
-
 

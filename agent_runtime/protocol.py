@@ -300,7 +300,7 @@ def _dispatch_modern(runtime: Any, method: str, params: dict[str, Any], context:
             "capabilities": {
                 "tools": {"listChanged": False},
             },
-            "instructions": runtime.project_context.server_instructions(),
+            "instructions": runtime.server_instructions(),
         }
     if method == "ping":
         return {}
@@ -333,7 +333,7 @@ def _dispatch_legacy(
                 "tools": {"listChanged": False},
             },
             "serverInfo": runtime.server_identity(),
-            "instructions": runtime.project_context.server_instructions(),
+            "instructions": runtime.server_instructions(),
         }
     if method in {"notifications/initialized", "notifications/cancelled"}:
         return None
@@ -361,4 +361,3 @@ def _tool_call(runtime: Any, params: dict[str, Any], context: RequestContext) ->
     if not runtime.tool_dispatcher.is_mcp_exposed(name):
         raise RpcError(-32602, f"Unknown tool: {name}", {"reason": "unknown_tool"})
     return runtime.call_tool(name, arguments, context=context)
-

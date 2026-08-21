@@ -47,6 +47,7 @@ from agent_runtime.protocol import (
     dispatch,
 )
 from agent_runtime.runtime import Runtime
+from agent_runtime.workbench import WorkflowDefinition
 from agent_runtime.sandbox.backend import (
     MacSeatbeltBackend,
     WindowsRestrictedTokenBackend,
@@ -392,6 +393,61 @@ class CustomMCPServerContractTests(unittest.TestCase):
             {tool["name"] for tool in listed["result"]["tools"]},
             expected_tool_names,
         )
+
+    def test_initialize_instructs_client_to_use_latest_matching_workflow(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            runtime = Runtime(workspace)
+            try:
+                workflow = WorkflowDefinition.from_mapping(
+                    {
+                        "schema_version": 1,
+                        "id": "local-skills",
+                        "name": "Local Skills",
+                        "description": "Use the local development procedure",
+                        "version": 1,
+                        "entry_node_id": "approval",
+                        "inputs_schema": {
+                            "type": "object",
+                            "properties": {"target": {"type": "string"}},
+                            "additionalProperties": False,
+                        },
+                        "tags": ["development"],
+                        "nodes": [
+                            {
+                                "id": "approval",
+                                "type": "approval",
+                                "name": "Confirm",
+                                "config": {"title": "Confirm"},
+                            }
+                        ],
+                        "edges": [],
+                    }
+                )
+                runtime.workflow_store.save(workflow)
+                initialized = dispatch(
+                    runtime,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": {},
+                            "clientInfo": {"name": "unit-test", "version": "1"},
+                        },
+                    },
+                )
+            finally:
+                runtime.close()
+
+        instructions = initialized["result"]["instructions"]
+        self.assertIn("call workflow_list", instructions)
+        self.assertIn("call workflow_start", instructions)
+        self.assertIn("waiting_model", instructions)
+        self.assertIn("local-skills: Local Skills", instructions)
+        self.assertIn("Use the local development procedure", instructions)
+        self.assertIn("development", instructions)
 
     def test_legacy_null_params_are_treated_as_empty_object(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

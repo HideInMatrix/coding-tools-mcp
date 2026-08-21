@@ -4,6 +4,12 @@
 
 AI Workbench 是 MicroMatrix Workbench 在原子 Tool 之上的工程编排层。
 
+MCP Client 连接时，Runtime 会把当前 Workspace 的 Workflow 摘要和执行策略写入 MCP
+`instructions`。AI 在每个新任务开始时应先调用 `workflow_list` 获取最新目录；如果名称、
+说明或标签与任务匹配，则先调用 `workflow_start`，并按返回的 Skill 方法继续执行，
+而不是绕过 Workflow 直接调用零散 Tool。Workflow 在桌面端保存后无需重启 MCP Server；
+同一连接上的下一次 `workflow_list` 会读取最新版本。
+
 核心资源：
 
 ```text
