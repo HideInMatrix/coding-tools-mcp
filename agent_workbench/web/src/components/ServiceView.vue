@@ -660,7 +660,7 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
               <label class="check-field"><input v-model="member.enable_view_image" :disabled="locked" type="checkbox" /><span>启用图片工具</span></label>
             </div>
             <div v-if="runtimeUrl(member)" class="flex items-center gap-2 border-t border-border bg-secondary/50 px-3 py-[9px]">
-              <code class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{{ runtimeUrl(member) }}</code>
+              <code class="min-w-0 flex-1 truncate text-[11px] font-medium text-blue-600 dark:text-blue-400">{{ runtimeUrl(member) }}</code>
               <button class="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-transparent text-muted-foreground" @click="copyUrl(runtimeUrl(member))"><Check v-if="copiedUrl === runtimeUrl(member)" :size="13" /><Copy v-else :size="13" /></button>
             </div>
           </article>
