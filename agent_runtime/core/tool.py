@@ -27,6 +27,7 @@ class ToolDefinition:
     capabilities: frozenset[Capability] = field(default_factory=frozenset)
     annotations: ToolAnnotations = field(default_factory=ToolAnnotations)
     feature: str | None = None
+    mcp_exposed: bool = True
 
     def mcp_definition(self, *, fake_readonly: bool = False) -> dict[str, Any]:
         annotations = self.annotations

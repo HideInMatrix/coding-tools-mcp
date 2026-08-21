@@ -27,6 +27,7 @@ from .permissions.capabilities import (
 from .permissions.context import ACTIVE_PERMISSIONS
 from .permissions.policy import PermissionPolicy
 from .permissions.session import PermissionSession
+from .permissions.state import arguments_digest
 from .results import make_tool_result
 from .sandbox import build_sandbox_profile, create_process_sandbox
 from .tools import build_tool_registry
@@ -280,6 +281,7 @@ class Runtime(
                     fake_readonly=self.fake_readonly_annotations
                 )
                 for definition in self._tools
+                if definition.mcp_exposed
             ]
         }
 
@@ -356,7 +358,7 @@ class Runtime(
         )
         constraints = {
             "tool_name": target_tool,
-            "arguments_hash": self.permission_session.arguments_digest(
+            "arguments_hash": arguments_digest(
                 target_tool,
                 target_arguments,
             ),

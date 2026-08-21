@@ -191,6 +191,21 @@ class WorkbenchHandlers:
             raise ToolError("SKILL_INVALID_ID", str(exc)) from exc
         return {"skill_id": skill_id, "deleted": deleted, "ok": True}
 
+    def skill_manage(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        action = str(arguments.get("action") or "").strip()
+        payload = {key: value for key, value in arguments.items() if key != "action"}
+        handlers = {
+            "list": self.skill_list,
+            "get": self.skill_get,
+            "validate": self.skill_validate,
+            "save": self.skill_save,
+            "delete": self.skill_delete,
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            raise ToolError("INVALID_ARGUMENT", f"unsupported skill_manage action: {action}", "validation")
+        return handler(payload)
+
     def _mcp_connection_definition(self, connection_id: str):
         definition = self.mcp_connections.get(connection_id)
         if definition is None:
@@ -270,17 +285,9 @@ class WorkbenchHandlers:
         connection_id = str(arguments.get("connection_id") or "").strip()
         self._refresh_capability_assets()
         try:
-            deleted = self.mcp_connections.delete(
-                connection_id,
-                skill_definitions=self.skill_registry.list(),
-            )
+            deleted = self.mcp_connections.delete(connection_id)
         except ValueError as exc:
-            code = (
-                "MCP_CONNECTION_DELETE_BLOCKED"
-                if "referenced by Skills" in str(exc)
-                else "MCP_CONNECTION_INVALID_ID"
-            )
-            raise ToolError(code, str(exc), category="conflict" if code.endswith("BLOCKED") else "runtime") from exc
+            raise ToolError("MCP_CONNECTION_INVALID_ID", str(exc)) from exc
         return {"connection_id": connection_id, "deleted": deleted, "ok": True}
 
     def mcp_connection_test(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -368,6 +375,24 @@ class WorkbenchHandlers:
             "result": result,
             "ok": not bool(result.get("isError")),
         }
+
+    def mcp_connection_manage(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        action = str(arguments.get("action") or "").strip()
+        payload = {key: value for key, value in arguments.items() if key != "action"}
+        handlers = {
+            "list": self.mcp_connection_list,
+            "get": self.mcp_connection_get,
+            "validate": self.mcp_connection_validate,
+            "save": self.mcp_connection_save,
+            "delete": self.mcp_connection_delete,
+            "test": self.mcp_connection_test,
+            "discover": self.mcp_connection_discover_tools,
+            "call_tool": self.mcp_connection_call_tool,
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            raise ToolError("INVALID_ARGUMENT", f"unsupported mcp_connection_manage action: {action}", "validation")
+        return handler(payload)
 
     def _parse_workflow(self, arguments: dict[str, Any]) -> WorkflowDefinition:
         raw = arguments.get("workflow")
@@ -519,6 +544,23 @@ class WorkbenchHandlers:
             }
         )
 
+    def workflow_manage(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        action = str(arguments.get("action") or "").strip()
+        payload = {key: value for key, value in arguments.items() if key != "action"}
+        handlers = {
+            "list": self.workflow_list,
+            "get": self.workflow_get,
+            "validate": self.workflow_validate,
+            "save": self.workflow_save,
+            "delete": self.workflow_delete,
+            "export": self.workflow_export,
+            "import": self.workflow_import,
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            raise ToolError("INVALID_ARGUMENT", f"unsupported workflow_manage action: {action}", "validation")
+        return handler(payload)
+
     def workflow_run_list(self, _arguments: dict[str, Any]) -> dict[str, Any]:
         runs = self.workflow_runs.list()
         return {
@@ -606,4 +648,20 @@ class WorkbenchHandlers:
         except ValueError as exc:
             raise ToolError("WORKFLOW_RUN_INVALID_ID", str(exc)) from exc
         return {"run": run.public_dict(), "ok": True}
+
+    def workflow_run(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        action = str(arguments.get("action") or "").strip()
+        payload = {key: value for key, value in arguments.items() if key != "action"}
+        handlers = {
+            "list": self.workflow_run_list,
+            "start": self.workflow_start,
+            "status": self.workflow_status,
+            "continue": self.workflow_continue,
+            "retry": self.workflow_retry,
+            "cancel": self.workflow_cancel,
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            raise ToolError("INVALID_ARGUMENT", f"unsupported workflow_run action: {action}", "validation")
+        return handler(payload)
 

@@ -31,6 +31,7 @@ PROCESS_TOOLS = (
         obj({"command_id": {**S, "minLength": 1}, "chars": {**S, "default": ""}, "yield_time_ms": {**I, "minimum": 0, "maximum": 30_000, "default": 10_000}, **EXEC_COMMON}, ("command_id",)),
         "write_stdin",
         frozenset({Capability.PROCESS_CONTROL}),
+        mcp_exposed=False,
     ),
     ToolDefinition(
         "kill_command",
@@ -40,6 +41,7 @@ PROCESS_TOOLS = (
         "kill_command",
         frozenset({Capability.PROCESS_CONTROL}),
         ToolAnnotations(destructive=True),
+        mcp_exposed=False,
     ),
     ToolDefinition(
         "read_output",
@@ -49,5 +51,31 @@ PROCESS_TOOLS = (
         "read_output",
         frozenset({Capability.PROCESS_CONTROL}),
         ToolAnnotations(read_only=True, idempotent=True),
+        mcp_exposed=False,
+    ),
+    ToolDefinition(
+        "process_control",
+        "Process control",
+        "Manage a server-owned running command. action=write writes stdin or polls, action=kill terminates it, action=read_output reads retained stdout/stderr.",
+        obj(
+            {
+                "action": {**S, "enum": ["write", "kill", "read_output"]},
+                "command_id": S,
+                "chars": {**S, "default": ""},
+                "yield_time_ms": {**I, "minimum": 0, "maximum": 30_000, "default": 10_000},
+                "signal": {**S, "enum": ["TERM", "KILL", "INT"], "default": "TERM"},
+                "wait_ms": {**I, "minimum": 0, "maximum": 30_000, "default": 5_000},
+                "kill_wait_ms": {**I, "minimum": 0, "maximum": 30_000, "default": 2_000},
+                "output_ref": S,
+                "stream": {**S, "enum": ["stdout", "stderr"]},
+                "offset": {**I, "minimum": 0, "default": 0},
+                "limit": {**I, "minimum": 1, "maximum": 1_048_576, "default": 4_096},
+                **EXEC_COMMON,
+            },
+            ("action",),
+        ),
+        "process_control",
+        frozenset({Capability.PROCESS_CONTROL}),
+        ToolAnnotations(destructive=True),
     ),
 )

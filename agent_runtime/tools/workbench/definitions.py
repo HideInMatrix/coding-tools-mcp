@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from ...core.tool import ToolAnnotations, ToolDefinition
 from ...permissions.capabilities import Capability
 from ...schemas import I, S, obj
@@ -313,4 +315,95 @@ WORKBENCH_TOOLS = (
         ToolAnnotations(destructive=True, idempotent=True),
     ),
 )
+
+
+_WORKBENCH_FINE_GRAINED_TOOLS = WORKBENCH_TOOLS
+_WORKBENCH_MCP_FACADES = (
+    ToolDefinition(
+        "skill_manage",
+        "Skill management",
+        "Manage Workbench Skills through one domain tool. action=list|get|validate|save|delete.",
+        obj(
+            {
+                "action": {**S, "enum": ["list", "get", "validate", "save", "delete"]},
+                "skill_id": S,
+                "skill": SKILL_OBJECT,
+                "expected_version": {**I, "minimum": 0},
+            },
+            ("action",),
+        ),
+        "skill_manage",
+        frozenset({Capability.FILESYSTEM_READ, Capability.FILESYSTEM_WRITE}),
+        ToolAnnotations(destructive=True),
+    ),
+    ToolDefinition(
+        "mcp_connection_manage",
+        "MCP connection management",
+        "Manage external MCP Connections. action=list|get|validate|save|delete|test|discover|call_tool.",
+        obj(
+            {
+                "action": {**S, "enum": ["list", "get", "validate", "save", "delete", "test", "discover", "call_tool"]},
+                "connection_id": S,
+                "connection": MCP_CONNECTION_OBJECT,
+                "expected_version": {**I, "minimum": 0},
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120},
+                "tool_name": S,
+                "arguments": {"type": "object", "additionalProperties": True},
+            },
+            ("action",),
+        ),
+        "mcp_connection_manage",
+        frozenset({Capability.FILESYSTEM_READ, Capability.FILESYSTEM_WRITE, Capability.PROCESS_EXECUTE}),
+        ToolAnnotations(destructive=True, open_world=True),
+    ),
+    ToolDefinition(
+        "workflow_manage",
+        "Workflow management",
+        "Manage workspace Workflow definitions. action=list|get|validate|save|delete|export|import.",
+        obj(
+            {
+                "action": {**S, "enum": ["list", "get", "validate", "save", "delete", "export", "import"]},
+                "workflow_id": S,
+                "workflow": WORKFLOW_OBJECT,
+                "document": S,
+                "expected_version": {**I, "minimum": 0},
+            },
+            ("action",),
+        ),
+        "workflow_manage",
+        frozenset({Capability.FILESYSTEM_READ, Capability.FILESYSTEM_WRITE}),
+        ToolAnnotations(destructive=True),
+    ),
+    ToolDefinition(
+        "workflow_run",
+        "Workflow run",
+        "Operate Workflow Runs. action=list|start|status|continue|retry|cancel.",
+        obj(
+            {
+                "action": {**S, "enum": ["list", "start", "status", "continue", "retry", "cancel"]},
+                "workflow_id": S,
+                "inputs": {"type": "object", "additionalProperties": True},
+                "run_id": S,
+                "node_id": S,
+                "outcome": {**S, "enum": ["success", "failure"]},
+                "output": {},
+            },
+            ("action",),
+        ),
+        "workflow_run",
+        frozenset({Capability.FILESYSTEM_READ, Capability.FILESYSTEM_WRITE}),
+        ToolAnnotations(destructive=True),
+    ),
+)
+
+# Fine-grained Workbench commands remain registered for Desktop, Workflow Engine,
+# tests, and internal Runtime calls. The MCP surface exposes only the authoring
+# context plus domain facades so clients with small tool budgets still receive
+# every Workbench capability.
+WORKBENCH_TOOLS = tuple(
+    tool
+    if tool.name == "workflow_authoring_context"
+    else replace(tool, mcp_exposed=False)
+    for tool in _WORKBENCH_FINE_GRAINED_TOOLS
+) + _WORKBENCH_MCP_FACADES
 

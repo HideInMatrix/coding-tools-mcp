@@ -223,8 +223,9 @@ class GitHandlers:
         }
         if has_more:
             result["next_action"] = {
-                "tool": "git_log",
+                "tool": "git_inspect",
                 "arguments": {
+                    "action": "log",
                     "path": str(args.get("path", ".")),
                     "ref": ref,
                     "max_count": max_count,
@@ -364,7 +365,24 @@ class GitHandlers:
             if args.get("rev"):
                 next_args["rev"] = str(args["rev"])
             result["next_action"] = {
-                "tool": "git_blame",
-                "arguments": next_args,
+                "tool": "git_inspect",
+                "arguments": {"action": "blame", **next_args},
             }
         return result
+
+    def git_inspect(self, args: dict[str, Any]) -> dict[str, Any]:
+        action = str(args.get("action") or "").strip()
+        payload = {key: value for key, value in args.items() if key != "action"}
+        handlers = {
+            "status": self.git_status,
+            "diff": self.git_diff,
+            "log": self.git_log,
+            "show": self.git_show,
+            "blame": self.git_blame,
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            raise ToolError("INVALID_ARGUMENT", f"unsupported git_inspect action: {action}", "validation")
+        if action == "blame" and not str(payload.get("path") or "").strip():
+            raise ToolError("INVALID_ARGUMENT", "action=blame requires path", "validation")
+        return handler(payload)

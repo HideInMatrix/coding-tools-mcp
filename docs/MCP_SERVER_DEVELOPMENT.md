@@ -83,7 +83,11 @@ Protected Resource Metadata 同时兼容：
 当前核心 Contract 包括：
 
 ```text
-20 个 Agent Runtime Tools
+MCP 对外工具面控制在 20 个以内（当前 19 个）
+内部 Runtime 保留细粒度 Tool，并通过领域聚合 Facade 暴露给 MCP Client
+process_control / git_inspect
+workflow_authoring_context / workflow_manage / workflow_run
+skill_manage / mcp_connection_manage
 MCP legacy initialize
 MCP 2026-07-28 modern request
 tools/list
@@ -102,6 +106,18 @@ view_image
 ```
 
 内部实现则完全模块化。
+
+### 1.1 MCP Tool Surface 与内部 Runtime Tool 分离
+
+Workbench 不再要求 MCP Tool 与内部 Application Command 1:1 对应。
+`Runtime`、Desktop、Workflow Engine 和测试仍可使用细粒度命令，例如
+`workflow_save`、`workflow_start`、`skill_save`、`git_log` 和 `write_stdin`；
+这些命令通过 `ToolDefinition.mcp_exposed=False` 从远端 MCP Tool Surface 隐藏。
+
+MCP Client 只看到领域聚合工具。聚合 Handler 再调用已有细粒度 Handler，避免复制
+业务逻辑，并保留原有的 Workspace、权限、网络和 Workflow 安全检查。协议层的
+`tools/call` 同样检查 `mcp_exposed`，因此被隐藏的内部工具不能仅通过猜测名称绕过
+聚合 Facade 直接调用。
 
 ## 2. 当前源码结构
 

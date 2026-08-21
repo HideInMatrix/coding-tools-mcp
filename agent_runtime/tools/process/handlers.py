@@ -451,8 +451,9 @@ class ProcessHandlers:
     ) -> dict[str, Any]:
         if payload.get("status") == "running" and payload.get("command_id"):
             payload["next_action"] = {
-                "tool": "write_stdin",
+                "tool": "process_control",
                 "arguments": {
+                    "action": "write",
                     "command_id": payload["command_id"],
                     "chars": "",
                     "yield_time_ms": 10_000,
@@ -526,3 +527,22 @@ class ProcessHandlers:
                 int(args.get("limit", 4_096)),
             )
         )
+
+    def process_control(self, args: dict[str, Any]) -> dict[str, Any]:
+        action = str(args.get("action") or "").strip()
+        if action == "write":
+            command_id = str(args.get("command_id") or "").strip()
+            if not command_id:
+                raise ToolError("INVALID_ARGUMENT", "action=write requires command_id", "validation")
+            return self.write_stdin({**args, "command_id": command_id})
+        if action == "kill":
+            command_id = str(args.get("command_id") or "").strip()
+            if not command_id:
+                raise ToolError("INVALID_ARGUMENT", "action=kill requires command_id", "validation")
+            return self.kill_command({**args, "command_id": command_id})
+        if action == "read_output":
+            output_ref = str(args.get("output_ref") or "").strip()
+            if not output_ref:
+                raise ToolError("INVALID_ARGUMENT", "action=read_output requires output_ref", "validation")
+            return self.read_output({**args, "output_ref": output_ref})
+        raise ToolError("INVALID_ARGUMENT", f"unsupported process_control action: {action}", "validation")

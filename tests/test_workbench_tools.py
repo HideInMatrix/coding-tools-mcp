@@ -173,31 +173,34 @@ class WorkflowToolTests(unittest.TestCase):
             )
             try:
                 tool_names = {item["name"] for item in runtime.list_tools()["tools"]}
-                self.assertIn("skill_save", tool_names)
+                self.assertIn("skill_manage", tool_names)
+                self.assertNotIn("skill_save", tool_names)
                 self.assertNotIn("prompt_save", tool_names)
 
                 skill_validation = runtime.call_tool(
-                    "skill_validate",
-                    {"skill": skill_asset()},
+                    "skill_manage",
+                    {"action": "validate", "skill": skill_asset()},
                 )["structuredContent"]
                 saved_skill = runtime.call_tool(
-                    "skill_save",
-                    {"skill": skill_asset(), "expected_version": 0},
+                    "skill_manage",
+                    {"action": "save", "skill": skill_asset(), "expected_version": 0},
                 )["structuredContent"]
                 skill_conflict = runtime.call_tool(
-                    "skill_save",
-                    {"skill": skill_asset(), "expected_version": 0},
+                    "skill_manage",
+                    {"action": "save", "skill": skill_asset(), "expected_version": 0},
                 )["structuredContent"]
 
-                listed_skills = runtime.call_tool("skill_list", {})["structuredContent"]
+                listed_skills = runtime.call_tool(
+                    "skill_manage", {"action": "list"}
+                )["structuredContent"]
                 loaded_skill = runtime.call_tool(
-                    "skill_get",
-                    {"skill_id": "ai-skill"},
+                    "skill_manage",
+                    {"action": "get", "skill_id": "ai-skill"},
                 )["structuredContent"]
 
                 deleted_skill = runtime.call_tool(
-                    "skill_delete",
-                    {"skill_id": "ai-skill"},
+                    "skill_manage",
+                    {"action": "delete", "skill_id": "ai-skill"},
                 )["structuredContent"]
             finally:
                 runtime.close()
@@ -418,7 +421,10 @@ class WorkflowToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary))
             try:
-                loaded = runtime.workflow_get({"workflow_id": "project-development"})
+                loaded = runtime.call_tool(
+                    "workflow_get",
+                    {"workflow_id": "project-development"},
+                )["structuredContent"]
             finally:
                 runtime.close()
 

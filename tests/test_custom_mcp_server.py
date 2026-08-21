@@ -280,6 +280,54 @@ class CustomMCPServerContractTests(unittest.TestCase):
                 self.assertIn("ok", output_schema.get("required", []))
                 self.assertIsInstance(tool.get("annotations"), dict)
 
+    def test_mcp_surface_uses_domain_facades_and_stays_within_small_client_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                names = [tool["name"] for tool in runtime.list_tools()["tools"]]
+            finally:
+                runtime.close()
+
+        self.assertLessEqual(len(names), 20)
+        for name in (
+            "process_control",
+            "git_inspect",
+            "workflow_authoring_context",
+            "skill_manage",
+            "mcp_connection_manage",
+            "workflow_manage",
+            "workflow_run",
+        ):
+            self.assertIn(name, names)
+        for hidden in (
+            "write_stdin",
+            "git_log",
+            "skill_save",
+            "workflow_save",
+            "workflow_start",
+        ):
+            self.assertNotIn(hidden, names)
+
+    def test_mcp_protocol_rejects_hidden_fine_grained_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Runtime(Path(temporary))
+            try:
+                response = dispatch(
+                    runtime,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 10,
+                        "method": "tools/call",
+                        "params": {"name": "skill_list", "arguments": {}},
+                    },
+                )
+                internal = runtime.call_tool("skill_list", {})
+            finally:
+                runtime.close()
+
+        self.assertEqual(response["error"]["code"], -32602)
+        self.assertFalse(internal["isError"])
+
     def test_tool_call_returns_structured_content_and_is_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Runtime(Path(temporary))

@@ -16,6 +16,7 @@ class SystemHandlers:
 
     def server_info(self, _args: dict[str, Any]) -> dict[str, Any]:
         tools = [definition.name for definition in self._tools]
+        mcp_tools = [definition.name for definition in self._tools if definition.mcp_exposed]
         return {
             "server": SERVER_NAME,
             "title": SERVER_TITLE,
@@ -111,6 +112,7 @@ class SystemHandlers:
                 "warnings": list(self.project_context.warnings),
             },
             "tools": tools,
+            "mcp_tools": mcp_tools,
             "tool_capabilities": {
                 definition.name: sorted(
                     capability.value for capability in definition.capabilities
@@ -118,6 +120,7 @@ class SystemHandlers:
                 for definition in self._tools
             },
             "tool_count": len(tools),
+            "mcp_tool_count": len(mcp_tools),
         }
 
     def check_exec_environment(self, _args: dict[str, Any]) -> dict[str, Any]:
